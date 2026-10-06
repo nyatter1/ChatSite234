@@ -20,7 +20,8 @@ import {
   HelpCircle,
   Heart,
   Calendar,
-  Users
+  Users,
+  User
 } from 'lucide-react';
 
 interface ChatMessage {
@@ -132,6 +133,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showTopic, setShowTopic] = useState(true);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [playerPopoverOpen, setPlayerPopoverOpen] = useState(false);
 
   // Welcome Guide State
   const [showGuide, setShowGuide] = useState(false);
@@ -142,6 +144,8 @@ export default function App() {
   const dayRef = useRef<HTMLDivElement>(null);
   const monthRef = useRef<HTMLDivElement>(null);
   const yearRef = useRef<HTMLDivElement>(null);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+  const playerCardRef = useRef<HTMLDivElement>(null);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -157,6 +161,12 @@ export default function App() {
       }
       if (yearRef.current && !yearRef.current.contains(e.target as Node)) {
         setYearDropdownOpen(false);
+      }
+      if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
+        setShowProfileMenu(false);
+      }
+      if (playerCardRef.current && !playerCardRef.current.contains(e.target as Node)) {
+        setPlayerPopoverOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
@@ -293,7 +303,7 @@ export default function App() {
           </div>
 
           {/* Right: Default PFP or Uploaded PFP with green online status dot */}
-          <div className="relative">
+          <div className="relative" ref={profileMenuRef}>
             <button
               type="button"
               onClick={() => setShowProfileMenu(!showProfileMenu)}
@@ -303,21 +313,38 @@ export default function App() {
               <UserAvatar avatarUrl={userProfile.avatarUrl} className="w-8 h-8" showOnline={true} />
             </button>
 
-            {/* Profile Dropdown Menu */}
+            {/* Profile Dropdown Menu (Matching Image 1 with our options) */}
             {showProfileMenu && (
-              <div className="absolute right-0 top-full mt-2 w-52 bg-[#1a1a22] border border-[#2d2d38] rounded-xl shadow-2xl py-2 z-50 animate-in fade-in zoom-in-95 duration-100">
-                <div className="px-4 py-2 border-b border-zinc-800">
-                  <p className="text-xs text-zinc-400">Signed in as</p>
-                  <p className="text-sm font-bold text-white truncate mt-0.5">
-                    {currentUser.username}
-                  </p>
-                  {userProfile.mood && (
-                    <p className="text-[11px] text-cyan-400 truncate mt-0.5 font-medium">
-                      {userProfile.mood}
-                    </p>
-                  )}
+              <div className="absolute right-0 top-full mt-2 w-56 bg-[#181820] border border-[#282834] rounded-2xl shadow-2xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
+                {/* Header with Avatar, Username, and Green Checkmark (Image 1) */}
+                <div className="p-3.5 flex items-center justify-between">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl overflow-hidden bg-[#24252e] border border-white/10 shrink-0">
+                      {userProfile.avatarUrl ? (
+                        <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                      ) : (
+                        <svg viewBox="0 0 40 40" className="w-full h-full text-zinc-400 fill-current translate-y-0.5">
+                          <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
+                        </svg>
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-white truncate">
+                        {currentUser.username}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Green Checkmark online indicator */}
+                  <div className="w-5 h-5 rounded-full bg-[#52c41a] text-white flex items-center justify-center shrink-0 shadow-sm ml-2">
+                    <Check className="w-3.5 h-3.5 stroke-[3]" />
+                  </div>
                 </div>
-                <div className="px-2 pt-1 space-y-0.5">
+
+                <div className="border-t border-[#252530]" />
+
+                {/* Our Options */}
+                <div className="p-2 space-y-1">
                   <button
                     type="button"
                     onClick={() => {
@@ -325,11 +352,12 @@ export default function App() {
                       setProfileViewMode('edit');
                       setProfileModalOpen(true);
                     }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-zinc-200 hover:text-white hover:bg-white/5 rounded-lg transition-colors cursor-pointer text-left"
+                    className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
                   >
-                    <SquarePen className="w-3.5 h-3.5 text-cyan-400" />
+                    <SquarePen className="w-4 h-4 text-cyan-400" />
                     <span>Edit profile</span>
                   </button>
+
                   <button
                     type="button"
                     onClick={() => {
@@ -337,11 +365,12 @@ export default function App() {
                       setProfileViewMode('view');
                       setProfileModalOpen(true);
                     }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-zinc-200 hover:text-white hover:bg-white/5 rounded-lg transition-colors cursor-pointer text-left"
+                    className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
                   >
-                    <Eye className="w-3.5 h-3.5 text-cyan-400" />
+                    <Eye className="w-4 h-4 text-cyan-400" />
                     <span>View profile</span>
                   </button>
+
                   <button
                     type="button"
                     onClick={() => {
@@ -349,11 +378,12 @@ export default function App() {
                       setGuideStep(1);
                       setShowGuide(true);
                     }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-cyan-300 hover:bg-cyan-500/10 rounded-lg transition-colors cursor-pointer text-left"
+                    className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
                   >
-                    <Compass className="w-3.5 h-3.5" />
+                    <Compass className="w-4 h-4 text-cyan-400" />
                     <span>Site guide</span>
                   </button>
+
                   <button
                     type="button"
                     onClick={() => {
@@ -361,10 +391,11 @@ export default function App() {
                       setShowProfileMenu(false);
                       setShowGuide(false);
                       setProfileModalOpen(false);
+                      setPlayerPopoverOpen(false);
                     }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer text-left"
+                    className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-rose-400 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer text-left"
                   >
-                    <LogOut className="w-3.5 h-3.5" />
+                    <LogOut className="w-4 h-4" />
                     <span>Sign Out</span>
                   </button>
                 </div>
@@ -514,24 +545,89 @@ export default function App() {
                 </span>
               </div>
 
-              {/* USER LIST (Clicking card opens profile) */}
+              {/* USER LIST (Clicking card opens options on the left - Image 2) */}
               <div className="flex-1 overflow-y-auto px-3 space-y-2">
-                <div
-                  onClick={() => {
-                    setProfileViewMode('edit');
-                    setProfileModalOpen(true);
-                  }}
-                  className="bg-[#18181f] border border-[#2b2b38] hover:border-cyan-500/40 rounded-xl p-2.5 flex items-center gap-3 transition-colors cursor-pointer group"
-                >
-                  <UserAvatar avatarUrl={userProfile.avatarUrl} className="w-10 h-10" showOnline={true} />
-                  <div className="flex-1 min-w-0">
-                    <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors block">
-                      {currentUser.username}
-                    </span>
-                    <p className="text-xs text-zinc-400 truncate">
-                      {userProfile.mood ? userProfile.mood : 'Online'}
-                    </p>
+                <div className="relative" ref={playerCardRef}>
+                  <div
+                    onClick={() => setPlayerPopoverOpen(!playerPopoverOpen)}
+                    className="bg-[#18181f] border border-[#2b2b38] hover:border-cyan-500/40 rounded-xl p-2.5 flex items-center gap-3 transition-colors cursor-pointer group"
+                  >
+                    <UserAvatar avatarUrl={userProfile.avatarUrl} className="w-10 h-10" showOnline={true} />
+                    <div className="flex-1 min-w-0">
+                      <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors block">
+                        {currentUser.username}
+                      </span>
+                      <p className="text-xs text-zinc-400 truncate">
+                        {userProfile.mood ? userProfile.mood : 'Online'}
+                      </p>
+                    </div>
                   </div>
+
+                  {/* Options popover shown on the left of the player (Image 2) */}
+                  {playerPopoverOpen && (
+                    <div className="absolute right-full mr-3.5 top-0 w-60 bg-[#16161c] border border-[#282834] rounded-2xl shadow-2xl overflow-hidden z-40 text-center animate-in fade-in zoom-in-95 duration-150 flex flex-col">
+                      {/* Banner Strip */}
+                      <div className="h-16 w-full relative bg-gradient-to-r from-[#1f1f28] via-[#282834] to-[#1f1f28] shrink-0 overflow-hidden">
+                        {userProfile.bannerUrl ? (
+                          <img src={userProfile.bannerUrl} alt="Banner" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full opacity-30 bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:12px_12px]" />
+                        )}
+                      </div>
+
+                      {/* Centered Circular Avatar with white border */}
+                      <div className="w-18 h-18 rounded-full border-2 border-white -mt-9 mx-auto overflow-hidden bg-[#24252e] shadow-xl relative shrink-0">
+                        {userProfile.avatarUrl ? (
+                          <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                        ) : (
+                          <svg viewBox="0 0 40 40" className="w-full h-full text-zinc-400 fill-current translate-y-1">
+                            <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
+                          </svg>
+                        )}
+                      </div>
+
+                      {/* User Details (without UK flag, without star, without likes) */}
+                      <div className="px-4 pt-2 pb-3">
+                        <h3 className="font-bold text-white text-base truncate">
+                          {currentUser.username}
+                        </h3>
+                        <p className="text-xs text-zinc-400 font-medium mt-0.5 truncate">
+                          {userProfile.age} years · {userProfile.gender}
+                        </p>
+                      </div>
+
+                      {/* Actions Section: View profile & Edit */}
+                      <div className="p-3 pt-2.5 border-t border-[#23232c] bg-[#131317] space-y-1.5">
+                        {/* 1. View profile button (views profile) */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPlayerPopoverOpen(false);
+                            setProfileViewMode('view');
+                            setProfileModalOpen(true);
+                          }}
+                          className="w-full bg-[#1e1e26] hover:bg-[#282834] text-white font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer"
+                        >
+                          <User className="w-4 h-4 text-zinc-300" />
+                          <span>View profile</span>
+                        </button>
+
+                        {/* 2. Edit button (edits profile) */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPlayerPopoverOpen(false);
+                            setProfileViewMode('edit');
+                            setProfileModalOpen(true);
+                          }}
+                          className="w-full hover:bg-[#1e1e26] text-white font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer"
+                        >
+                          <SquarePen className="w-4 h-4 text-cyan-400" />
+                          <span>Edit</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </aside>
