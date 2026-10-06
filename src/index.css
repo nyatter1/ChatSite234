@@ -1,1 +1,154 @@
 @import "tailwindcss";
+
+/* ========================================================= */
+/* ANIMATED BORDER KEYFRAMES & CLASSES                      */
+/* ========================================================= */
+
+@keyframes anim-rainbow-rgb {
+  0% { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(360deg); }
+}
+
+@keyframes anim-neon-pulse {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.4), inset 0 0 6px rgba(0, 240, 255, 0.2);
+    border-color: #00f0ff;
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(0, 240, 255, 0.9), inset 0 0 12px rgba(0, 240, 255, 0.5);
+    border-color: #7df9ff;
+  }
+}
+
+@keyframes anim-conic-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes anim-fire-flame {
+  0%, 100% {
+    border-color: #ef4444;
+    box-shadow: 0 0 12px #ef4444, inset 0 0 4px #f97316;
+  }
+  33% {
+    border-color: #f97316;
+    box-shadow: 0 0 22px #f97316, 0 0 8px #facc15, inset 0 0 8px #ef4444;
+  }
+  66% {
+    border-color: #dc2626;
+    box-shadow: 0 0 16px #dc2626, inset 0 0 6px #f97316;
+  }
+}
+
+@keyframes anim-electric-zap {
+  0%, 100% {
+    border-color: #3b82f6;
+    box-shadow: 0 0 8px #3b82f6;
+  }
+  20% {
+    border-color: #60a5fa;
+    box-shadow: 0 0 20px #93c5fd, 0 0 30px #3b82f6;
+  }
+  40% {
+    border-color: #2563eb;
+    box-shadow: 0 0 10px #2563eb;
+  }
+  60% {
+    border-color: #93c5fd;
+    box-shadow: 0 0 25px #bfdbfe, 0 0 35px #60a5fa;
+  }
+  80% {
+    border-color: #1d4ed8;
+    box-shadow: 0 0 12px #1d4ed8;
+  }
+}
+
+@keyframes anim-aurora-wave {
+  0%, 100% {
+    border-color: #10b981;
+    box-shadow: 0 0 15px rgba(16, 185, 129, 0.7), 0 0 30px rgba(168, 85, 247, 0.4);
+  }
+  50% {
+    border-color: #a855f7;
+    box-shadow: 0 0 25px rgba(168, 85, 247, 0.8), 0 0 40px rgba(16, 185, 129, 0.5);
+  }
+}
+
+@keyframes anim-galaxy-glow {
+  0%, 100% {
+    border-color: #8b5cf6;
+    box-shadow: 0 0 14px #8b5cf6, 0 0 28px #ec4899;
+  }
+  50% {
+    border-color: #ec4899;
+    box-shadow: 0 0 26px #ec4899, 0 0 40px #3b82f6;
+  }
+}
+
+@keyframes anim-laser-sweep {
+  0%, 100% {
+    border-color: #06b6d4;
+    box-shadow: 0 0 10px #06b6d4, inset 0 0 4px #06b6d4;
+  }
+  50% {
+    border-color: #ffffff;
+    box-shadow: 0 0 30px #06b6d4, 0 0 50px #ffffff;
+  }
+}
+
+@keyframes anim-disco-strobe {
+  0% { border-color: #ef4444; box-shadow: 0 0 16px #ef4444; }
+  20% { border-color: #f59e0b; box-shadow: 0 0 16px #f59e0b; }
+  40% { border-color: #10b981; box-shadow: 0 0 16px #10b981; }
+  60% { border-color: #06b6d4; box-shadow: 0 0 16px #06b6d4; }
+  80% { border-color: #8b5cf6; box-shadow: 0 0 16px #8b5cf6; }
+  100% { border-color: #ef4444; box-shadow: 0 0 16px #ef4444; }
+}
+
+@keyframes anim-plasma-pulse {
+  0%, 100% {
+    border-color: #d946ef;
+    box-shadow: 0 0 12px #d946ef, inset 0 0 6px #00f0ff;
+  }
+  50% {
+    border-color: #00f0ff;
+    box-shadow: 0 0 24px #00f0ff, inset 0 0 12px #d946ef;
+  }
+}
+
+/* Helper animation classes */
+.border-anim-rainbow {
+  animation: anim-rainbow-rgb 4s linear infinite;
+}
+
+.border-anim-neon {
+  animation: anim-neon-pulse 2s ease-in-out infinite;
+}
+
+.border-anim-fire {
+  animation: anim-fire-flame 1.5s ease-in-out infinite;
+}
+
+.border-anim-electric {
+  animation: anim-electric-zap 0.8s ease-in-out infinite;
+}
+
+.border-anim-aurora {
+  animation: anim-aurora-wave 3s ease-in-out infinite;
+}
+
+.border-anim-galaxy {
+  animation: anim-galaxy-glow 3s ease-in-out infinite;
+}
+
+.border-anim-laser {
+  animation: anim-laser-sweep 1.8s ease-in-out infinite;
+}
+
+.border-anim-disco {
+  animation: anim-disco-strobe 1.2s steps(5, end) infinite;
+}
+
+.border-anim-plasma {
+  animation: anim-plasma-pulse 2.2s ease-in-out infinite;
+}

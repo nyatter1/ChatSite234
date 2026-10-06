@@ -4,6 +4,8 @@ import {
   SquarePen,
   X,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Menu,
   SendHorizontal,
   Mic,
@@ -22,8 +24,16 @@ import {
   Calendar,
   Users,
   User,
-  Sparkles
+  Sparkles,
+  Layers,
+  CircleDot
 } from 'lucide-react';
+import {
+  PROFILE_BORDERS,
+  PFP_BORDERS,
+  getProfileBorder,
+  getPfpBorder
+} from './borders';
 
 interface ChatMessage {
   id: string;
@@ -37,15 +47,21 @@ interface ChatMessage {
 function UserAvatar({
   avatarUrl,
   className = 'w-10 h-10',
-  showOnline = false
+  showOnline = false,
+  pfpBorderClass
 }: {
   avatarUrl?: string | null;
   className?: string;
   showOnline?: boolean;
+  pfpBorderClass?: string;
 }) {
   return (
     <div className={`relative shrink-0 ${className}`}>
-      <div className="w-full h-full rounded-full overflow-hidden bg-[#24252e] border border-white/10 flex items-center justify-center">
+      <div
+        className={`w-full h-full rounded-full overflow-hidden bg-[#24252e] flex items-center justify-center transition-all ${
+          pfpBorderClass || 'border border-white/10'
+        }`}
+      >
         {avatarUrl ? (
           <img src={avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
         ) : (
@@ -79,6 +95,8 @@ export default function App() {
     bio: string;
     mood: string;
     glowColor: string | null;
+    profileBorderId: string | null;
+    pfpBorderId: string | null;
   }>({
     avatarUrl: null,
     bannerUrl: null,
@@ -87,7 +105,9 @@ export default function App() {
     relationship: 'Rather not say',
     bio: '',
     mood: '',
-    glowColor: null
+    glowColor: null,
+    profileBorderId: 'pb-default',
+    pfpBorderId: 'pfp-default'
   });
 
   // Profile Modal State
@@ -95,9 +115,9 @@ export default function App() {
   const [profileViewMode, setProfileViewMode] = useState<'edit' | 'view'>('edit');
   const [publicProfileTab, setPublicProfileTab] = useState<'info' | 'aboutme'>('info');
 
-  // Sub-modal state for Edit actions (info, username, bio, mood, glow)
+  // Sub-modal state for Edit actions (info, username, bio, mood, glow, profileBorder, pfpBorder)
   const [activeEditSubModal, setActiveEditSubModal] = useState<
-    'info' | 'username' | 'bio' | 'mood' | 'glow' | null
+    'info' | 'username' | 'bio' | 'mood' | 'glow' | 'profileBorder' | 'pfpBorder' | null
   >(null);
   const [tempAge, setTempAge] = useState('17');
   const [tempGender, setTempGender] = useState('MALE');
@@ -106,6 +126,8 @@ export default function App() {
   const [tempBio, setTempBio] = useState('');
   const [tempMood, setTempMood] = useState('');
   const [tempGlowColor, setTempGlowColor] = useState<string | null>(null);
+  const [tempProfileBorderIndex, setTempProfileBorderIndex] = useState(0);
+  const [tempPfpBorderIndex, setTempPfpBorderIndex] = useState(0);
 
   // Hidden file inputs for avatar & banner uploads
   const pfpInputRef = useRef<HTMLInputElement>(null);
@@ -280,7 +302,9 @@ export default function App() {
   };
 
   // Open Edit Sub-Modal with prefilled values
-  const openEditSubModal = (type: 'info' | 'username' | 'bio' | 'mood' | 'glow') => {
+  const openEditSubModal = (
+    type: 'info' | 'username' | 'bio' | 'mood' | 'glow' | 'profileBorder' | 'pfpBorder'
+  ) => {
     if (type === 'info') {
       setTempAge(userProfile.age);
       setTempGender(userProfile.gender);
@@ -293,6 +317,12 @@ export default function App() {
       setTempMood(userProfile.mood);
     } else if (type === 'glow') {
       setTempGlowColor(userProfile.glowColor);
+    } else if (type === 'profileBorder') {
+      const idx = PROFILE_BORDERS.findIndex((b) => b.id === userProfile.profileBorderId);
+      setTempProfileBorderIndex(idx >= 0 ? idx : 0);
+    } else if (type === 'pfpBorder') {
+      const idx = PFP_BORDERS.findIndex((b) => b.id === userProfile.pfpBorderId);
+      setTempPfpBorderIndex(idx >= 0 ? idx : 0);
     }
     setActiveEditSubModal(type);
   };
@@ -325,7 +355,12 @@ export default function App() {
               aria-label="User profile"
               className="flex items-center gap-2 p-0.5 rounded-full hover:ring-2 hover:ring-cyan-500/40 transition-all cursor-pointer"
             >
-              <UserAvatar avatarUrl={userProfile.avatarUrl} className="w-8 h-8" showOnline={true} />
+              <UserAvatar
+                avatarUrl={userProfile.avatarUrl}
+                className="w-8 h-8"
+                showOnline={true}
+                pfpBorderClass={getPfpBorder(userProfile.pfpBorderId).pfpBorderClass}
+              />
             </button>
 
             {/* Profile Dropdown Menu (Matching Image 1 with our options) */}
@@ -442,7 +477,15 @@ export default function App() {
                     key={msg.id}
                     className="flex items-start gap-3.5 group hover:bg-white/[0.02] -mx-2 px-2 py-1.5 rounded-lg transition-colors"
                   >
-                    <UserAvatar avatarUrl={msg.avatarUrl || userProfile.avatarUrl} className="w-10 h-10 mt-0.5" />
+                    <UserAvatar
+                      avatarUrl={msg.avatarUrl || userProfile.avatarUrl}
+                      className="w-10 h-10 mt-0.5"
+                      pfpBorderClass={
+                        msg.sender === currentUser.username
+                          ? getPfpBorder(userProfile.pfpBorderId).pfpBorderClass
+                          : undefined
+                      }
+                    />
 
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
@@ -587,7 +630,12 @@ export default function App() {
                     userProfile.glowColor ? '' : 'border-[#2b2b38] hover:border-cyan-500/40'
                   } rounded-xl p-2.5 flex items-center gap-3 transition-all cursor-pointer group`}
                 >
-                  <UserAvatar avatarUrl={userProfile.avatarUrl} className="w-10 h-10" showOnline={true} />
+                  <UserAvatar
+                    avatarUrl={userProfile.avatarUrl}
+                    className="w-10 h-10"
+                    showOnline={true}
+                    pfpBorderClass={getPfpBorder(userProfile.pfpBorderId).pfpBorderClass}
+                  />
                   <div className="flex-1 min-w-0">
                     <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors block">
                       {currentUser.username}
@@ -624,8 +672,12 @@ export default function App() {
                 {/* Subtle gradient scrim overlay for contrast */}
                 <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-black/35 to-black/70 pointer-events-none" />
 
-                {/* Centered Circular Avatar with white border */}
-                <div className="w-20 h-20 rounded-full border-2 border-white overflow-hidden bg-[#24252e] shadow-2xl relative shrink-0 z-10">
+                {/* Centered Circular Avatar with custom border */}
+                <div
+                  className={`w-20 h-20 rounded-full overflow-hidden bg-[#24252e] shadow-2xl relative shrink-0 z-10 transition-all ${
+                    getPfpBorder(userProfile.pfpBorderId).pfpBorderClass || 'border-2 border-white'
+                  }`}
+                >
                   {userProfile.avatarUrl ? (
                     <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
                   ) : (
@@ -705,7 +757,13 @@ export default function App() {
               onChange={handlePfpUpload}
             />
 
-            <div className="w-full max-w-[480px] max-h-[92vh] bg-[#141418] border border-[#252530] rounded-3xl overflow-hidden shadow-2xl flex flex-col text-white animate-in zoom-in-95 duration-150 relative">
+            <div
+              className={`w-full max-w-[480px] max-h-[92vh] bg-[#141418] rounded-3xl overflow-hidden shadow-2xl flex flex-col text-white animate-in zoom-in-95 duration-150 relative transition-all ${
+                profileViewMode === 'view'
+                  ? (getProfileBorder(userProfile.profileBorderId).cardBorderClass || 'border border-[#252530]')
+                  : 'border border-[#252530]'
+              }`}
+            >
               {/* BANNER AREA */}
               <div className="h-36 sm:h-40 w-full relative bg-gradient-to-r from-[#1c1c24] via-[#242430] to-[#1c1c24] shrink-0 overflow-hidden">
                 {userProfile.bannerUrl ? (
@@ -777,8 +835,12 @@ export default function App() {
 
               {/* AVATAR + USERNAME SECTION */}
               <div className="px-5 pb-3 flex items-end gap-3.5 relative z-10 shrink-0">
-                {/* PFP Box (Rounded square with white border matching mockup) */}
-                <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl border-2 border-white/90 overflow-hidden bg-[#1f1f26] relative shrink-0 shadow-2xl -mt-12 sm:-mt-14">
+                {/* PFP Box (Rounded square with selected PFP border) */}
+                <div
+                  className={`w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden bg-[#1f1f26] relative shrink-0 shadow-2xl -mt-12 sm:-mt-14 transition-all ${
+                    getPfpBorder(userProfile.pfpBorderId).pfpBorderClass || 'border-2 border-white/90'
+                  }`}
+                >
                   {userProfile.avatarUrl ? (
                     <img
                       src={userProfile.avatarUrl}
@@ -930,6 +992,44 @@ export default function App() {
                       ) : (
                         <span className="text-xs text-zinc-500 font-normal">None</span>
                       )}
+                    </div>
+                  </button>
+
+                  {/* 6. Profile borders */}
+                  <button
+                    type="button"
+                    onClick={() => openEditSubModal('profileBorder')}
+                    className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-cyan-400 transition-colors">
+                      <Layers className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 flex items-center justify-between">
+                      <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
+                        Profile borders
+                      </span>
+                      <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px]">
+                        {getProfileBorder(userProfile.profileBorderId).name.replace(/^\d+\.\s*/, '')}
+                      </span>
+                    </div>
+                  </button>
+
+                  {/* 7. Profile picture borders */}
+                  <button
+                    type="button"
+                    onClick={() => openEditSubModal('pfpBorder')}
+                    className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-cyan-400 transition-colors">
+                      <CircleDot className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 flex items-center justify-between">
+                      <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
+                        Profile picture borders
+                      </span>
+                      <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px]">
+                        {getPfpBorder(userProfile.pfpBorderId).name.replace(/^\d+\.\s*/, '')}
+                      </span>
                     </div>
                   </button>
                 </div>
@@ -1387,6 +1487,305 @@ export default function App() {
                           <Save className="w-4 h-4" />
                           <span>Save</span>
                         </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 6. Profile Borders sub-modal */}
+                  {activeEditSubModal === 'profileBorder' && (
+                    <div className="w-full max-w-[420px] bg-[#17171d] border border-[#262632] rounded-2xl p-4 sm:p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100 flex flex-col max-h-[92vh]">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Layers className="w-4 h-4 text-cyan-400" />
+                          <h3 className="text-base font-bold text-white">Profile borders</h3>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setActiveEditSubModal(null)}
+                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <p className="text-xs text-zinc-400 mb-2.5 leading-relaxed">
+                        Choose between 50 borders (40 normal, 10 animated). This will change the outline of your whole profile when someone views it.
+                      </p>
+
+                      {/* [profile card] preview */}
+                      <div className="flex-1 flex flex-col items-center justify-center my-1 py-1 overflow-y-auto">
+                        <div
+                          className={`w-full max-w-[340px] bg-[#141418] rounded-2xl overflow-hidden transition-all duration-200 shadow-2xl ${
+                            PROFILE_BORDERS[tempProfileBorderIndex].cardBorderClass
+                          }`}
+                        >
+                          {/* Banner preview */}
+                          <div className="h-20 w-full relative bg-gradient-to-r from-[#1c1c24] via-[#242430] to-[#1c1c24] overflow-hidden">
+                            {userProfile.bannerUrl ? (
+                              <img
+                                src={userProfile.bannerUrl}
+                                alt="Banner"
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-full h-full opacity-40 bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:16px_16px]" />
+                            )}
+                          </div>
+
+                          {/* Avatar + User preview */}
+                          <div className="px-3 pb-3 flex items-end gap-2.5 -mt-7 relative z-10">
+                            <div
+                              className={`w-14 h-14 rounded-xl overflow-hidden bg-[#1f1f26] shrink-0 shadow-lg ${
+                                getPfpBorder(userProfile.pfpBorderId).pfpBorderClass || 'border-2 border-white'
+                              }`}
+                            >
+                              {userProfile.avatarUrl ? (
+                                <img
+                                  src={userProfile.avatarUrl}
+                                  alt="Avatar"
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center bg-[#252530]">
+                                  <svg
+                                    viewBox="0 0 40 40"
+                                    className="w-8 h-8 text-zinc-400 fill-current translate-y-0.5"
+                                  >
+                                    <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
+                                  </svg>
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0 pb-0.5">
+                              <h4 className="font-extrabold text-white text-sm truncate">
+                                {currentUser?.username || 'Player'}
+                              </h4>
+                              <p className="text-[11px] text-zinc-400 truncate">
+                                {userProfile.mood || 'Online'}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="px-3 pb-2 pt-1 border-t border-[#202028] flex items-center justify-between text-[10px] text-zinc-400">
+                            <span>{userProfile.age} yrs · {userProfile.gender}</span>
+                            <span className="text-zinc-500">{userProfile.relationship}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* < select > controls */}
+                      <div className="mt-2.5 space-y-2">
+                        <div className="flex items-center gap-2">
+                          {/* < left arrow */}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTempProfileBorderIndex((prev) =>
+                                prev === 0 ? PROFILE_BORDERS.length - 1 : prev - 1
+                              )
+                            }
+                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-cyan-400 transition-colors cursor-pointer shrink-0"
+                            title="Previous border"
+                          >
+                            <ChevronLeft className="w-5 h-5" />
+                          </button>
+
+                          {/* select dropdown */}
+                          <div className="flex-1 relative">
+                            <select
+                              value={tempProfileBorderIndex}
+                              onChange={(e) => setTempProfileBorderIndex(Number(e.target.value))}
+                              className="w-full bg-[#20202a] hover:bg-[#252532] border border-[#2c2c3a] focus:border-cyan-500 rounded-xl px-3 py-2.5 text-xs font-bold text-white appearance-none cursor-pointer pr-8 text-center truncate"
+                            >
+                              {PROFILE_BORDERS.map((border, idx) => (
+                                <option key={border.id} value={idx}>
+                                  {border.name} {border.isAnimated ? '★' : ''}
+                                </option>
+                              ))}
+                            </select>
+                            <ChevronDown className="w-4 h-4 text-zinc-400 absolute right-2.5 top-3 pointer-events-none" />
+                          </div>
+
+                          {/* > right arrow */}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTempProfileBorderIndex((prev) =>
+                                prev === PROFILE_BORDERS.length - 1 ? 0 : prev + 1
+                              )
+                            }
+                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-cyan-400 transition-colors cursor-pointer shrink-0"
+                            title="Next border"
+                          >
+                            <ChevronRight className="w-5 h-5" />
+                          </button>
+                        </div>
+
+                        {/* Status badge */}
+                        <div className="flex items-center justify-between px-1 text-[11px] text-zinc-400">
+                          <span>Border {tempProfileBorderIndex + 1} of 50</span>
+                          <span
+                            className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] ${
+                              PROFILE_BORDERS[tempProfileBorderIndex].isAnimated
+                                ? 'bg-purple-500/25 text-purple-300 border border-purple-500/40 shadow-sm'
+                                : 'bg-zinc-800 text-zinc-300 border border-zinc-700'
+                            }`}
+                          >
+                            {PROFILE_BORDERS[tempProfileBorderIndex].isAnimated ? '★ Animated' : 'Normal'}
+                          </span>
+                        </div>
+
+                        {/* Save button */}
+                        <div className="pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUserProfile((p) => ({
+                                ...p,
+                                profileBorderId: PROFILE_BORDERS[tempProfileBorderIndex].id
+                              }));
+                              setActiveEditSubModal(null);
+                            }}
+                            className="w-full bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-cyan-500/20"
+                          >
+                            <Save className="w-4 h-4" />
+                            <span>Save</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 7. Profile Picture Borders sub-modal */}
+                  {activeEditSubModal === 'pfpBorder' && (
+                    <div className="w-full max-w-[400px] bg-[#17171d] border border-[#262632] rounded-2xl p-4 sm:p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100 flex flex-col max-h-[92vh]">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <CircleDot className="w-4 h-4 text-cyan-400" />
+                          <h3 className="text-base font-bold text-white">Profile picture borders</h3>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setActiveEditSubModal(null)}
+                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <p className="text-xs text-zinc-400 mb-2.5 leading-relaxed">
+                        Choose between 50 borders (40 normal, 10 animated) for your profile picture.
+                      </p>
+
+                      {/* [profile picture] preview */}
+                      <div className="flex-1 flex flex-col items-center justify-center my-2 py-4 bg-[#121217] rounded-2xl border border-[#202028]">
+                        <div
+                          className={`w-28 h-28 rounded-2xl overflow-hidden bg-[#1f1f26] shrink-0 shadow-2xl transition-all duration-200 relative ${
+                            PFP_BORDERS[tempPfpBorderIndex].pfpBorderClass
+                          }`}
+                        >
+                          {userProfile.avatarUrl ? (
+                            <img
+                              src={userProfile.avatarUrl}
+                              alt="Avatar"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-[#252530]">
+                              <svg
+                                viewBox="0 0 40 40"
+                                className="w-16 h-16 text-zinc-400 fill-current translate-y-1"
+                              >
+                                <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
+                              </svg>
+                            </div>
+                          )}
+                        </div>
+
+                        <span className="text-xs font-bold text-white mt-3">
+                          {currentUser?.username || 'Player'}
+                        </span>
+                      </div>
+
+                      {/* < select > controls */}
+                      <div className="mt-1 space-y-2">
+                        <div className="flex items-center gap-2">
+                          {/* < left arrow */}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTempPfpBorderIndex((prev) =>
+                                prev === 0 ? PFP_BORDERS.length - 1 : prev - 1
+                              )
+                            }
+                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-cyan-400 transition-colors cursor-pointer shrink-0"
+                            title="Previous border"
+                          >
+                            <ChevronLeft className="w-5 h-5" />
+                          </button>
+
+                          {/* select dropdown */}
+                          <div className="flex-1 relative">
+                            <select
+                              value={tempPfpBorderIndex}
+                              onChange={(e) => setTempPfpBorderIndex(Number(e.target.value))}
+                              className="w-full bg-[#20202a] hover:bg-[#252532] border border-[#2c2c3a] focus:border-cyan-500 rounded-xl px-3 py-2.5 text-xs font-bold text-white appearance-none cursor-pointer pr-8 text-center truncate"
+                            >
+                              {PFP_BORDERS.map((border, idx) => (
+                                <option key={border.id} value={idx}>
+                                  {border.name} {border.isAnimated ? '★' : ''}
+                                </option>
+                              ))}
+                            </select>
+                            <ChevronDown className="w-4 h-4 text-zinc-400 absolute right-2.5 top-3 pointer-events-none" />
+                          </div>
+
+                          {/* > right arrow */}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTempPfpBorderIndex((prev) =>
+                                prev === PFP_BORDERS.length - 1 ? 0 : prev + 1
+                              )
+                            }
+                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-cyan-400 transition-colors cursor-pointer shrink-0"
+                            title="Next border"
+                          >
+                            <ChevronRight className="w-5 h-5" />
+                          </button>
+                        </div>
+
+                        {/* Status badge */}
+                        <div className="flex items-center justify-between px-1 text-[11px] text-zinc-400">
+                          <span>Border {tempPfpBorderIndex + 1} of 50</span>
+                          <span
+                            className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] ${
+                              PFP_BORDERS[tempPfpBorderIndex].isAnimated
+                                ? 'bg-purple-500/25 text-purple-300 border border-purple-500/40 shadow-sm'
+                                : 'bg-zinc-800 text-zinc-300 border border-zinc-700'
+                            }`}
+                          >
+                            {PFP_BORDERS[tempPfpBorderIndex].isAnimated ? '★ Animated' : 'Normal'}
+                          </span>
+                        </div>
+
+                        {/* Save button */}
+                        <div className="pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUserProfile((p) => ({
+                                ...p,
+                                pfpBorderId: PFP_BORDERS[tempPfpBorderIndex].id
+                              }));
+                              setActiveEditSubModal(null);
+                            }}
+                            className="w-full bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-cyan-500/20"
+                          >
+                            <Save className="w-4 h-4" />
+                            <span>Save</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
