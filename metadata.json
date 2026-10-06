@@ -1,0 +1,6 @@
+{
+  "name": "Chat Community",
+  "description": "Connect with friends and join the chat community.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
