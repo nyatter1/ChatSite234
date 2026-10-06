@@ -26,20 +26,7 @@ import {
   User,
   Sparkles,
   Layers,
-  CircleDot,
-  Music,
-  Play,
-  Pause,
-  Volume2,
-  VolumeX,
-  Disc,
-  Wand2,
-  Award,
-  Palette,
-  Upload,
-  Radio,
-  Sliders,
-  Sparkle
+  CircleDot
 } from 'lucide-react';
 import {
   PROFILE_BORDERS,
@@ -47,17 +34,6 @@ import {
   getProfileBorder,
   getPfpBorder
 } from './borders';
-import { musicSynth, PRESET_TRACKS, MusicTrack } from './audioPresets';
-import {
-  PROFILE_EFFECTS,
-  NAMEPLATE_TITLES,
-  COLLECTIBLE_BADGES,
-  CHAT_THEMES,
-  ProfileEffect,
-  NameplateTitle,
-  CollectibleBadge,
-  ChatTheme
-} from './customizations';
 
 interface ChatMessage {
   id: string;
@@ -105,69 +81,33 @@ function UserAvatar({
   );
 }
 
-export interface UserProfileData {
-  avatarUrl: string | null;
-  bannerUrl: string | null;
-  age: string;
-  gender: string;
-  relationship: string;
-  bio: string;
-  mood: string;
-  glowColor: string | null;
-  profileBorderId: string | null;
-  pfpBorderId: string | null;
-  musicUrl: string | null;
-  musicName: string;
-  musicAutoplay: boolean;
-  musicVolume: number;
-  musicType: 'upload' | 'synthwave' | 'lofi' | 'cyberpunk' | 'ambient' | 'chiptune';
-  profileEffectId: string;
-  nameplateId: string;
-  badgeIds: string[];
-  chatThemeId: string;
-}
-
-const DEFAULT_PROFILE: UserProfileData = {
-  avatarUrl: null,
-  bannerUrl: null,
-  age: '17',
-  gender: 'MALE',
-  relationship: 'Rather not say',
-  bio: '',
-  mood: '',
-  glowColor: null,
-  profileBorderId: 'pb-default',
-  pfpBorderId: 'pfp-default',
-  musicUrl: null,
-  musicName: 'Neon Midnight Drive',
-  musicAutoplay: true,
-  musicVolume: 0.5,
-  musicType: 'synthwave',
-  profileEffectId: 'effect-none',
-  nameplateId: 'title-none',
-  badgeIds: ['badge-founder', 'badge-music'],
-  chatThemeId: 'theme-purple'
-};
-
 export default function App() {
-  // Authentication & Current User State (Loaded from localStorage)
-  const [currentUser, setCurrentUser] = useState<{ username: string; gender: string } | null>(() => {
-    try {
-      const saved = localStorage.getItem('chatflux_session');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+  // Authentication & Current User State
+  const [currentUser, setCurrentUser] = useState<{ username: string; gender: string } | null>(null);
 
-  // Profile Details State (Loaded from localStorage)
-  const [userProfile, setUserProfile] = useState<UserProfileData>(() => {
-    try {
-      const saved = localStorage.getItem('chatflux_profile');
-      return saved ? { ...DEFAULT_PROFILE, ...JSON.parse(saved) } : DEFAULT_PROFILE;
-    } catch {
-      return DEFAULT_PROFILE;
-    }
+  // Profile Details State
+  const [userProfile, setUserProfile] = useState<{
+    avatarUrl: string | null;
+    bannerUrl: string | null;
+    age: string;
+    gender: string;
+    relationship: string;
+    bio: string;
+    mood: string;
+    glowColor: string | null;
+    profileBorderId: string | null;
+    pfpBorderId: string | null;
+  }>({
+    avatarUrl: null,
+    bannerUrl: null,
+    age: '17',
+    gender: 'MALE',
+    relationship: 'Rather not say',
+    bio: '',
+    mood: '',
+    glowColor: null,
+    profileBorderId: 'pb-default',
+    pfpBorderId: 'pfp-default'
   });
 
   // Profile Modal State
@@ -175,26 +115,10 @@ export default function App() {
   const [profileViewMode, setProfileViewMode] = useState<'edit' | 'view'>('edit');
   const [publicProfileTab, setPublicProfileTab] = useState<'info' | 'aboutme'>('info');
 
-  // Edit Profile Category Tab: [ACCOUNT] [CUSTOMISATION] [MORE]
-  const [editCategoryTab, setEditCategoryTab] = useState<'account' | 'customisation' | 'more'>('account');
-
-  // Sub-modal state for Edit actions
+  // Sub-modal state for Edit actions (info, username, bio, mood, glow, profileBorder, pfpBorder)
   const [activeEditSubModal, setActiveEditSubModal] = useState<
-    | 'info'
-    | 'username'
-    | 'bio'
-    | 'mood'
-    | 'glow'
-    | 'profileBorder'
-    | 'pfpBorder'
-    | 'music'
-    | 'effect'
-    | 'nameplate'
-    | 'badges'
-    | 'chatTheme'
-    | null
+    'info' | 'username' | 'bio' | 'mood' | 'glow' | 'profileBorder' | 'pfpBorder' | null
   >(null);
-
   const [tempAge, setTempAge] = useState('17');
   const [tempGender, setTempGender] = useState('MALE');
   const [tempRelationship, setTempRelationship] = useState('Rather not say');
@@ -205,28 +129,9 @@ export default function App() {
   const [tempProfileBorderIndex, setTempProfileBorderIndex] = useState(0);
   const [tempPfpBorderIndex, setTempPfpBorderIndex] = useState(0);
 
-  // Music state
-  const [isMusicPlaying, setIsMusicPlaying] = useState(false);
-  const [audioVolume, setAudioVolume] = useState(0.5);
-  const audioElementRef = useRef<HTMLAudioElement | null>(null);
-  const musicInputRef = useRef<HTMLInputElement>(null);
-
   // Hidden file inputs for avatar & banner uploads
   const pfpInputRef = useRef<HTMLInputElement>(null);
   const bannerInputRef = useRef<HTMLInputElement>(null);
-
-  // Save currentUser and profile to localStorage automatically
-  useEffect(() => {
-    if (currentUser) {
-      localStorage.setItem('chatflux_session', JSON.stringify(currentUser));
-    } else {
-      localStorage.removeItem('chatflux_session');
-    }
-  }, [currentUser]);
-
-  useEffect(() => {
-    localStorage.setItem('chatflux_profile', JSON.stringify(userProfile));
-  }, [userProfile]);
 
   // Modal State for Landing Screen
   const [modalType, setModalType] = useState<'login' | 'register' | 'forgot' | 'terms' | null>(null);
@@ -396,75 +301,9 @@ export default function App() {
     }
   };
 
-  // Music handlers
-  const handleMusicUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const fileName = file.name.replace(/\.[^/.]+$/, '');
-      const reader = new FileReader();
-      reader.onload = () => {
-        setUserProfile((prev) => ({
-          ...prev,
-          musicUrl: reader.result as string,
-          musicName: fileName,
-          musicType: 'upload'
-        }));
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const playProfileMusic = () => {
-    if (userProfile.musicType === 'upload' && userProfile.musicUrl) {
-      if (audioElementRef.current) {
-        audioElementRef.current.volume = userProfile.musicVolume;
-        audioElementRef.current.play().catch(() => {});
-        setIsMusicPlaying(true);
-      }
-    } else {
-      musicSynth.setVolume(userProfile.musicVolume);
-      musicSynth.playTrack(
-        (userProfile.musicType === 'upload' ? 'synthwave' : userProfile.musicType) as any
-      );
-      setIsMusicPlaying(true);
-    }
-  };
-
-  const stopProfileMusic = () => {
-    if (audioElementRef.current) {
-      audioElementRef.current.pause();
-    }
-    musicSynth.stop();
-    setIsMusicPlaying(false);
-  };
-
-  // Autoplay music when opening profile in view mode
-  useEffect(() => {
-    if (profileModalOpen && profileViewMode === 'view' && userProfile.musicAutoplay) {
-      playProfileMusic();
-    } else {
-      stopProfileMusic();
-    }
-    return () => {
-      stopProfileMusic();
-    };
-  }, [profileModalOpen, profileViewMode]);
-
   // Open Edit Sub-Modal with prefilled values
   const openEditSubModal = (
-    type:
-      | 'info'
-      | 'username'
-      | 'bio'
-      | 'mood'
-      | 'glow'
-      | 'profileBorder'
-      | 'pfpBorder'
-      | 'music'
-      | 'effect'
-      | 'nameplate'
-      | 'badges'
-      | 'chatTheme'
+    type: 'info' | 'username' | 'bio' | 'mood' | 'glow' | 'profileBorder' | 'pfpBorder'
   ) => {
     if (type === 'info') {
       setTempAge(userProfile.age);
@@ -667,17 +506,9 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div
-                        className={`mt-1 p-2.5 px-3 rounded-xl max-w-2xl border ${
-                          msg.sender === currentUser.username
-                            ? (CHAT_THEMES.find((t) => t.id === userProfile.chatThemeId)?.bubbleClass || 'bg-[#181820] border-[#262632]')
-                            : 'bg-[#181820] border-[#262632]'
-                        }`}
-                      >
-                        <p className="text-white font-medium text-sm sm:text-base break-words leading-relaxed">
-                          {msg.text}
-                        </p>
-                      </div>
+                      <p className="text-white font-medium text-sm sm:text-base mt-0.5 break-words leading-relaxed">
+                        {msg.text}
+                      </p>
                     </div>
                   </div>
                 ))
@@ -699,7 +530,6 @@ export default function App() {
                     </span>
                   </div>
                 </div>
-
                 <button
                   type="button"
                   onClick={() => setShowTopic(false)}
@@ -715,7 +545,7 @@ export default function App() {
             <div className="p-4 pt-1 bg-[#111114]">
               <form
                 onSubmit={handleSendMessage}
-                className="bg-[#18181e] border border-[#24242d] rounded-2xl px-4 py-2.5 flex items-center gap-2 focus-within:border-purple-500/70 transition-colors shadow-lg"
+                className="bg-[#18181e] border border-[#24242d] rounded-2xl px-4 py-2.5 flex items-center gap-2 focus-within:border-cyan-500/60 transition-colors shadow-lg"
               >
                 <input
                   type="text"
@@ -737,13 +567,13 @@ export default function App() {
                   type="submit"
                   disabled={!inputText.trim()}
                   aria-label="Send message"
-                  className={`p-2 rounded-xl transition-all cursor-pointer ${
+                  className={`p-1.5 rounded-full transition-all cursor-pointer ${
                     inputText.trim()
-                      ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/30'
+                      ? 'text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10'
                       : 'text-zinc-600'
                   }`}
                 >
-                  <SendHorizontal className="w-4 h-4" />
+                  <SendHorizontal className="w-5 h-5" />
                 </button>
               </form>
             </div>
@@ -1056,367 +886,152 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Username, Title, Badges & Mood */}
+                {/* Username & Mood */}
                 <div className="flex-1 min-w-0 pb-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h2 className="text-xl sm:text-2xl font-black text-white tracking-wide truncate">
-                      {currentUser.username}
-                    </h2>
-                    {/* Nameplate Title */}
-                    {userProfile.nameplateId && userProfile.nameplateId !== 'title-none' && (
-                      <span
-                        className={`text-[10px] px-2 py-0.5 rounded-md shrink-0 ${
-                          NAMEPLATE_TITLES.find((t) => t.id === userProfile.nameplateId)?.styleClass || ''
-                        }`}
-                      >
-                        {NAMEPLATE_TITLES.find((t) => t.id === userProfile.nameplateId)?.title}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Badges list */}
-                  {userProfile.badgeIds && userProfile.badgeIds.length > 0 && (
-                    <div className="flex items-center gap-1.5 mt-1">
-                      {userProfile.badgeIds.map((bId) => {
-                        const b = COLLECTIBLE_BADGES.find((x) => x.id === bId);
-                        return b ? (
-                          <span
-                            key={b.id}
-                            title={b.name}
-                            className="w-5 h-5 rounded-md bg-purple-900/40 border border-purple-500/30 flex items-center justify-center text-xs cursor-default shadow-xs"
-                          >
-                            {b.emoji}
-                          </span>
-                        ) : null;
-                      })}
-                    </div>
-                  )}
-
+                  <h2 className="text-xl sm:text-2xl font-black text-white tracking-wide truncate">
+                    {currentUser.username}
+                  </h2>
                   {userProfile.mood ? (
-                    <p className="text-xs text-purple-300 font-medium truncate mt-1">
+                    <p className="text-xs text-cyan-400 font-medium truncate mt-0.5">
                       {userProfile.mood}
                     </p>
                   ) : (
-                    <p className="text-xs text-zinc-500 truncate mt-1">Online</p>
+                    <p className="text-xs text-zinc-500 truncate mt-0.5">Online</p>
                   )}
                 </div>
               </div>
 
-              {/* Hidden audio element for uploaded MP3 files */}
-              <audio ref={audioElementRef} src={userProfile.musicUrl || undefined} loop />
-
               {/* ========================================================= */}
-              {/* MODE 1: EDIT PROFILE                                      */}
-              {/* Categories: [ACCOUNT] [CUSTOMISATION] [MORE]              */}
+              {/* MODE 1: EDIT PROFILE (Only: Edit info, Edit about me, Edit username, Edit mood) */}
               {/* ========================================================= */}
               {profileViewMode === 'edit' && (
-                <div className="p-4 sm:p-5 pt-2 overflow-y-auto flex-1 flex flex-col space-y-3">
-                  {/* Category Tabs: [ACCOUNT] [CUSTOMISATION] [MORE] */}
-                  <div className="flex items-center gap-1.5 p-1 bg-[#181820] border border-[#262632] rounded-2xl shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setEditCategoryTab('account')}
-                      className={`flex-1 py-2 px-2.5 rounded-xl text-xs font-black tracking-wider uppercase transition-all cursor-pointer ${
-                        editCategoryTab === 'account'
-                          ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
-                          : 'text-zinc-400 hover:text-white hover:bg-white/5'
-                      }`}
-                    >
-                      Account
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditCategoryTab('customisation')}
-                      className={`flex-1 py-2 px-2.5 rounded-xl text-xs font-black tracking-wider uppercase transition-all cursor-pointer ${
-                        editCategoryTab === 'customisation'
-                          ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
-                          : 'text-zinc-400 hover:text-white hover:bg-white/5'
-                      }`}
-                    >
-                      Customisation
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditCategoryTab('more')}
-                      className={`flex-1 py-2 px-2 rounded-xl text-xs font-black tracking-wider uppercase transition-all cursor-pointer flex items-center justify-center gap-1 ${
-                        editCategoryTab === 'more'
-                          ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
-                          : 'text-zinc-400 hover:text-white hover:bg-white/5'
-                      }`}
-                    >
-                      <span>More</span>
-                      <span className="text-[9px] font-bold px-1.5 py-0.2 bg-purple-900/60 text-purple-300 border border-purple-500/30 rounded-full hidden sm:inline">
-                        Soon
-                      </span>
-                    </button>
+                <div className="p-5 pt-3 overflow-y-auto flex-1 space-y-2.5">
+                  <div className="pb-1">
+                    <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                      Account Settings
+                    </span>
                   </div>
 
-                  {/* TAB 1: ACCOUNT */}
-                  {editCategoryTab === 'account' && (
-                    <div className="space-y-2.5 animate-in fade-in duration-150">
-                      {/* 1. Edit info */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('info')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <CreditCard className="w-4 h-4" />
-                        </div>
-                        <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                          Edit info
-                        </span>
-                      </button>
-
-                      {/* 2. Edit about me */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('bio')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <HelpCircle className="w-4 h-4" />
-                        </div>
-                        <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                          Edit about me
-                        </span>
-                      </button>
-
-                      {/* 3. Edit username */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('username')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <SquarePen className="w-4 h-4" />
-                        </div>
-                        <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                          Edit username
-                        </span>
-                      </button>
-
-                      {/* 4. Edit mood */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('mood')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <Heart className="w-4 h-4" />
-                        </div>
-                        <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                          Edit mood
-                        </span>
-                      </button>
+                  {/* 1. Edit info */}
+                  <button
+                    type="button"
+                    onClick={() => openEditSubModal('info')}
+                    className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-cyan-400 transition-colors">
+                      <CreditCard className="w-4 h-4" />
                     </div>
-                  )}
+                    <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
+                      Edit info
+                    </span>
+                  </button>
 
-                  {/* TAB 2: CUSTOMISATION */}
-                  {editCategoryTab === 'customisation' && (
-                    <div className="space-y-2.5 animate-in fade-in duration-150">
-                      {/* 1. Profile Music (NEW!) */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('music')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-purple-500/30 hover:border-purple-500/60 rounded-xl px-4 py-3 flex items-center gap-3 transition-all cursor-pointer text-left group shadow-sm"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-purple-900/40 border border-purple-500/30 flex items-center justify-center text-purple-300 group-hover:text-purple-200 transition-colors">
-                          <Music className="w-4 h-4" />
-                        </div>
-                        <div className="flex-1 flex items-center justify-between min-w-0">
-                          <div>
-                            <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors block">
-                              Profile music
-                            </span>
-                            <span className="text-[11px] text-purple-400 font-medium truncate block max-w-[140px]">
-                              {userProfile.musicName || 'No music set'}
-                            </span>
-                          </div>
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                            {userProfile.musicAutoplay ? 'Autoplay On' : 'Manual'}
-                          </span>
-                        </div>
-                      </button>
-
-                      {/* 2. User glow */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('glow')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <Sparkles className="w-4 h-4" />
-                        </div>
-                        <div className="flex-1 flex items-center justify-between">
-                          <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                            User glow
-                          </span>
-                          {userProfile.glowColor ? (
-                            <span
-                              className="w-4 h-4 rounded-full border border-white/60 shadow-sm shrink-0"
-                              style={{
-                                backgroundColor: userProfile.glowColor,
-                                boxShadow: `0 0 8px ${userProfile.glowColor}`
-                              }}
-                            />
-                          ) : (
-                            <span className="text-xs text-zinc-500 font-normal">None</span>
-                          )}
-                        </div>
-                      </button>
-
-                      {/* 3. Profile borders */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('profileBorder')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <Layers className="w-4 h-4" />
-                        </div>
-                        <div className="flex-1 flex items-center justify-between">
-                          <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                            Profile borders
-                          </span>
-                          <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px]">
-                            {getProfileBorder(userProfile.profileBorderId).name.replace(/^\d+\.\s*/, '')}
-                          </span>
-                        </div>
-                      </button>
-
-                      {/* 4. Profile picture borders */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('pfpBorder')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <CircleDot className="w-4 h-4" />
-                        </div>
-                        <div className="flex-1 flex items-center justify-between">
-                          <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                            Profile picture borders
-                          </span>
-                          <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px]">
-                            {getPfpBorder(userProfile.pfpBorderId).name.replace(/^\d+\.\s*/, '')}
-                          </span>
-                        </div>
-                      </button>
-
-                      {/* 5. Profile Theme & Particle FX */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('effect')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <Wand2 className="w-4 h-4" />
-                        </div>
-                        <div className="flex-1 flex items-center justify-between">
-                          <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                            Profile theme FX
-                          </span>
-                          <span className="text-xs text-purple-400 font-medium truncate max-w-[130px]">
-                            {PROFILE_EFFECTS.find((e) => e.id === userProfile.profileEffectId)?.name || 'None'}
-                          </span>
-                        </div>
-                      </button>
-
-                      {/* 6. Nameplate Title Tag */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('nameplate')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <Sparkle className="w-4 h-4" />
-                        </div>
-                        <div className="flex-1 flex items-center justify-between">
-                          <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                            Nameplate title
-                          </span>
-                          <span className="text-xs text-purple-400 font-medium truncate max-w-[130px]">
-                            {NAMEPLATE_TITLES.find((t) => t.id === userProfile.nameplateId)?.title || 'None'}
-                          </span>
-                        </div>
-                      </button>
-
-                      {/* 7. Collectible Badges */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('badges')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <Award className="w-4 h-4" />
-                        </div>
-                        <div className="flex-1 flex items-center justify-between">
-                          <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                            Profile badge pins
-                          </span>
-                          <div className="flex items-center gap-1">
-                            {userProfile.badgeIds.map((bId) => {
-                              const b = COLLECTIBLE_BADGES.find((x) => x.id === bId);
-                              return b ? <span key={b.id} className="text-xs">{b.emoji}</span> : null;
-                            })}
-                          </div>
-                        </div>
-                      </button>
-
-                      {/* 8. Chat bubble theme */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('chatTheme')}
-                        className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-purple-400 transition-colors">
-                          <Palette className="w-4 h-4" />
-                        </div>
-                        <div className="flex-1 flex items-center justify-between">
-                          <span className="text-sm font-bold text-white group-hover:text-purple-200 transition-colors">
-                            Chat bubble theme
-                          </span>
-                          <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px]">
-                            {CHAT_THEMES.find((t) => t.id === userProfile.chatThemeId)?.name || 'Classic'}
-                          </span>
-                        </div>
-                      </button>
+                  {/* 2. Edit about me (Edit bio) */}
+                  <button
+                    type="button"
+                    onClick={() => openEditSubModal('bio')}
+                    className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-cyan-400 transition-colors">
+                      <HelpCircle className="w-4 h-4" />
                     </div>
-                  )}
+                    <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
+                      Edit about me
+                    </span>
+                  </button>
 
-                  {/* TAB 3: MORE COMING SOON */}
-                  {editCategoryTab === 'more' && (
-                    <div className="space-y-3 animate-in fade-in duration-150 py-2">
-                      <div className="bg-gradient-to-br from-purple-950/40 via-[#181822] to-indigo-950/30 border border-purple-500/30 rounded-2xl p-4 text-center">
-                        <Sparkles className="w-8 h-8 text-purple-400 mx-auto mb-2 animate-pulse" />
-                        <h4 className="font-extrabold text-white text-base">More Coming Soon!</h4>
-                        <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
-                          We are actively developing even more epic customization features for your Chatflux profile.
-                        </p>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2.5 text-left">
-                        {[
-                          { title: 'Animated Stickers', icon: '🎨', desc: 'Custom GIF pins on card' },
-                          { title: 'Voice Status Notes', icon: '🎙️', desc: '10s audio voice snippet' },
-                          { title: '3D Spatial Avatars', icon: '🔮', desc: 'Interactive 3D profile' },
-                          { title: 'Sound FX Pack', icon: '🔊', desc: 'Custom chat sound effects' },
-                          { title: 'Profile Mini-Games', icon: '🎮', desc: 'Arcade leaderboard card' },
-                          { title: 'Custom Shader FX', icon: '⚡', desc: 'WebGL fluid card effects' }
-                        ].map((item, i) => (
-                          <div
-                            key={i}
-                            className="bg-[#181820] border border-[#262632] rounded-xl p-3 opacity-80 hover:opacity-100 transition-opacity"
-                          >
-                            <span className="text-lg block mb-1">{item.icon}</span>
-                            <span className="text-xs font-bold text-white block">{item.title}</span>
-                            <span className="text-[10px] text-zinc-500 block leading-tight mt-0.5">{item.desc}</span>
-                          </div>
-                        ))}
-                      </div>
+                  {/* 3. Edit username */}
+                  <button
+                    type="button"
+                    onClick={() => openEditSubModal('username')}
+                    className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-cyan-400 transition-colors">
+                      <SquarePen className="w-4 h-4" />
                     </div>
-                  )}
+                    <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
+                      Edit username
+                    </span>
+                  </button>
+
+                  {/* 4. Edit mood */}
+                  <button
+                    type="button"
+                    onClick={() => openEditSubModal('mood')}
+                    className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-cyan-400 transition-colors">
+                      <Heart className="w-4 h-4" />
+                    </div>
+                    <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
+                      Edit mood
+                    </span>
+                  </button>
+
+                  {/* 5. User glow */}
+                  <button
+                    type="button"
+                    onClick={() => openEditSubModal('glow')}
+                    className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-cyan-400 transition-colors">
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 flex items-center justify-between">
+                      <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
+                        User glow
+                      </span>
+                      {userProfile.glowColor ? (
+                        <span
+                          className="w-4 h-4 rounded-full border border-white/60 shadow-sm shrink-0"
+                          style={{
+                            backgroundColor: userProfile.glowColor,
+                            boxShadow: `0 0 8px ${userProfile.glowColor}`
+                          }}
+                        />
+                      ) : (
+                        <span className="text-xs text-zinc-500 font-normal">None</span>
+                      )}
+                    </div>
+                  </button>
+
+                  {/* 6. Profile borders */}
+                  <button
+                    type="button"
+                    onClick={() => openEditSubModal('profileBorder')}
+                    className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-cyan-400 transition-colors">
+                      <Layers className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 flex items-center justify-between">
+                      <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
+                        Profile borders
+                      </span>
+                      <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px]">
+                        {getProfileBorder(userProfile.profileBorderId).name.replace(/^\d+\.\s*/, '')}
+                      </span>
+                    </div>
+                  </button>
+
+                  {/* 7. Profile picture borders */}
+                  <button
+                    type="button"
+                    onClick={() => openEditSubModal('pfpBorder')}
+                    className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-cyan-400 transition-colors">
+                      <CircleDot className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 flex items-center justify-between">
+                      <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
+                        Profile picture borders
+                      </span>
+                      <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px]">
+                        {getPfpBorder(userProfile.pfpBorderId).name.replace(/^\d+\.\s*/, '')}
+                      </span>
+                    </div>
+                  </button>
                 </div>
               )}
 
@@ -1425,92 +1040,15 @@ export default function App() {
               {/* Only Info and About me tabs (No friends, gifts, etc.)    */}
               {/* ========================================================= */}
               {profileViewMode === 'view' && (
-                <div className="p-4 sm:p-5 pt-2 overflow-y-auto flex-1 flex flex-col relative">
-                  {/* Theme Effect Overlay */}
-                  {userProfile.profileEffectId !== 'effect-none' && (
-                    <div className="absolute inset-0 pointer-events-none overflow-hidden opacity-30 z-0">
-                      {userProfile.profileEffectId === 'effect-stars' && (
-                        <div className="w-full h-full bg-[radial-gradient(#c084fc_1.5px,transparent_1.5px)] [background-size:18px_18px] animate-pulse" />
-                      )}
-                      {userProfile.profileEffectId === 'effect-sakura' && (
-                        <div className="w-full h-full bg-[radial-gradient(#f472b6_2px,transparent_2px)] [background-size:24px_24px]" />
-                      )}
-                      {userProfile.profileEffectId === 'effect-hearts' && (
-                        <div className="w-full h-full bg-[radial-gradient(#ec4899_2px,transparent_2px)] [background-size:28px_28px]" />
-                      )}
-                      {userProfile.profileEffectId === 'effect-cybergrid' && (
-                        <div className="w-full h-full bg-[linear-gradient(to_right,#8b5cf615_1px,transparent_1px),linear-gradient(to_bottom,#8b5cf615_1px,transparent_1px)] [background-size:20px_20px]" />
-                      )}
-                      {userProfile.profileEffectId === 'effect-gold' && (
-                        <div className="w-full h-full bg-[radial-gradient(#f59e0b_2px,transparent_2px)] [background-size:22px_22px] animate-pulse" />
-                      )}
-                      {userProfile.profileEffectId === 'effect-fire' && (
-                        <div className="w-full h-full bg-[radial-gradient(#ef4444_2px,transparent_2px)] [background-size:20px_20px]" />
-                      )}
-                      {userProfile.profileEffectId === 'effect-matrix' && (
-                        <div className="w-full h-full bg-[radial-gradient(#10b981_1.5px,transparent_1.5px)] [background-size:16px_16px]" />
-                      )}
-                    </div>
-                  )}
-
-                  {/* Profile Music Player Widget in View Mode */}
-                  <div className="relative z-10 mb-3.5 bg-gradient-to-r from-purple-950/50 via-[#191924] to-purple-950/40 border border-purple-500/30 rounded-2xl p-2.5 px-3.5 flex items-center justify-between shadow-lg shadow-purple-950/30 shrink-0">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div
-                        className={`w-8 h-8 rounded-full bg-purple-900/60 border border-purple-400/40 flex items-center justify-center shrink-0 ${
-                          isMusicPlaying ? 'animate-vinyl' : ''
-                        }`}
-                      >
-                        <Disc className="w-4 h-4 text-purple-300" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-bold text-white truncate max-w-[130px] sm:max-w-[180px]">
-                            {userProfile.musicName || 'Profile Music'}
-                          </span>
-                          {/* Animated Bouncing Equalizer Bars */}
-                          {isMusicPlaying && (
-                            <div className="flex items-end gap-0.5 h-3 shrink-0">
-                              <span className="w-0.5 bg-purple-400 rounded-full eq-bar-1" />
-                              <span className="w-0.5 bg-purple-300 rounded-full eq-bar-2" />
-                              <span className="w-0.5 bg-pink-400 rounded-full eq-bar-3" />
-                              <span className="w-0.5 bg-purple-400 rounded-full eq-bar-4" />
-                            </div>
-                          )}
-                        </div>
-                        <span className="text-[10px] text-purple-300/80 font-semibold block">
-                          {isMusicPlaying ? 'Background music playing' : 'Music paused'}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (isMusicPlaying) stopProfileMusic();
-                          else playProfileMusic();
-                        }}
-                        className="w-7 h-7 rounded-lg bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center transition-colors cursor-pointer shadow-md shadow-purple-600/30"
-                        title={isMusicPlaying ? 'Pause music' : 'Play music'}
-                      >
-                        {isMusicPlaying ? (
-                          <Pause className="w-3.5 h-3.5" />
-                        ) : (
-                          <Play className="w-3.5 h-3.5 ml-0.5" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
+                <div className="p-5 pt-2 overflow-y-auto flex-1 flex flex-col">
                   {/* Two Tabs: Info and About me */}
-                  <div className="relative z-10 flex items-center gap-2 border-b border-[#22222a] pb-3 mb-4 shrink-0">
+                  <div className="flex items-center gap-2 border-b border-[#22222a] pb-3 mb-4">
                     <button
                       type="button"
                       onClick={() => setPublicProfileTab('info')}
                       className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
                         publicProfileTab === 'info'
-                          ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
+                          ? 'bg-[#252532] text-white shadow-sm'
                           : 'text-zinc-400 hover:text-white hover:bg-white/5'
                       }`}
                     >
@@ -1521,7 +1059,7 @@ export default function App() {
                       onClick={() => setPublicProfileTab('aboutme')}
                       className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
                         publicProfileTab === 'aboutme'
-                          ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
+                          ? 'bg-[#252532] text-white shadow-sm'
                           : 'text-zinc-400 hover:text-white hover:bg-white/5'
                       }`}
                     >
@@ -1670,7 +1208,7 @@ export default function App() {
                               }));
                               setActiveEditSubModal(null);
                             }}
-                            className="bg-purple-600 hover:bg-purple-500 text-white font-bold px-6 py-2.5 rounded-xl text-sm transition-colors cursor-pointer shadow-lg shadow-purple-600/30"
+                            className="bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold px-6 py-2.5 rounded-xl text-sm transition-colors cursor-pointer shadow-md shadow-cyan-500/20"
                           >
                             Save
                           </button>
@@ -1699,7 +1237,7 @@ export default function App() {
                           value={tempBio}
                           onChange={(e) => setTempBio(e.target.value)}
                           placeholder="Tell everyone about yourself..."
-                          className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl p-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500 resize-none"
+                          className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl p-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500 resize-none"
                         />
 
                         <div>
@@ -1709,7 +1247,7 @@ export default function App() {
                               setUserProfile((p) => ({ ...p, bio: tempBio }));
                               setActiveEditSubModal(null);
                             }}
-                            className="bg-purple-600 hover:bg-purple-500 text-white font-bold px-6 py-2.5 rounded-xl text-sm transition-colors cursor-pointer shadow-lg shadow-purple-600/30"
+                            className="bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold px-6 py-2.5 rounded-xl text-sm transition-colors cursor-pointer shadow-md shadow-cyan-500/20"
                           >
                             Save
                           </button>
@@ -1738,7 +1276,7 @@ export default function App() {
                           value={tempUsername}
                           onChange={(e) => setTempUsername(e.target.value)}
                           placeholder="Username"
-                          className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500"
+                          className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
                         />
 
                         <div>
@@ -1750,7 +1288,7 @@ export default function App() {
                               }
                               setActiveEditSubModal(null);
                             }}
-                            className="bg-purple-600 hover:bg-purple-500 text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center gap-2 shadow-lg shadow-purple-600/30"
+                            className="bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center gap-2 shadow-md shadow-cyan-500/20"
                           >
                             <Save className="w-4 h-4" />
                             <span>Save</span>
@@ -1780,7 +1318,7 @@ export default function App() {
                           value={tempMood}
                           onChange={(e) => setTempMood(e.target.value)}
                           placeholder="What's your current mood?"
-                          className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500"
+                          className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
                         />
 
                         <div>
@@ -1790,7 +1328,7 @@ export default function App() {
                               setUserProfile((p) => ({ ...p, mood: tempMood.trim() }));
                               setActiveEditSubModal(null);
                             }}
-                            className="bg-purple-600 hover:bg-purple-500 text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center gap-2 shadow-lg shadow-purple-600/30"
+                            className="bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center gap-2 shadow-md shadow-cyan-500/20"
                           >
                             <Save className="w-4 h-4" />
                             <span>Save</span>
@@ -1805,7 +1343,7 @@ export default function App() {
                     <div className="w-full max-w-[380px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100">
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                          <Sparkles className="w-4 h-4 text-purple-400" />
+                          <Sparkles className="w-4 h-4 text-cyan-400" />
                           <h3 className="text-base font-bold text-white">User glow</h3>
                         </div>
                         <button
@@ -1843,7 +1381,6 @@ export default function App() {
                             avatarUrl={userProfile.avatarUrl}
                             className="w-10 h-10"
                             showOnline={true}
-                            pfpBorderClass={getPfpBorder(userProfile.pfpBorderId).pfpBorderClass}
                           />
                           <div className="flex-1 min-w-0">
                             <span className="font-bold text-white text-sm truncate block">
@@ -1869,7 +1406,7 @@ export default function App() {
                             title="No glow"
                             className={`h-9 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${
                               tempGlowColor === null
-                                ? 'border-purple-400 bg-white/10 ring-2 ring-purple-400/50'
+                                ? 'border-cyan-400 bg-white/10 ring-2 ring-cyan-400/50'
                                 : 'border-[#2b2b38] bg-[#1a1a22] hover:border-zinc-500'
                             }`}
                           >
@@ -1877,8 +1414,8 @@ export default function App() {
                           </button>
 
                           {[
-                            { name: 'Purple', color: '#a855f7' },
                             { name: 'Cyan', color: '#00f0ff' },
+                            { name: 'Purple', color: '#a855f7' },
                             { name: 'Pink', color: '#ec4899' },
                             { name: 'Emerald', color: '#10b981' },
                             { name: 'Blue', color: '#3b82f6' },
@@ -1923,7 +1460,7 @@ export default function App() {
                           <label className="text-xs text-zinc-400 flex items-center gap-2 cursor-pointer hover:text-white transition-colors">
                             <input
                               type="color"
-                              value={tempGlowColor || '#a855f7'}
+                              value={tempGlowColor || '#00f0ff'}
                               onChange={(e) => setTempGlowColor(e.target.value)}
                               className="w-7 h-7 rounded-lg bg-transparent border-0 cursor-pointer p-0"
                             />
@@ -1945,7 +1482,7 @@ export default function App() {
                             setUserProfile((p) => ({ ...p, glowColor: tempGlowColor }));
                             setActiveEditSubModal(null);
                           }}
-                          className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30"
+                          className="bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold px-6 py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center gap-2 shadow-md shadow-cyan-500/20"
                         >
                           <Save className="w-4 h-4" />
                           <span>Save</span>
@@ -1959,7 +1496,7 @@ export default function App() {
                     <div className="w-full max-w-[420px] bg-[#17171d] border border-[#262632] rounded-2xl p-4 sm:p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100 flex flex-col max-h-[92vh]">
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                          <Layers className="w-4 h-4 text-purple-400" />
+                          <Layers className="w-4 h-4 text-cyan-400" />
                           <h3 className="text-base font-bold text-white">Profile borders</h3>
                         </div>
                         <button
@@ -1991,7 +1528,7 @@ export default function App() {
                                 className="w-full h-full object-cover"
                               />
                             ) : (
-                              <div className="w-full h-full opacity-40 bg-[radial-gradient(#8b5cf6_1px,transparent_1px)] [background-size:16px_16px]" />
+                              <div className="w-full h-full opacity-40 bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:16px_16px]" />
                             )}
                           </div>
 
@@ -2047,7 +1584,7 @@ export default function App() {
                                 prev === 0 ? PROFILE_BORDERS.length - 1 : prev - 1
                               )
                             }
-                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-purple-400 transition-colors cursor-pointer shrink-0"
+                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-cyan-400 transition-colors cursor-pointer shrink-0"
                             title="Previous border"
                           >
                             <ChevronLeft className="w-5 h-5" />
@@ -2058,7 +1595,7 @@ export default function App() {
                             <select
                               value={tempProfileBorderIndex}
                               onChange={(e) => setTempProfileBorderIndex(Number(e.target.value))}
-                              className="w-full bg-[#20202a] hover:bg-[#252532] border border-[#2c2c3a] focus:border-purple-500 rounded-xl px-3 py-2.5 text-xs font-bold text-white appearance-none cursor-pointer pr-8 text-center truncate"
+                              className="w-full bg-[#20202a] hover:bg-[#252532] border border-[#2c2c3a] focus:border-cyan-500 rounded-xl px-3 py-2.5 text-xs font-bold text-white appearance-none cursor-pointer pr-8 text-center truncate"
                             >
                               {PROFILE_BORDERS.map((border, idx) => (
                                 <option key={border.id} value={idx}>
@@ -2077,7 +1614,7 @@ export default function App() {
                                 prev === PROFILE_BORDERS.length - 1 ? 0 : prev + 1
                               )
                             }
-                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-purple-400 transition-colors cursor-pointer shrink-0"
+                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-cyan-400 transition-colors cursor-pointer shrink-0"
                             title="Next border"
                           >
                             <ChevronRight className="w-5 h-5" />
@@ -2109,10 +1646,10 @@ export default function App() {
                               }));
                               setActiveEditSubModal(null);
                             }}
-                            className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30"
+                            className="w-full bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-cyan-500/20"
                           >
                             <Save className="w-4 h-4" />
-                            <span>Save Profile Border</span>
+                            <span>Save</span>
                           </button>
                         </div>
                       </div>
@@ -2124,7 +1661,7 @@ export default function App() {
                     <div className="w-full max-w-[400px] bg-[#17171d] border border-[#262632] rounded-2xl p-4 sm:p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100 flex flex-col max-h-[92vh]">
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                          <CircleDot className="w-4 h-4 text-purple-400" />
+                          <CircleDot className="w-4 h-4 text-cyan-400" />
                           <h3 className="text-base font-bold text-white">Profile picture borders</h3>
                         </div>
                         <button
@@ -2181,7 +1718,7 @@ export default function App() {
                                 prev === 0 ? PFP_BORDERS.length - 1 : prev - 1
                               )
                             }
-                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-purple-400 transition-colors cursor-pointer shrink-0"
+                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-cyan-400 transition-colors cursor-pointer shrink-0"
                             title="Previous border"
                           >
                             <ChevronLeft className="w-5 h-5" />
@@ -2192,7 +1729,7 @@ export default function App() {
                             <select
                               value={tempPfpBorderIndex}
                               onChange={(e) => setTempPfpBorderIndex(Number(e.target.value))}
-                              className="w-full bg-[#20202a] hover:bg-[#252532] border border-[#2c2c3a] focus:border-purple-500 rounded-xl px-3 py-2.5 text-xs font-bold text-white appearance-none cursor-pointer pr-8 text-center truncate"
+                              className="w-full bg-[#20202a] hover:bg-[#252532] border border-[#2c2c3a] focus:border-cyan-500 rounded-xl px-3 py-2.5 text-xs font-bold text-white appearance-none cursor-pointer pr-8 text-center truncate"
                             >
                               {PFP_BORDERS.map((border, idx) => (
                                 <option key={border.id} value={idx}>
@@ -2211,7 +1748,7 @@ export default function App() {
                                 prev === PFP_BORDERS.length - 1 ? 0 : prev + 1
                               )
                             }
-                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-purple-400 transition-colors cursor-pointer shrink-0"
+                            className="w-10 h-10 rounded-xl bg-[#20202a] hover:bg-[#282836] border border-[#2c2c3a] flex items-center justify-center text-white hover:text-cyan-400 transition-colors cursor-pointer shrink-0"
                             title="Next border"
                           >
                             <ChevronRight className="w-5 h-5" />
@@ -2243,420 +1780,13 @@ export default function App() {
                               }));
                               setActiveEditSubModal(null);
                             }}
-                            className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30"
+                            className="w-full bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-cyan-500/20"
                           >
                             <Save className="w-4 h-4" />
-                            <span>Save PFP Border</span>
+                            <span>Save</span>
                           </button>
                         </div>
                       </div>
-                    </div>
-                  )}
-
-                  {/* 8. Profile Music sub-modal */}
-                  {activeEditSubModal === 'music' && (
-                    <div className="w-full max-w-[420px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100 flex flex-col max-h-[92vh] overflow-y-auto">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <Music className="w-4 h-4 text-purple-400" />
-                          <h3 className="text-base font-bold text-white">Profile Music</h3>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            stopProfileMusic();
-                            setActiveEditSubModal(null);
-                          }}
-                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <p className="text-xs text-zinc-400 mb-3 leading-relaxed">
-                        Upload your custom <span className="text-purple-300 font-semibold">.mp3</span> or pick a synth track. It will autoplay in the background when someone views your profile!
-                      </p>
-
-                      {/* Hidden music input */}
-                      <input
-                        type="file"
-                        ref={musicInputRef}
-                        accept="audio/*"
-                        className="hidden"
-                        onChange={handleMusicUpload}
-                      />
-
-                      {/* Upload MP3 button */}
-                      <div className="mb-3.5">
-                        <button
-                          type="button"
-                          onClick={() => musicInputRef.current?.click()}
-                          className="w-full bg-purple-950/40 hover:bg-purple-900/60 border border-purple-500/40 rounded-xl p-3.5 flex items-center justify-center gap-2.5 transition-colors cursor-pointer text-purple-200 group"
-                        >
-                          <Upload className="w-4 h-4 text-purple-400 group-hover:scale-110 transition-transform" />
-                          <span className="text-xs font-bold">
-                            {userProfile.musicType === 'upload' && userProfile.musicUrl
-                              ? `Uploaded: ${userProfile.musicName}.mp3`
-                              : 'Upload .MP3 / Audio Track'}
-                          </span>
-                        </button>
-                      </div>
-
-                      {/* Preset Tracks */}
-                      <div className="space-y-2 mb-3.5">
-                        <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">
-                          Or Choose A Preset Track
-                        </span>
-                        <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                          {PRESET_TRACKS.map((track) => (
-                            <button
-                              key={track.id}
-                              type="button"
-                              onClick={() => {
-                                setUserProfile((p) => ({
-                                  ...p,
-                                  musicType: track.synthType || 'synthwave',
-                                  musicName: track.name,
-                                  musicUrl: null
-                                }));
-                              }}
-                              className={`w-full p-2.5 rounded-xl border flex items-center justify-between text-left transition-all cursor-pointer ${
-                                userProfile.musicType === track.synthType
-                                  ? 'bg-purple-600/20 border-purple-500 text-white'
-                                  : 'bg-[#191922] border-[#272736] text-zinc-300 hover:border-zinc-500'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2.5 min-w-0">
-                                <Disc className={`w-4 h-4 shrink-0 ${userProfile.musicType === track.synthType ? 'text-purple-400 animate-spin' : 'text-zinc-500'}`} />
-                                <div className="min-w-0">
-                                  <span className="text-xs font-bold block truncate">{track.name}</span>
-                                  <span className="text-[10px] text-zinc-500 block">{track.genre}</span>
-                                </div>
-                              </div>
-                              {userProfile.musicType === track.synthType && (
-                                <Check className="w-4 h-4 text-purple-400 shrink-0" />
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Autoplay & Volume controls */}
-                      <div className="bg-[#14141a] border border-[#262632] rounded-xl p-3 space-y-3 mb-4">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-zinc-300">Autoplay on Profile View</span>
-                          <button
-                            type="button"
-                            onClick={() => setUserProfile((p) => ({ ...p, musicAutoplay: !p.musicAutoplay }))}
-                            className={`w-11 h-6 rounded-full transition-colors cursor-pointer relative p-0.5 ${
-                              userProfile.musicAutoplay ? 'bg-purple-600' : 'bg-zinc-700'
-                            }`}
-                          >
-                            <span
-                              className={`block w-5 h-5 rounded-full bg-white shadow-md transition-transform ${
-                                userProfile.musicAutoplay ? 'translate-x-5' : 'translate-x-0'
-                              }`}
-                            />
-                          </button>
-                        </div>
-
-                        {/* Volume slider */}
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between text-[11px] text-zinc-400 font-medium">
-                            <span className="flex items-center gap-1.5">
-                              <Volume2 className="w-3.5 h-3.5 text-purple-400" />
-                              Volume
-                            </span>
-                            <span>{Math.round(userProfile.musicVolume * 100)}%</span>
-                          </div>
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.05"
-                            value={userProfile.musicVolume}
-                            onChange={(e) => {
-                              const vol = parseFloat(e.target.value);
-                              setUserProfile((p) => ({ ...p, musicVolume: vol }));
-                              musicSynth.setVolume(vol);
-                              if (audioElementRef.current) audioElementRef.current.volume = vol;
-                            }}
-                            className="w-full accent-purple-500 cursor-pointer h-1.5 bg-zinc-800 rounded-lg"
-                          />
-                        </div>
-
-                        {/* Live Audio Test Play button */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (isMusicPlaying) stopProfileMusic();
-                            else playProfileMusic();
-                          }}
-                          className="w-full bg-[#20202c] hover:bg-[#28283a] text-purple-300 border border-purple-500/30 rounded-lg py-2 text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
-                        >
-                          {isMusicPlaying ? (
-                            <>
-                              <Pause className="w-3.5 h-3.5" /> Stop Preview
-                            </>
-                          ) : (
-                            <>
-                              <Play className="w-3.5 h-3.5" /> Test Play Sound
-                            </>
-                          )}
-                        </button>
-                      </div>
-
-                      {/* Save button */}
-                      <div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            stopProfileMusic();
-                            setActiveEditSubModal(null);
-                          }}
-                          className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30"
-                        >
-                          <Save className="w-4 h-4" />
-                          <span>Save Music</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 9. Profile Theme FX sub-modal */}
-                  {activeEditSubModal === 'effect' && (
-                    <div className="w-full max-w-[400px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100 flex flex-col max-h-[92vh] overflow-y-auto">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <Wand2 className="w-4 h-4 text-purple-400" />
-                          <h3 className="text-base font-bold text-white">Profile Theme FX</h3>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setActiveEditSubModal(null)}
-                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <p className="text-xs text-zinc-400 mb-3 leading-relaxed">
-                        Ambient animated particle overlays rendered across your profile view card!
-                      </p>
-
-                      <div className="grid grid-cols-2 gap-2 mb-4">
-                        {PROFILE_EFFECTS.map((fx) => (
-                          <button
-                            key={fx.id}
-                            type="button"
-                            onClick={() => setUserProfile((p) => ({ ...p, profileEffectId: fx.id }))}
-                            className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                              userProfile.profileEffectId === fx.id
-                                ? 'bg-purple-600/20 border-purple-500 ring-2 ring-purple-500/40 text-white'
-                                : 'bg-[#181822] border-[#272736] text-zinc-400 hover:text-white hover:border-zinc-500'
-                            }`}
-                          >
-                            <span className="text-xl mb-1">{fx.icon}</span>
-                            <div>
-                              <span className="text-xs font-bold block text-white">{fx.name}</span>
-                              <span className="text-[10px] text-zinc-500 leading-tight block mt-0.5">{fx.description}</span>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => setActiveEditSubModal(null)}
-                        className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30"
-                      >
-                        <Save className="w-4 h-4" />
-                        <span>Save Theme FX</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {/* 10. Nameplate Title sub-modal */}
-                  {activeEditSubModal === 'nameplate' && (
-                    <div className="w-full max-w-[400px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100 flex flex-col max-h-[92vh] overflow-y-auto">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <Sparkle className="w-4 h-4 text-purple-400" />
-                          <h3 className="text-base font-bold text-white">Nameplate Title</h3>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setActiveEditSubModal(null)}
-                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <p className="text-xs text-zinc-400 mb-3 leading-relaxed">
-                        Showcase a custom prestigious title badge on your profile card.
-                      </p>
-
-                      <div className="space-y-2 mb-4">
-                        {NAMEPLATE_TITLES.map((item) => (
-                          <button
-                            key={item.id}
-                            type="button"
-                            onClick={() => setUserProfile((p) => ({ ...p, nameplateId: item.id }))}
-                            className={`w-full p-2.5 rounded-xl border flex items-center justify-between transition-all cursor-pointer ${
-                              userProfile.nameplateId === item.id
-                                ? 'bg-purple-600/20 border-purple-500 text-white'
-                                : 'bg-[#181822] border-[#272736] text-zinc-300 hover:border-zinc-500'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              {item.id === 'title-none' ? (
-                                <span className="text-xs text-zinc-500">None</span>
-                              ) : (
-                                <span className={`text-[11px] px-2.5 py-0.5 rounded-md ${item.styleClass}`}>
-                                  {item.title}
-                                </span>
-                              )}
-                            </div>
-                            {userProfile.nameplateId === item.id && (
-                              <Check className="w-4 h-4 text-purple-400" />
-                            )}
-                          </button>
-                        ))}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => setActiveEditSubModal(null)}
-                        className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30"
-                      >
-                        <Save className="w-4 h-4" />
-                        <span>Save Title</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {/* 11. Profile Badges sub-modal */}
-                  {activeEditSubModal === 'badges' && (
-                    <div className="w-full max-w-[400px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100 flex flex-col max-h-[92vh] overflow-y-auto">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <Award className="w-4 h-4 text-purple-400" />
-                          <h3 className="text-base font-bold text-white">Profile Badges</h3>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setActiveEditSubModal(null)}
-                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <p className="text-xs text-zinc-400 mb-3 leading-relaxed">
-                        Select up to 3 collectible badge pins to display proudly on your profile card.
-                      </p>
-
-                      <div className="grid grid-cols-2 gap-2 mb-4">
-                        {COLLECTIBLE_BADGES.map((b) => {
-                          const isSelected = userProfile.badgeIds.includes(b.id);
-                          return (
-                            <button
-                              key={b.id}
-                              type="button"
-                              onClick={() => {
-                                setUserProfile((p) => {
-                                  if (isSelected) {
-                                    return { ...p, badgeIds: p.badgeIds.filter((id) => id !== b.id) };
-                                  } else {
-                                    if (p.badgeIds.length >= 3) {
-                                      return { ...p, badgeIds: [...p.badgeIds.slice(1), b.id] };
-                                    }
-                                    return { ...p, badgeIds: [...p.badgeIds, b.id] };
-                                  }
-                                });
-                              }}
-                              className={`p-2.5 rounded-xl border flex items-center gap-2.5 transition-all cursor-pointer ${
-                                isSelected
-                                  ? 'bg-purple-600/25 border-purple-500 text-white'
-                                  : 'bg-[#181822] border-[#272736] text-zinc-400 hover:text-white hover:border-zinc-500'
-                              }`}
-                            >
-                              <span className="text-xl">{b.emoji}</span>
-                              <div className="text-left flex-1 min-w-0">
-                                <span className="text-xs font-bold block text-white truncate">{b.name}</span>
-                              </div>
-                              {isSelected && <Check className="w-3.5 h-3.5 text-purple-400 shrink-0" />}
-                            </button>
-                          );
-                        })}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => setActiveEditSubModal(null)}
-                        className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30"
-                      >
-                        <Save className="w-4 h-4" />
-                        <span>Save Badges</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {/* 12. Chat Theme sub-modal */}
-                  {activeEditSubModal === 'chatTheme' && (
-                    <div className="w-full max-w-[400px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100 flex flex-col max-h-[92vh] overflow-y-auto">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <Palette className="w-4 h-4 text-purple-400" />
-                          <h3 className="text-base font-bold text-white">Chat Bubble Theme</h3>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setActiveEditSubModal(null)}
-                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <p className="text-xs text-zinc-400 mb-3 leading-relaxed">
-                        Customize how your chat messages glow in the main channel.
-                      </p>
-
-                      <div className="space-y-2 mb-4">
-                        {CHAT_THEMES.map((theme) => (
-                          <button
-                            key={theme.id}
-                            type="button"
-                            onClick={() => setUserProfile((p) => ({ ...p, chatThemeId: theme.id }))}
-                            className={`w-full p-2.5 rounded-xl border flex items-center justify-between transition-all cursor-pointer ${
-                              userProfile.chatThemeId === theme.id
-                                ? 'bg-purple-600/20 border-purple-500 text-white'
-                                : 'bg-[#181822] border-[#272736] text-zinc-300 hover:border-zinc-500'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2.5">
-                              <div className={`px-3 py-1 rounded-lg border text-xs font-bold ${theme.bubbleClass} ${theme.textColor}`}>
-                                Hello Chatflux!
-                              </div>
-                              <span className="text-xs font-bold text-white">{theme.name}</span>
-                            </div>
-                            {userProfile.chatThemeId === theme.id && (
-                              <Check className="w-4 h-4 text-purple-400" />
-                            )}
-                          </button>
-                        ))}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => setActiveEditSubModal(null)}
-                        className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30"
-                      >
-                        <Save className="w-4 h-4" />
-                        <span>Save Theme</span>
-                      </button>
                     </div>
                   )}
                 </div>
