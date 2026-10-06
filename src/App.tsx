@@ -21,7 +21,8 @@ import {
   Heart,
   Calendar,
   Users,
-  User
+  User,
+  Sparkles
 } from 'lucide-react';
 
 interface ChatMessage {
@@ -77,6 +78,7 @@ export default function App() {
     relationship: string;
     bio: string;
     mood: string;
+    glowColor: string | null;
   }>({
     avatarUrl: null,
     bannerUrl: null,
@@ -84,7 +86,8 @@ export default function App() {
     gender: 'MALE',
     relationship: 'Rather not say',
     bio: '',
-    mood: ''
+    mood: '',
+    glowColor: null
   });
 
   // Profile Modal State
@@ -92,14 +95,17 @@ export default function App() {
   const [profileViewMode, setProfileViewMode] = useState<'edit' | 'view'>('edit');
   const [publicProfileTab, setPublicProfileTab] = useState<'info' | 'aboutme'>('info');
 
-  // Sub-modal state for Edit actions (only info, username, bio, mood)
-  const [activeEditSubModal, setActiveEditSubModal] = useState<'info' | 'username' | 'bio' | 'mood' | null>(null);
+  // Sub-modal state for Edit actions (info, username, bio, mood, glow)
+  const [activeEditSubModal, setActiveEditSubModal] = useState<
+    'info' | 'username' | 'bio' | 'mood' | 'glow' | null
+  >(null);
   const [tempAge, setTempAge] = useState('17');
   const [tempGender, setTempGender] = useState('MALE');
   const [tempRelationship, setTempRelationship] = useState('Rather not say');
   const [tempUsername, setTempUsername] = useState('');
   const [tempBio, setTempBio] = useState('');
   const [tempMood, setTempMood] = useState('');
+  const [tempGlowColor, setTempGlowColor] = useState<string | null>(null);
 
   // Hidden file inputs for avatar & banner uploads
   const pfpInputRef = useRef<HTMLInputElement>(null);
@@ -134,6 +140,7 @@ export default function App() {
   const [showTopic, setShowTopic] = useState(true);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [playerPopoverOpen, setPlayerPopoverOpen] = useState(false);
+  const [popoverPos, setPopoverPos] = useState<{ top: number; right: number }>({ top: 80, right: 330 });
 
   // Welcome Guide State
   const [showGuide, setShowGuide] = useState(false);
@@ -146,6 +153,7 @@ export default function App() {
   const yearRef = useRef<HTMLDivElement>(null);
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const playerCardRef = useRef<HTMLDivElement>(null);
+  const playerPopoverRef = useRef<HTMLDivElement>(null);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -165,7 +173,12 @@ export default function App() {
       if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
         setShowProfileMenu(false);
       }
-      if (playerCardRef.current && !playerCardRef.current.contains(e.target as Node)) {
+      if (
+        playerCardRef.current &&
+        !playerCardRef.current.contains(e.target as Node) &&
+        playerPopoverRef.current &&
+        !playerPopoverRef.current.contains(e.target as Node)
+      ) {
         setPlayerPopoverOpen(false);
       }
     }
@@ -267,7 +280,7 @@ export default function App() {
   };
 
   // Open Edit Sub-Modal with prefilled values
-  const openEditSubModal = (type: 'info' | 'username' | 'bio' | 'mood') => {
+  const openEditSubModal = (type: 'info' | 'username' | 'bio' | 'mood' | 'glow') => {
     if (type === 'info') {
       setTempAge(userProfile.age);
       setTempGender(userProfile.gender);
@@ -278,6 +291,8 @@ export default function App() {
       setTempBio(userProfile.bio);
     } else if (type === 'mood') {
       setTempMood(userProfile.mood);
+    } else if (type === 'glow') {
+      setTempGlowColor(userProfile.glowColor);
     }
     setActiveEditSubModal(type);
   };
@@ -547,90 +562,121 @@ export default function App() {
 
               {/* USER LIST (Clicking card opens options on the left - Image 2) */}
               <div className="flex-1 overflow-y-auto px-3 space-y-2">
-                <div className="relative" ref={playerCardRef}>
-                  <div
-                    onClick={() => setPlayerPopoverOpen(!playerPopoverOpen)}
-                    className="bg-[#18181f] border border-[#2b2b38] hover:border-cyan-500/40 rounded-xl p-2.5 flex items-center gap-3 transition-colors cursor-pointer group"
-                  >
-                    <UserAvatar avatarUrl={userProfile.avatarUrl} className="w-10 h-10" showOnline={true} />
-                    <div className="flex-1 min-w-0">
-                      <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors block">
-                        {currentUser.username}
-                      </span>
-                      <p className="text-xs text-zinc-400 truncate">
-                        {userProfile.mood ? userProfile.mood : 'Online'}
-                      </p>
-                    </div>
+                <div
+                  ref={playerCardRef}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const popoverWidth = 240;
+                    const targetRight = window.innerWidth - rect.left + 14;
+                    setPopoverPos({
+                      top: Math.max(16, Math.min(window.innerHeight - 280, rect.top - 8)),
+                      right: Math.min(window.innerWidth - popoverWidth - 16, targetRight)
+                    });
+                    setPlayerPopoverOpen((prev) => !prev);
+                  }}
+                  style={
+                    userProfile.glowColor
+                      ? {
+                          borderColor: userProfile.glowColor,
+                          boxShadow: `0 0 16px ${userProfile.glowColor}99, inset 0 0 6px ${userProfile.glowColor}33`
+                        }
+                      : undefined
+                  }
+                  className={`bg-[#18181f] border ${
+                    userProfile.glowColor ? '' : 'border-[#2b2b38] hover:border-cyan-500/40'
+                  } rounded-xl p-2.5 flex items-center gap-3 transition-all cursor-pointer group`}
+                >
+                  <UserAvatar avatarUrl={userProfile.avatarUrl} className="w-10 h-10" showOnline={true} />
+                  <div className="flex-1 min-w-0">
+                    <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors block">
+                      {currentUser.username}
+                    </span>
+                    <p className="text-xs text-zinc-400 truncate">
+                      {userProfile.mood ? userProfile.mood : 'Online'}
+                    </p>
                   </div>
-
-                  {/* Options popover shown on the left of the player (Image 2) */}
-                  {playerPopoverOpen && (
-                    <div className="absolute right-full mr-3.5 top-0 w-60 bg-[#16161c] border border-[#282834] rounded-2xl shadow-2xl overflow-hidden z-40 text-center animate-in fade-in zoom-in-95 duration-150 flex flex-col">
-                      {/* Banner Strip */}
-                      <div className="h-16 w-full relative bg-gradient-to-r from-[#1f1f28] via-[#282834] to-[#1f1f28] shrink-0 overflow-hidden">
-                        {userProfile.bannerUrl ? (
-                          <img src={userProfile.bannerUrl} alt="Banner" className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full opacity-30 bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:12px_12px]" />
-                        )}
-                      </div>
-
-                      {/* Centered Circular Avatar with white border */}
-                      <div className="w-18 h-18 rounded-full border-2 border-white -mt-9 mx-auto overflow-hidden bg-[#24252e] shadow-xl relative shrink-0">
-                        {userProfile.avatarUrl ? (
-                          <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
-                        ) : (
-                          <svg viewBox="0 0 40 40" className="w-full h-full text-zinc-400 fill-current translate-y-1">
-                            <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
-                          </svg>
-                        )}
-                      </div>
-
-                      {/* User Details (without UK flag, without star, without likes) */}
-                      <div className="px-4 pt-2 pb-3">
-                        <h3 className="font-bold text-white text-base truncate">
-                          {currentUser.username}
-                        </h3>
-                        <p className="text-xs text-zinc-400 font-medium mt-0.5 truncate">
-                          {userProfile.age} years · {userProfile.gender}
-                        </p>
-                      </div>
-
-                      {/* Actions Section: View profile & Edit */}
-                      <div className="p-3 pt-2.5 border-t border-[#23232c] bg-[#131317] space-y-1.5">
-                        {/* 1. View profile button (views profile) */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPlayerPopoverOpen(false);
-                            setProfileViewMode('view');
-                            setProfileModalOpen(true);
-                          }}
-                          className="w-full bg-[#1e1e26] hover:bg-[#282834] text-white font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer"
-                        >
-                          <User className="w-4 h-4 text-zinc-300" />
-                          <span>View profile</span>
-                        </button>
-
-                        {/* 2. Edit button (edits profile) */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPlayerPopoverOpen(false);
-                            setProfileViewMode('edit');
-                            setProfileModalOpen(true);
-                          }}
-                          className="w-full hover:bg-[#1e1e26] text-white font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer"
-                        >
-                          <SquarePen className="w-4 h-4 text-cyan-400" />
-                          <span>Edit</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             </aside>
+          )}
+
+          {/* Options popover shown on the left of the player (Image 2) - Entire top bit is banner */}
+          {playerPopoverOpen && (
+            <div
+              ref={playerPopoverRef}
+              style={{ top: `${popoverPos.top}px`, right: `${popoverPos.right}px` }}
+              className="fixed w-64 bg-[#141419] border border-[#282834] rounded-2xl shadow-2xl overflow-hidden z-50 text-center animate-in fade-in zoom-in-95 duration-150 flex flex-col"
+            >
+              {/* Entire Top Bit covered by Banner */}
+              <div className="relative w-full overflow-hidden flex flex-col items-center pt-5 pb-4 px-4 text-center shrink-0">
+                {/* Banner background covering this whole top section */}
+                {userProfile.bannerUrl ? (
+                  <img
+                    src={userProfile.bannerUrl}
+                    alt="Banner"
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="absolute inset-0 w-full h-full bg-gradient-to-b from-[#282836] via-[#1e1e27] to-[#15151c]" />
+                )}
+
+                {/* Subtle gradient scrim overlay for contrast */}
+                <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-black/35 to-black/70 pointer-events-none" />
+
+                {/* Centered Circular Avatar with white border */}
+                <div className="w-20 h-20 rounded-full border-2 border-white overflow-hidden bg-[#24252e] shadow-2xl relative shrink-0 z-10">
+                  {userProfile.avatarUrl ? (
+                    <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                  ) : (
+                    <svg viewBox="0 0 40 40" className="w-full h-full text-zinc-400 fill-current translate-y-1">
+                      <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
+                    </svg>
+                  )}
+                </div>
+
+                {/* User Details over the banner (without UK flag, without star, without likes) */}
+                <div className="relative z-10 mt-2.5">
+                  <h3 className="font-extrabold text-white text-base tracking-wide drop-shadow-md truncate">
+                    {currentUser.username}
+                  </h3>
+                  <p className="text-xs text-zinc-300 font-medium mt-0.5 drop-shadow-sm truncate">
+                    {userProfile.age} years · {userProfile.gender}
+                  </p>
+                </div>
+              </div>
+
+              {/* Actions Section: View profile & Edit */}
+              <div className="p-3 pt-2.5 border-t border-[#23232c] bg-[#121216] space-y-1.5">
+                {/* 1. View profile button (views profile) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPlayerPopoverOpen(false);
+                    setProfileViewMode('view');
+                    setProfileModalOpen(true);
+                  }}
+                  className="w-full bg-[#1e1e26] hover:bg-[#282834] text-white font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer shadow-sm"
+                >
+                  <User className="w-4 h-4 text-zinc-300" />
+                  <span>View profile</span>
+                </button>
+
+                {/* 2. Edit button (edits profile) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPlayerPopoverOpen(false);
+                    setProfileViewMode('edit');
+                    setProfileModalOpen(true);
+                  }}
+                  className="w-full hover:bg-[#1e1e26] text-white font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer"
+                >
+                  <SquarePen className="w-4 h-4 text-cyan-400" />
+                  <span>Edit</span>
+                </button>
+              </div>
+            </div>
           )}
         </div>
 
@@ -858,6 +904,33 @@ export default function App() {
                     <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
                       Edit mood
                     </span>
+                  </button>
+
+                  {/* 5. User glow */}
+                  <button
+                    type="button"
+                    onClick={() => openEditSubModal('glow')}
+                    className="w-full bg-[#181820] hover:bg-[#20202a] border border-[#262632] rounded-xl px-4 py-3 flex items-center gap-3 transition-colors cursor-pointer text-left group"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-[#242430] flex items-center justify-center text-zinc-300 group-hover:text-cyan-400 transition-colors">
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 flex items-center justify-between">
+                      <span className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors">
+                        User glow
+                      </span>
+                      {userProfile.glowColor ? (
+                        <span
+                          className="w-4 h-4 rounded-full border border-white/60 shadow-sm shrink-0"
+                          style={{
+                            backgroundColor: userProfile.glowColor,
+                            boxShadow: `0 0 8px ${userProfile.glowColor}`
+                          }}
+                        />
+                      ) : (
+                        <span className="text-xs text-zinc-500 font-normal">None</span>
+                      )}
+                    </div>
                   </button>
                 </div>
               )}
@@ -1161,6 +1234,159 @@ export default function App() {
                             <span>Save</span>
                           </button>
                         </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 5. User glow sub-modal */}
+                  {activeEditSubModal === 'glow' && (
+                    <div className="w-full max-w-[380px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="w-4 h-4 text-cyan-400" />
+                          <h3 className="text-base font-bold text-white">User glow</h3>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setActiveEditSubModal(null)}
+                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <p className="text-xs text-zinc-400 mb-3 leading-relaxed">
+                        Click a color, click save, and the outline of your user card in players online will change to that glow.
+                      </p>
+
+                      {/* Live preview of the player card */}
+                      <div className="mb-3.5">
+                        <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block mb-1.5">
+                          Card Outline Preview
+                        </span>
+                        <div
+                          style={
+                            tempGlowColor
+                              ? {
+                                  borderColor: tempGlowColor,
+                                  boxShadow: `0 0 16px ${tempGlowColor}99, inset 0 0 6px ${tempGlowColor}33`
+                                }
+                              : undefined
+                          }
+                          className={`bg-[#18181f] border ${
+                            tempGlowColor ? '' : 'border-[#2b2b38]'
+                          } rounded-xl p-2.5 flex items-center gap-3 transition-all`}
+                        >
+                          <UserAvatar
+                            avatarUrl={userProfile.avatarUrl}
+                            className="w-10 h-10"
+                            showOnline={true}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <span className="font-bold text-white text-sm truncate block">
+                              {currentUser?.username || 'Player'}
+                            </span>
+                            <p className="text-xs text-zinc-400 truncate">
+                              {userProfile.mood ? userProfile.mood : 'Online'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Glow Color Swatches */}
+                      <div className="space-y-2 mb-4">
+                        <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">
+                          Choose Color
+                        </span>
+                        <div className="grid grid-cols-6 gap-2">
+                          {/* None option */}
+                          <button
+                            type="button"
+                            onClick={() => setTempGlowColor(null)}
+                            title="No glow"
+                            className={`h-9 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${
+                              tempGlowColor === null
+                                ? 'border-cyan-400 bg-white/10 ring-2 ring-cyan-400/50'
+                                : 'border-[#2b2b38] bg-[#1a1a22] hover:border-zinc-500'
+                            }`}
+                          >
+                            <span className="text-[10px] font-bold text-zinc-400">None</span>
+                          </button>
+
+                          {[
+                            { name: 'Cyan', color: '#00f0ff' },
+                            { name: 'Purple', color: '#a855f7' },
+                            { name: 'Pink', color: '#ec4899' },
+                            { name: 'Emerald', color: '#10b981' },
+                            { name: 'Blue', color: '#3b82f6' },
+                            { name: 'Gold', color: '#f59e0b' },
+                            { name: 'Red', color: '#ef4444' },
+                            { name: 'Orange', color: '#f97316' },
+                            { name: 'Lime', color: '#84cc16' },
+                            { name: 'Magenta', color: '#d946ef' },
+                            { name: 'White', color: '#ffffff' }
+                          ].map((item) => (
+                            <button
+                              key={item.color}
+                              type="button"
+                              onClick={() => setTempGlowColor(item.color)}
+                              title={item.name}
+                              style={{
+                                backgroundColor: item.color,
+                                boxShadow:
+                                  tempGlowColor === item.color
+                                    ? `0 0 12px ${item.color}`
+                                    : undefined
+                              }}
+                              className={`h-9 rounded-xl border transition-all cursor-pointer flex items-center justify-center ${
+                                tempGlowColor === item.color
+                                  ? 'border-white scale-105 ring-2 ring-white/70'
+                                  : 'border-white/20 hover:scale-105 opacity-80 hover:opacity-100'
+                              }`}
+                            >
+                              {tempGlowColor === item.color && (
+                                <Check
+                                  className={`w-4 h-4 ${
+                                    item.color === '#ffffff' ? 'text-black' : 'text-white'
+                                  }`}
+                                />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Custom color picker */}
+                        <div className="pt-1 flex items-center justify-between">
+                          <label className="text-xs text-zinc-400 flex items-center gap-2 cursor-pointer hover:text-white transition-colors">
+                            <input
+                              type="color"
+                              value={tempGlowColor || '#00f0ff'}
+                              onChange={(e) => setTempGlowColor(e.target.value)}
+                              className="w-7 h-7 rounded-lg bg-transparent border-0 cursor-pointer p-0"
+                            />
+                            <span>Custom color picker</span>
+                          </label>
+                          {tempGlowColor && (
+                            <span className="text-[11px] font-mono text-zinc-400 uppercase">
+                              {tempGlowColor}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Save button */}
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUserProfile((p) => ({ ...p, glowColor: tempGlowColor }));
+                            setActiveEditSubModal(null);
+                          }}
+                          className="bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold px-6 py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center gap-2 shadow-md shadow-cyan-500/20"
+                        >
+                          <Save className="w-4 h-4" />
+                          <span>Save</span>
+                        </button>
                       </div>
                     </div>
                   )}
