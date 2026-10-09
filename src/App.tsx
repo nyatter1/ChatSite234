@@ -31,7 +31,9 @@ import {
   Play,
   Pause,
   Globe,
-  Languages
+  Languages,
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 import {
   PROFILE_BORDERS,
@@ -46,10 +48,18 @@ import { detectUserCountry, getInstantUserCountry } from './utils/countryDetect'
 import { uploadToCloudinary, deleteFromCloudinary } from './lib/cloudinary';
 import { compressAvatar, compressBanner, formatBytes } from './utils/imageCompressor';
 import {
+  hashPassword,
+  sanitizeDbKey,
+  isValidEmail,
+  isValidUsername
+} from './utils/auth';
+import {
   rtdb,
   ref,
   push,
   set,
+  update,
+  get,
   remove,
   onValue,
   query,
@@ -146,7 +156,7 @@ export default function App() {
   const initialGeo = getInstantUserCountry();
 
   // Authentication & Current User State (Loaded from localStorage)
-  const [currentUser, setCurrentUser] = useState<{ username: string; gender: string } | null>(() => {
+  const [currentUser, setCurrentUser] = useState<{ username: string; gender: string; email?: string } | null>(() => {
     try {
       const saved = localStorage.getItem('chat_community_user');
       return saved ? JSON.parse(saved) : null;
@@ -259,6 +269,8 @@ export default function App() {
   // Login form state
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginLoading, setLoginLoading] = useState(false);
 
   // Register form state
   const [regUsername, setRegUsername] = useState('');
@@ -268,6 +280,17 @@ export default function App() {
   const [birthDay, setBirthDay] = useState('Day');
   const [birthMonth, setBirthMonth] = useState('Month');
   const [birthYear, setBirthYear] = useState('Year');
+  const [regError, setRegError] = useState<string | null>(null);
+  const [regLoading, setRegLoading] = useState(false);
+
+  // Forgot password state
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotStatus, setForgotStatus] = useState<string | null>(null);
+  const [forgotLoading, setForgotLoading] = useState(false);
+
+  // Edit username submodal states
+  const [usernameEditError, setUsernameEditError] = useState<string | null>(null);
+  const [usernameEditLoading, setUsernameEditLoading] = useState(false);
 
   // Landing Dropdown states
   const [genderDropdownOpen, setGenderDropdownOpen] = useState(false);
@@ -417,11 +440,57 @@ export default function App() {
     }
   }, []);
 
+  // Startup verification: Validate that saved account exists in database and load latest saved profile (pfp, banner, music, etc.)
+  useEffect(() => {
+    if (currentUser && currentUser.username) {
+      const dbKey = sanitizeDbKey(currentUser.username);
+      get(ref(rtdb, `users/${dbKey}`))
+        .then((snap) => {
+          if (snap.exists()) {
+            const val = snap.val();
+            // Restore latest saved profile data from database
+            setUserProfile((prev) => ({
+              ...prev,
+              avatarUrl: val.avatarUrl || null,
+              avatarPublicId: val.avatarPublicId || null,
+              avatarDeleteToken: val.avatarDeleteToken || null,
+              bannerUrl: val.bannerUrl || null,
+              bannerPublicId: val.bannerPublicId || null,
+              bannerDeleteToken: val.bannerDeleteToken || null,
+              age: val.age ? String(val.age) : prev.age,
+              gender: val.gender || prev.gender,
+              relationship: val.relationship || prev.relationship,
+              country: val.country || prev.country,
+              language: val.language || prev.language,
+              bio: val.bio !== undefined ? val.bio : prev.bio,
+              mood: val.mood !== undefined ? val.mood : prev.mood,
+              glowColor: val.glowColor !== undefined ? val.glowColor : prev.glowColor,
+              glowThickness: typeof val.glowThickness === 'number' ? val.glowThickness : prev.glowThickness,
+              profileBorderId: val.profileBorderId || prev.profileBorderId,
+              profileBorderThickness: typeof val.profileBorderThickness === 'number' ? val.profileBorderThickness : prev.profileBorderThickness,
+              pfpBorderId: val.pfpBorderId || prev.pfpBorderId,
+              pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : prev.pfpBorderThickness,
+              musicTrack: val.musicTrack || null
+            }));
+          } else {
+            // Fake or non-existent account: force logout to prevent fake login
+            console.warn('Saved user not found in database. Clearing session.');
+            localStorage.removeItem('chat_community_user');
+            localStorage.removeItem('chat_community_profile');
+            setCurrentUser(null);
+          }
+        })
+        .catch((err) => {
+          console.warn('Initial account validation notice:', err);
+        });
+    }
+  }, []);
+
   // Presence detection: Set user online when connected and offline on disconnect
   useEffect(() => {
     if (!currentUser || !currentUser.username) return;
     try {
-      const sanitizedUsername = currentUser.username.toLowerCase().replace(/[.#$\[\]]/g, '_');
+      const sanitizedUsername = sanitizeDbKey(currentUser.username);
       const connectedRef = ref(rtdb, '.info/connected');
       const userOnlineRef = ref(rtdb, `users/${sanitizedUsername}/isOnline`);
       const userLastSeenRef = ref(rtdb, `users/${sanitizedUsername}/lastSeen`);
@@ -441,13 +510,13 @@ export default function App() {
     }
   }, [currentUser]);
 
-  // Sync current user profile to Realtime Database
+  // Sync current user profile changes to Realtime Database using update (preserving credentials)
   useEffect(() => {
     if (currentUser && currentUser.username) {
       try {
-        const sanitizedUsername = currentUser.username.toLowerCase().replace(/[.#$\[\]]/g, '_');
+        const sanitizedUsername = sanitizeDbKey(currentUser.username);
         const userRef = ref(rtdb, `users/${sanitizedUsername}`);
-        set(userRef, {
+        update(userRef, {
           username: currentUser.username,
           ...userProfile,
           isOnline: true,
@@ -557,36 +626,292 @@ export default function App() {
     setDayDropdownOpen(false);
     setMonthDropdownOpen(false);
     setYearDropdownOpen(false);
+    setLoginError(null);
+    setRegError(null);
+    setForgotStatus(null);
   };
 
-  // Sign up action
-  const handleSignUp = (e?: React.FormEvent) => {
+  // Sign up action: Enforce unique username & email, required credentials, and create persistent account
+  const handleSignUp = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const finalName = regUsername.trim() || 'Player';
-    setCurrentUser({
-      username: finalName,
-      gender: gender
-    });
-    setUserProfile((prev) => ({
-      ...prev,
-      gender: gender.toUpperCase()
-    }));
-    setModalType(null);
-    setGuideStep(1);
-    setShowGuide(true);
+    if (regLoading) return;
+
+    setRegError(null);
+    const trimmedUser = regUsername.trim();
+    const trimmedEmail = regEmail.trim();
+
+    // 1. Validate username format & length
+    const userCheck = isValidUsername(trimmedUser);
+    if (!userCheck.valid) {
+      setRegError(userCheck.message || 'Invalid username.');
+      return;
+    }
+
+    // 2. Validate email format
+    if (!isValidEmail(trimmedEmail)) {
+      setRegError('Please enter a valid email address.');
+      return;
+    }
+
+    // 3. Validate password length
+    if (!regPassword || regPassword.length < 4) {
+      setRegError('Password must be at least 4 characters long.');
+      return;
+    }
+
+    setRegLoading(true);
+
+    try {
+      // 4. Query Firebase Realtime Database to guarantee unique username and unique email
+      const usersSnap = await get(ref(rtdb, 'users'));
+      if (usersSnap.exists()) {
+        const usersData = usersSnap.val();
+        for (const k of Object.keys(usersData)) {
+          const u = usersData[k];
+          if (!u) continue;
+
+          // Cannot signup with the same username as someone else
+          if (u.username && u.username.toLowerCase() === trimmedUser.toLowerCase()) {
+            setRegError('This username is already taken by someone else. Please choose another username.');
+            setRegLoading(false);
+            return;
+          }
+
+          // Cannot signup with the same email as someone else
+          if (u.email && u.email.toLowerCase() === trimmedEmail.toLowerCase()) {
+            setRegError('This email is already registered to another account. Please log in instead.');
+            setRegLoading(false);
+            return;
+          }
+        }
+      }
+
+      // 5. Calculate age based on birth year if chosen
+      let calculatedAge = '17';
+      if (birthYear && birthYear !== 'Year') {
+        const parsedYear = parseInt(birthYear, 10);
+        if (!isNaN(parsedYear) && parsedYear > 1900 && parsedYear <= currentYear) {
+          calculatedAge = String(Math.max(13, currentYear - parsedYear));
+        }
+      }
+
+      // 6. Hash password securely
+      const pwdHash = await hashPassword(regPassword);
+      const sanitizedKey = sanitizeDbKey(trimmedUser);
+
+      // 7. Create persistent user account and profile record in Realtime Database
+      const newUserRecord = {
+        username: trimmedUser,
+        usernameLower: trimmedUser.toLowerCase(),
+        email: trimmedEmail,
+        emailLower: trimmedEmail.toLowerCase(),
+        passwordHash: pwdHash,
+        avatarUrl: null,
+        avatarPublicId: null,
+        avatarDeleteToken: null,
+        bannerUrl: null,
+        bannerPublicId: null,
+        bannerDeleteToken: null,
+        age: calculatedAge,
+        gender: gender.toUpperCase(),
+        relationship: 'Rather not say',
+        country: initialGeo.country || 'Global',
+        language: initialGeo.language || 'English',
+        bio: '',
+        mood: '',
+        glowColor: null,
+        glowThickness: 18,
+        profileBorderId: 'pb-default',
+        profileBorderThickness: 2,
+        pfpBorderId: 'pfp-default',
+        pfpBorderThickness: 2,
+        musicTrack: null,
+        isOnline: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      await set(ref(rtdb, `users/${sanitizedKey}`), newUserRecord);
+
+      // 8. Save user details in localStorage
+      const userObj = {
+        username: trimmedUser,
+        gender: gender.toUpperCase(),
+        email: trimmedEmail
+      };
+      localStorage.setItem('chat_community_user', JSON.stringify(userObj));
+      localStorage.setItem('chat_community_profile', JSON.stringify(newUserRecord));
+
+      setCurrentUser(userObj);
+      setUserProfile(newUserRecord);
+      setRegUsername('');
+      setRegEmail('');
+      setRegPassword('');
+      setRegError(null);
+      closeModal();
+      setGuideStep(1);
+      setShowGuide(true);
+    } catch (err: any) {
+      console.error('Registration error:', err);
+      setRegError(err.message || 'Failed to create account. Please try again.');
+    } finally {
+      setRegLoading(false);
+    }
   };
 
-  // Login action
-  const handleLogin = (e?: React.FormEvent) => {
+  // Login action: Verifies username/email and password against real database accounts, prevents fake accounts, and restores pfp/banner
+  const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const finalName = loginEmail.trim() || 'Player';
-    setCurrentUser({
-      username: finalName,
-      gender: 'Male'
-    });
-    setModalType(null);
-    setGuideStep(1);
-    setShowGuide(true);
+    if (loginLoading) return;
+
+    setLoginError(null);
+    const identifier = loginEmail.trim();
+    const password = loginPassword;
+
+    if (!identifier) {
+      setLoginError('Please enter your username or email.');
+      return;
+    }
+    if (!password) {
+      setLoginError('Please enter your password.');
+      return;
+    }
+
+    setLoginLoading(true);
+
+    try {
+      // 1. Fetch registered users from Firebase Realtime Database
+      const usersSnap = await get(ref(rtdb, 'users'));
+      if (!usersSnap.exists()) {
+        setLoginError('Incorrect username/email or password.');
+        setLoginLoading(false);
+        return;
+      }
+
+      const allUsers = usersSnap.val();
+      let matchedKey: string | null = null;
+      let matchedUser: any = null;
+
+      // Locate user by matching username OR email (case-insensitive)
+      for (const k of Object.keys(allUsers)) {
+        const u = allUsers[k];
+        if (!u) continue;
+
+        const uNameMatch = u.username && u.username.toLowerCase() === identifier.toLowerCase();
+        const uEmailMatch = u.email && u.email.toLowerCase() === identifier.toLowerCase();
+
+        if (uNameMatch || uEmailMatch) {
+          matchedKey = k;
+          matchedUser = u;
+          break;
+        }
+      }
+
+      // If no account exists -> forbid fake login!
+      if (!matchedUser || !matchedKey) {
+        setLoginError('Incorrect username/email or password. Please verify your details.');
+        setLoginLoading(false);
+        return;
+      }
+
+      // 2. Verify password match
+      const inputHash = await hashPassword(password);
+      const isPasswordValid =
+        (matchedUser.passwordHash && matchedUser.passwordHash === inputHash) ||
+        (matchedUser.password && matchedUser.password === password);
+
+      if (!isPasswordValid) {
+        setLoginError('Incorrect username/email or password. Please verify your details.');
+        setLoginLoading(false);
+        return;
+      }
+
+      // 3. Restore all saved profile data (pfp, banner, music, glow, borders, bio, mood, info)
+      const loadedProfile = {
+        avatarUrl: matchedUser.avatarUrl || null,
+        avatarPublicId: matchedUser.avatarPublicId || null,
+        avatarDeleteToken: matchedUser.avatarDeleteToken || null,
+        bannerUrl: matchedUser.bannerUrl || null,
+        bannerPublicId: matchedUser.bannerPublicId || null,
+        bannerDeleteToken: matchedUser.bannerDeleteToken || null,
+        age: matchedUser.age ? String(matchedUser.age) : '17',
+        gender: matchedUser.gender || 'MALE',
+        relationship: matchedUser.relationship || 'Rather not say',
+        country: matchedUser.country || initialGeo.country,
+        language: matchedUser.language || initialGeo.language,
+        bio: matchedUser.bio || '',
+        mood: matchedUser.mood || '',
+        glowColor: matchedUser.glowColor || null,
+        glowThickness: typeof matchedUser.glowThickness === 'number' ? matchedUser.glowThickness : 18,
+        profileBorderId: matchedUser.profileBorderId || 'pb-default',
+        profileBorderThickness: typeof matchedUser.profileBorderThickness === 'number' ? matchedUser.profileBorderThickness : 2,
+        pfpBorderId: matchedUser.pfpBorderId || 'pfp-default',
+        pfpBorderThickness: typeof matchedUser.pfpBorderThickness === 'number' ? matchedUser.pfpBorderThickness : 2,
+        musicTrack: matchedUser.musicTrack || null
+      };
+
+      const userObj = {
+        username: matchedUser.username,
+        gender: matchedUser.gender || 'MALE',
+        email: matchedUser.email || ''
+      };
+
+      // 4. Save login details & session in localStorage (automatically logged in on reload)
+      localStorage.setItem('chat_community_user', JSON.stringify(userObj));
+      localStorage.setItem('chat_community_profile', JSON.stringify(loadedProfile));
+
+      // 5. Update online status in Realtime Database
+      update(ref(rtdb, `users/${matchedKey}`), {
+        isOnline: true,
+        lastSeen: serverTimestamp()
+      }).catch((e) => console.warn('Online status update notice:', e));
+
+      // 6. Set app state
+      setCurrentUser(userObj);
+      setUserProfile(loadedProfile);
+      setLoginEmail('');
+      setLoginPassword('');
+      setLoginError(null);
+      closeModal();
+    } catch (err: any) {
+      console.error('Login error:', err);
+      setLoginError(err.message || 'Login failed. Please check your network and try again.');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  // Forgot password action
+  const handleForgotPassword = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!forgotEmail.trim()) {
+      setForgotStatus('Please enter your account email address.');
+      return;
+    }
+    setForgotLoading(true);
+    setForgotStatus(null);
+    try {
+      const snap = await get(ref(rtdb, 'users'));
+      let exists = false;
+      if (snap.exists()) {
+        const val = snap.val();
+        for (const k of Object.keys(val)) {
+          if (val[k]?.email && val[k].email.toLowerCase() === forgotEmail.trim().toLowerCase()) {
+            exists = true;
+            break;
+          }
+        }
+      }
+      if (exists) {
+        setForgotStatus('Account verified! If password recovery email service is configured, reset instructions are on their way.');
+      } else {
+        setForgotStatus('No registered account was found with that email address.');
+      }
+    } catch (err: any) {
+      setForgotStatus('Unable to process password reset request right now.');
+    } finally {
+      setForgotLoading(false);
+    }
   };
 
   // Send message in chat (Saved to Realtime Database for live real-time synchronization)
@@ -918,10 +1243,18 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
+                      if (currentUser) {
+                        const key = sanitizeDbKey(currentUser.username);
+                        update(ref(rtdb, `users/${key}`), { isOnline: false, lastSeen: serverTimestamp() }).catch(() => {});
+                      }
                       setCurrentUser(null);
                       try {
                         localStorage.removeItem('chat_community_user');
+                        localStorage.removeItem('chat_community_profile');
                       } catch (_) {}
+                      setLoginEmail('');
+                      setLoginPassword('');
+                      setLoginError(null);
                       setShowProfileMenu(false);
                       setShowGuide(false);
                       setProfileModalOpen(false);
@@ -2066,18 +2399,31 @@ export default function App() {
                   <h3 className="text-base font-extrabold text-white">Edit Username</h3>
                   <button
                     type="button"
-                    onClick={() => setActiveEditSubModal(null)}
+                    onClick={() => {
+                      setUsernameEditError(null);
+                      setActiveEditSubModal(null);
+                    }}
                     className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 </div>
 
+                {usernameEditError && (
+                  <div className="mb-3.5 bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs px-3 py-2 rounded-lg flex items-start gap-2 animate-in fade-in">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <span>{usernameEditError}</span>
+                  </div>
+                )}
+
                 <div className="space-y-4">
                   <input
                     type="text"
                     value={tempUsername}
-                    onChange={(e) => setTempUsername(e.target.value)}
+                    onChange={(e) => {
+                      setTempUsername(e.target.value);
+                      if (usernameEditError) setUsernameEditError(null);
+                    }}
                     placeholder="Username"
                     className="w-full bg-[#1c1c24] border border-[#2d2d38] rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
                   />
@@ -2085,16 +2431,69 @@ export default function App() {
                   <div>
                     <button
                       type="button"
-                      onClick={() => {
-                        if (tempUsername.trim()) {
-                          setCurrentUser((u) => (u ? { ...u, username: tempUsername.trim() } : u));
+                      disabled={usernameEditLoading}
+                      onClick={async () => {
+                        const newName = tempUsername.trim();
+                        if (!newName || !currentUser) return;
+                        if (newName.toLowerCase() === currentUser.username.toLowerCase()) {
+                          setActiveEditSubModal(null);
+                          return;
                         }
-                        setActiveEditSubModal(null);
+                        const uVal = isValidUsername(newName);
+                        if (!uVal.valid) {
+                          setUsernameEditError(uVal.message || 'Invalid username.');
+                          return;
+                        }
+                        setUsernameEditLoading(true);
+                        setUsernameEditError(null);
+                        try {
+                          const usersSnap = await get(ref(rtdb, 'users'));
+                          if (usersSnap.exists()) {
+                            const data = usersSnap.val();
+                            for (const k of Object.keys(data)) {
+                              if (data[k]?.username && data[k].username.toLowerCase() === newName.toLowerCase()) {
+                                setUsernameEditError('That username is already taken by someone else.');
+                                setUsernameEditLoading(false);
+                                return;
+                              }
+                            }
+                          }
+                          const oldKey = sanitizeDbKey(currentUser.username);
+                          const newKey = sanitizeDbKey(newName);
+                          const oldSnap = await get(ref(rtdb, `users/${oldKey}`));
+                          const oldData = oldSnap.exists() ? oldSnap.val() : {};
+
+                          await set(ref(rtdb, `users/${newKey}`), {
+                            ...oldData,
+                            username: newName,
+                            usernameLower: newName.toLowerCase(),
+                            updatedAt: serverTimestamp()
+                          });
+                          await remove(ref(rtdb, `users/${oldKey}`));
+
+                          const updated = { ...currentUser, username: newName };
+                          setCurrentUser(updated);
+                          localStorage.setItem('chat_community_user', JSON.stringify(updated));
+                          setActiveEditSubModal(null);
+                        } catch (err: any) {
+                          setUsernameEditError(err.message || 'Failed to update username.');
+                        } finally {
+                          setUsernameEditLoading(false);
+                        }
                       }}
-                      className="w-full bg-[#00c2ff] hover:bg-[#00aee6] text-white font-extrabold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-cyan-500/25"
+                      className="w-full bg-[#00c2ff] hover:bg-[#00aee6] text-white font-extrabold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-cyan-500/25 disabled:opacity-50"
                     >
-                      <Save className="w-4 h-4" />
-                      <span>Save Username</span>
+                      {usernameEditLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Checking availability...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-4 h-4" />
+                          <span>Save Username</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -2459,7 +2858,7 @@ export default function App() {
           {/* LOGIN MODAL */}
           {modalType === 'login' && (
             <div className="w-full max-w-[390px] bg-[#17171a] border border-[#26262b] rounded-2xl p-6 sm:p-7 shadow-2xl relative text-white animate-in fade-in zoom-in-95 duration-150">
-              <div className="flex items-center justify-between mb-5">
+              <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg sm:text-xl font-bold text-white tracking-wide">
                   Login
                 </h2>
@@ -2473,13 +2872,24 @@ export default function App() {
                 </button>
               </div>
 
+              {loginError && (
+                <div className="mb-4 bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs sm:text-sm px-3.5 py-2.5 rounded-xl flex items-start gap-2.5 animate-in fade-in">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span className="leading-snug">{loginError}</span>
+                </div>
+              )}
+
               <form onSubmit={handleLogin} className="space-y-3.5">
                 <div>
                   <input
                     type="text"
+                    required
                     value={loginEmail}
-                    onChange={(e) => setLoginEmail(e.target.value)}
-                    placeholder="Username/Email"
+                    onChange={(e) => {
+                      setLoginEmail(e.target.value);
+                      if (loginError) setLoginError(null);
+                    }}
+                    placeholder="Username or Email"
                     className="w-full bg-[#1e1e24] border border-[#2d2d35] rounded-lg px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500 transition-colors"
                   />
                 </div>
@@ -2487,28 +2897,60 @@ export default function App() {
                 <div>
                   <input
                     type="password"
+                    required
                     value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
+                    onChange={(e) => {
+                      setLoginPassword(e.target.value);
+                      if (loginError) setLoginError(null);
+                    }}
                     placeholder="Password"
                     className="w-full bg-[#1e1e24] border border-[#2d2d35] rounded-lg px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500 transition-colors"
                   />
                 </div>
 
-                <button
-                  type="submit"
-                  className="w-full bg-[#9333ea] hover:bg-[#8324dc] active:bg-[#721ec0] text-white font-medium py-3 rounded-lg flex items-center justify-center gap-2 text-sm sm:text-base shadow-md transition-all cursor-pointer mt-4"
-                >
-                  <LogIn className="w-5 h-5" />
-                  <span>Login</span>
-                </button>
-
-                <div className="pt-1">
+                {/* Forgot Password */}
+                <div className="flex items-center justify-end pt-0.5">
                   <button
                     type="button"
-                    onClick={() => setModalType('forgot')}
-                    className="text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer block text-left"
+                    onClick={() => {
+                      setLoginError(null);
+                      setModalType('forgot');
+                    }}
+                    className="text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer"
                   >
                     Forgot password?
+                  </button>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loginLoading}
+                  className="w-full bg-[#9333ea] hover:bg-[#8324dc] active:bg-[#721ec0] disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium py-3 rounded-lg flex items-center justify-center gap-2 text-sm sm:text-base shadow-md transition-all cursor-pointer mt-3"
+                >
+                  {loginLoading ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span>Verifying credentials...</span>
+                    </>
+                  ) : (
+                    <>
+                      <LogIn className="w-5 h-5" />
+                      <span>Login</span>
+                    </>
+                  )}
+                </button>
+
+                <div className="pt-2 text-center border-t border-[#25252b] mt-3">
+                  <span className="text-xs text-zinc-400">Don't have an account? </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginError(null);
+                      setModalType('register');
+                    }}
+                    className="text-xs font-semibold text-purple-400 hover:text-purple-300 hover:underline cursor-pointer"
+                  >
+                    Register now
                   </button>
                 </div>
               </form>
@@ -2532,14 +2974,24 @@ export default function App() {
                 </button>
               </div>
 
+              {regError && (
+                <div className="mb-3.5 bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs sm:text-sm px-3.5 py-2.5 rounded-xl flex items-start gap-2.5 animate-in fade-in">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span className="leading-snug">{regError}</span>
+                </div>
+              )}
+
               <form onSubmit={handleSignUp} className="space-y-3">
                 <div>
                   <input
                     type="text"
                     required
                     value={regUsername}
-                    onChange={(e) => setRegUsername(e.target.value)}
-                    placeholder="Username"
+                    onChange={(e) => {
+                      setRegUsername(e.target.value);
+                      if (regError) setRegError(null);
+                    }}
+                    placeholder="Username (unique)"
                     className="w-full bg-[#1e1e24] border border-[#2d2d35] rounded-lg px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500 transition-colors"
                   />
                 </div>
@@ -2547,9 +2999,13 @@ export default function App() {
                 <div>
                   <input
                     type="password"
+                    required
                     value={regPassword}
-                    onChange={(e) => setRegPassword(e.target.value)}
-                    placeholder="Password"
+                    onChange={(e) => {
+                      setRegPassword(e.target.value);
+                      if (regError) setRegError(null);
+                    }}
+                    placeholder="Password (min 4 characters)"
                     className="w-full bg-[#1e1e24] border border-[#2d2d35] rounded-lg px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500 transition-colors"
                   />
                 </div>
@@ -2557,9 +3013,13 @@ export default function App() {
                 <div>
                   <input
                     type="email"
+                    required
                     value={regEmail}
-                    onChange={(e) => setRegEmail(e.target.value)}
-                    placeholder="Email"
+                    onChange={(e) => {
+                      setRegEmail(e.target.value);
+                      if (regError) setRegError(null);
+                    }}
+                    placeholder="Email (unique)"
                     className="w-full bg-[#1e1e24] border border-[#2d2d35] rounded-lg px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500 transition-colors"
                   />
                 </div>
@@ -2735,10 +3195,20 @@ export default function App() {
                 <div className="pt-2">
                   <button
                     type="submit"
-                    className="w-full bg-[#9333ea] hover:bg-[#8324dc] active:bg-[#721ec0] text-white font-medium py-3 rounded-lg flex items-center justify-center gap-2 text-sm sm:text-base shadow-md transition-all cursor-pointer"
+                    disabled={regLoading}
+                    className="w-full bg-[#9333ea] hover:bg-[#8324dc] active:bg-[#721ec0] disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium py-3 rounded-lg flex items-center justify-center gap-2 text-sm sm:text-base shadow-md transition-all cursor-pointer"
                   >
-                    <SquarePen className="w-5 h-5" />
-                    <span>Register</span>
+                    {regLoading ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        <span>Creating account...</span>
+                      </>
+                    ) : (
+                      <>
+                        <SquarePen className="w-5 h-5" />
+                        <span>Register</span>
+                      </>
+                    )}
                   </button>
                 </div>
 
@@ -2754,6 +3224,20 @@ export default function App() {
                     </button>
                   </p>
                 </div>
+
+                <div className="pt-2 text-center border-t border-[#25252b]">
+                  <span className="text-xs text-zinc-400">Already have an account? </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRegError(null);
+                      setModalType('login');
+                    }}
+                    className="text-xs font-semibold text-purple-400 hover:text-purple-300 hover:underline cursor-pointer"
+                  >
+                    Login here
+                  </button>
+                </div>
               </form>
             </div>
           )}
@@ -2761,7 +3245,7 @@ export default function App() {
           {/* FORGOT PASSWORD MODAL */}
           {modalType === 'forgot' && (
             <div className="w-full max-w-[390px] bg-[#17171a] border border-[#26262b] rounded-2xl p-6 sm:p-7 shadow-2xl relative text-white animate-in fade-in zoom-in-95 duration-150">
-              <div className="flex items-center justify-between mb-5">
+              <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg sm:text-xl font-bold text-white tracking-wide">
                   Reset Password
                 </h2>
@@ -2775,35 +3259,59 @@ export default function App() {
                 </button>
               </div>
 
+              {forgotStatus && (
+                <div className={`mb-3.5 text-xs sm:text-sm px-3.5 py-2.5 rounded-xl flex items-start gap-2.5 animate-in fade-in ${
+                  forgotStatus.includes('verified')
+                    ? 'bg-emerald-500/15 border border-emerald-500/40 text-emerald-300'
+                    : 'bg-amber-500/15 border border-amber-500/40 text-amber-300'
+                }`}>
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="leading-snug">{forgotStatus}</span>
+                </div>
+              )}
+
               <p className="text-xs sm:text-sm text-zinc-400 mb-4 text-left">
-                Enter your email address and we will send you a password reset link.
+                Enter your account email address to verify your account registration.
               </p>
 
-              <div className="space-y-3.5">
+              <form onSubmit={handleForgotPassword} className="space-y-3.5">
                 <input
                   type="email"
+                  required
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
                   placeholder="Email"
                   className="w-full bg-[#1e1e24] border border-[#2d2d35] rounded-lg px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500 transition-colors"
                 />
 
                 <button
-                  type="button"
-                  onClick={() => setModalType('login')}
-                  className="w-full bg-[#9333ea] hover:bg-[#8324dc] active:bg-[#721ec0] text-white font-medium py-3 rounded-lg flex items-center justify-center gap-2 text-sm sm:text-base shadow-md transition-all cursor-pointer"
+                  type="submit"
+                  disabled={forgotLoading}
+                  className="w-full bg-[#9333ea] hover:bg-[#8324dc] active:bg-[#721ec0] disabled:opacity-60 text-white font-medium py-3 rounded-lg flex items-center justify-center gap-2 text-sm sm:text-base shadow-md transition-all cursor-pointer"
                 >
-                  <span>Send Reset Link</span>
+                  {forgotLoading ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span>Verifying account...</span>
+                    </>
+                  ) : (
+                    <span>Check Account</span>
+                  )}
                 </button>
 
                 <div className="pt-1 text-center">
                   <button
                     type="button"
-                    onClick={() => setModalType('login')}
+                    onClick={() => {
+                      setForgotStatus(null);
+                      setModalType('login');
+                    }}
                     className="text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer"
                   >
                     Back to Login
                   </button>
                 </div>
-              </div>
+              </form>
             </div>
           )}
 
