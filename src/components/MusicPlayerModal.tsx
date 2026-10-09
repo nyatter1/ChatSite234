@@ -34,6 +34,7 @@ export default function MusicPlayerModal({
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = '';
 
     setErrorMsg(null);
 
@@ -43,6 +44,10 @@ export default function MusicPlayerModal({
       return;
     }
 
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+    setIsPlaying(false);
     setIsUploading(true);
     const sizeInMB = (file.size / (1024 * 1024)).toFixed(1) + 'MB';
 
@@ -68,22 +73,15 @@ export default function MusicPlayerModal({
         url: uploadRes.secure_url || uploadRes.url,
         size: sizeInMB,
         publicId: uploadRes.public_id,
-        deleteToken: uploadRes.delete_token
+        deleteToken: uploadRes.delete_token || null
       };
       setTrack(newTrack);
+      setCurrentTime(0);
+      setDuration(0);
       onSaveTrack(newTrack);
-      setIsPlaying(false);
     } catch (err) {
-      console.warn('Cloudinary upload fallback to local URL:', err);
-      const fallbackUrl = URL.createObjectURL(file);
-      const fallbackTrack: MusicTrack = {
-        name: file.name,
-        url: fallbackUrl,
-        size: sizeInMB
-      };
-      setTrack(fallbackTrack);
-      onSaveTrack(fallbackTrack);
-      setIsPlaying(false);
+      console.warn('Cloudinary upload error:', err);
+      setErrorMsg('Failed to upload track to cloud storage. Please try again.');
     } finally {
       setIsUploading(false);
     }
@@ -99,14 +97,17 @@ export default function MusicPlayerModal({
         setIsPlaying(true);
       }).catch((err) => {
         console.warn('Playback error:', err);
+        setIsPlaying(false);
       });
     }
   };
 
   const handleTimeUpdate = () => {
     if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime);
-      setDuration(audioRef.current.duration || 0);
+      setCurrentTime(audioRef.current.currentTime || 0);
+      if (audioRef.current.duration && !isNaN(audioRef.current.duration)) {
+        setDuration(audioRef.current.duration);
+      }
     }
   };
 
@@ -125,6 +126,8 @@ export default function MusicPlayerModal({
     const oldTrack = track;
     setTrack(null);
     setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
     onSaveTrack(null);
 
     if (oldTrack && (oldTrack.url || oldTrack.publicId)) {
@@ -142,7 +145,7 @@ export default function MusicPlayerModal({
   };
 
   const formatTime = (secs: number) => {
-    if (isNaN(secs)) return '0:00';
+    if (!secs || isNaN(secs) || !isFinite(secs)) return '0:00';
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
     return `${m}:${s < 10 ? '0' : ''}${s}`;
@@ -159,6 +162,8 @@ export default function MusicPlayerModal({
         <audio
           ref={audioRef}
           src={track.url}
+          preload="metadata"
+          onLoadedMetadata={handleTimeUpdate}
           onTimeUpdate={handleTimeUpdate}
           onEnded={() => setIsPlaying(false)}
         />

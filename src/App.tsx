@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   LogIn,
   SquarePen,
@@ -34,7 +34,8 @@ import {
   Languages,
   AlertCircle,
   Loader2,
-  Trash2
+  Trash2,
+  Reply
 } from 'lucide-react';
 import {
   PROFILE_BORDERS,
@@ -47,7 +48,7 @@ import BorderModal from './components/BorderModal';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
 import { detectUserCountry, getInstantUserCountry } from './utils/countryDetect';
 import { uploadToCloudinary, deleteFromCloudinary } from './lib/cloudinary';
-import { compressAvatar, compressBanner, formatBytes } from './utils/imageCompressor';
+import { compressAvatar, compressBanner } from './utils/imageCompressor';
 import {
   hashPassword,
   sanitizeDbKey,
@@ -69,14 +70,40 @@ import {
   onDisconnect
 } from './lib/firebase';
 
-interface ChatMessage {
+interface MessageReply {
   id: string;
   sender: string;
   text: string;
+}
+
+interface ChatMessage {
+  id: string;
+  sender: string;
+  senderKey?: string;
+  text: string;
   timestamp: string;
+  createdAt?: number;
   avatarUrl?: string | null;
   pfpBorderId?: string | null;
   pfpBorderThickness?: number;
+  replyTo?: MessageReply | null;
+}
+
+// Convert File/Blob to Data URL as fallback if cloud storage is unreachable
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+}
+
+// Ensure no temporary browser blob: URLs ever get written to Realtime Database
+function sanitizeMediaUrl(url: string | null | undefined): string | null {
+  if (!url || typeof url !== 'string') return null;
+  if (url.startsWith('blob:')) return null;
+  return url;
 }
 
 // Reusable Avatar component supporting custom uploaded avatar or default silhouette
@@ -153,8 +180,31 @@ interface UserProfileData {
   updatedAt?: any;
 }
 
+interface UserProfileState {
+  avatarUrl: string | null;
+  avatarPublicId?: string | null;
+  avatarDeleteToken?: string | null;
+  bannerUrl: string | null;
+  bannerPublicId?: string | null;
+  bannerDeleteToken?: string | null;
+  age: string;
+  gender: string;
+  relationship: string;
+  country: string;
+  language: string;
+  bio: string;
+  mood: string;
+  glowColor: string | null;
+  glowThickness: number;
+  profileBorderId: string | null;
+  profileBorderThickness: number;
+  pfpBorderId: string | null;
+  pfpBorderThickness: number;
+  musicTrack: MusicTrack | null;
+}
+
 export default function App() {
-  const initialGeo = getInstantUserCountry();
+  const initialGeo = useMemo(() => getInstantUserCountry(), []);
 
   // Authentication & Current User State (Loaded from localStorage)
   const [currentUser, setCurrentUser] = useState<{ username: string; gender: string; email?: string } | null>(() => {
@@ -167,7 +217,7 @@ export default function App() {
   });
 
   // Default Profile Configuration
-  const initialProfile = useMemo(() => ({
+  const initialProfile = useMemo<UserProfileState>(() => ({
     avatarUrl: null,
     avatarPublicId: null,
     avatarDeleteToken: null,
@@ -191,57 +241,20 @@ export default function App() {
   }), [initialGeo]);
 
   // Profile Details State (Loaded from localStorage)
-  const [userProfile, setUserProfile] = useState<{
-    avatarUrl: string | null;
-    avatarPublicId?: string | null;
-    avatarDeleteToken?: string | null;
-    bannerUrl: string | null;
-    bannerPublicId?: string | null;
-    bannerDeleteToken?: string | null;
-    age: string;
-    gender: string;
-    relationship: string;
-    country: string;
-    language: string;
-    bio: string;
-    mood: string;
-    glowColor: string | null;
-    glowThickness: number;
-    profileBorderId: string | null;
-    profileBorderThickness: number;
-    pfpBorderId: string | null;
-    pfpBorderThickness: number;
-    musicTrack: MusicTrack | null;
-  }>(() => {
-    const base = {
-      avatarUrl: null,
-      avatarPublicId: null,
-      avatarDeleteToken: null,
-      bannerUrl: null,
-      bannerPublicId: null,
-      bannerDeleteToken: null,
-      age: '17',
-      gender: 'MALE',
-      relationship: 'Rather not say',
-      country: initialGeo.country,
-      language: initialGeo.language,
-      bio: '',
-      mood: '',
-      glowColor: null,
-      glowThickness: 18,
-      profileBorderId: 'pb-default',
-      profileBorderThickness: 2,
-      pfpBorderId: 'pfp-default',
-      pfpBorderThickness: 2,
-      musicTrack: null
-    };
+  const [userProfile, setUserProfile] = useState<UserProfileState>(() => {
     try {
       const saved = localStorage.getItem('chat_community_profile');
       if (saved) {
-        return { ...base, ...JSON.parse(saved) };
+        const parsed = JSON.parse(saved);
+        return {
+          ...initialProfile,
+          ...parsed,
+          avatarUrl: sanitizeMediaUrl(parsed.avatarUrl),
+          bannerUrl: sanitizeMediaUrl(parsed.bannerUrl)
+        };
       }
     } catch (_) {}
-    return base;
+    return initialProfile;
   });
 
   // Profile Modal State
@@ -250,10 +263,16 @@ export default function App() {
   const [editOptionsTab, setEditOptionsTab] = useState<'account' | 'customisation'>('account');
   const [publicProfileTab, setPublicProfileTab] = useState<'info' | 'aboutme'>('info');
 
-  // Delete account confirmation modal & deletion guard
+  // Upload progress indicators
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isUploadingBanner, setIsUploadingBanner] = useState(false);
+
+  // Delete account confirmation modal & lifecycle guards
   const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const isAccountDeletingRef = useRef(false);
+  const isRenamingRef = useRef(false);
+  const isSessionVerifiedRef = useRef(false);
 
   // Sub-modal state for Edit actions (info, username, bio, mood, glow, profileBorder, pfpBorder, music)
   const [activeEditSubModal, setActiveEditSubModal] = useState<
@@ -273,17 +292,17 @@ export default function App() {
   const [tempProfileBorderThickness, setTempProfileBorderThickness] = useState(2);
   const [tempPfpBorderIndex, setTempPfpBorderIndex] = useState(0);
   const [tempPfpBorderThickness, setTempPfpBorderThickness] = useState(2);
+
+  // Profile Music Player State (supports playing own music OR any viewed user's music)
+  const [activeAudioTrack, setActiveAudioTrack] = useState<MusicTrack | null>(null);
   const [isProfileMusicPlaying, setIsProfileMusicPlaying] = useState(false);
   const profileAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Automatically detect user's country on load
+  // Detect user's country on load for default registration/temp state without overwriting existing RTDB profiles
+  const detectedGeoRef = useRef<{ country: string; language: string }>(initialGeo);
   useEffect(() => {
     detectUserCountry().then(({ country, language }) => {
-      setUserProfile((prev) => ({
-        ...prev,
-        country: prev.country === 'United Kingdom' || !prev.country ? country : prev.country,
-        language: prev.language === 'English' || !prev.language ? language : prev.language
-      }));
+      detectedGeoRef.current = { country, language };
       setTempCountry((prev) => (!prev || prev === 'United Kingdom' ? country : prev));
       setTempLanguage((prev) => (!prev || prev === 'English' ? language : prev));
     });
@@ -328,7 +347,7 @@ export default function App() {
   const [monthDropdownOpen, setMonthDropdownOpen] = useState(false);
   const [yearDropdownOpen, setYearDropdownOpen] = useState(false);
 
-  // Chat View State (Loaded from localStorage)
+  // Chat View State
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
       const saved = localStorage.getItem('chat_community_messages');
@@ -338,6 +357,10 @@ export default function App() {
     }
   });
   const [inputText, setInputText] = useState('');
+  const [replyingTo, setReplyingTo] = useState<MessageReply | null>(null);
+  const [isListeningVoice, setIsListeningVoice] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showTopic, setShowTopic] = useState(true);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
@@ -346,7 +369,39 @@ export default function App() {
   const [selectedUser, setSelectedUser] = useState<UserProfileData | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<UserProfileData[]>([]);
 
-  // Sync state to localStorage
+  // Targeted helper to persist profile updates cleanly to Realtime Database & localStorage
+  // Prevents infinite onValue <-> useEffect loops and never writes temporary blob: URLs
+  const saveProfileToRtdb = useCallback(
+    async (updates: Partial<UserProfileState>, overrideUsername?: string) => {
+      const targetName = overrideUsername || currentUser?.username;
+      if (!targetName || isAccountDeletingRef.current) return;
+
+      const dbKey = sanitizeDbKey(targetName);
+      const cleanUpdates: Record<string, any> = { ...updates };
+
+      if ('avatarUrl' in cleanUpdates) {
+        cleanUpdates.avatarUrl = sanitizeMediaUrl(cleanUpdates.avatarUrl);
+      }
+      if ('bannerUrl' in cleanUpdates) {
+        cleanUpdates.bannerUrl = sanitizeMediaUrl(cleanUpdates.bannerUrl);
+      }
+
+      try {
+        await update(ref(rtdb, `users/${dbKey}`), {
+          ...cleanUpdates,
+          username: targetName,
+          usernameLower: targetName.toLowerCase(),
+          isOnline: true,
+          updatedAt: serverTimestamp()
+        });
+      } catch (err: any) {
+        console.warn('Realtime Database profile update notice:', err?.message || err);
+      }
+    },
+    [currentUser?.username]
+  );
+
+  // Sync currentUser & userProfile to localStorage
   useEffect(() => {
     if (currentUser) {
       try {
@@ -362,7 +417,12 @@ export default function App() {
   useEffect(() => {
     if (currentUser) {
       try {
-        localStorage.setItem('chat_community_profile', JSON.stringify(userProfile));
+        const persisted = {
+          ...userProfile,
+          avatarUrl: sanitizeMediaUrl(userProfile.avatarUrl),
+          bannerUrl: sanitizeMediaUrl(userProfile.bannerUrl)
+        };
+        localStorage.setItem('chat_community_profile', JSON.stringify(persisted));
       } catch (_) {}
     }
   }, [userProfile, currentUser]);
@@ -385,25 +445,33 @@ export default function App() {
             const liveMsgs: ChatMessage[] = [];
             snapshot.forEach((childSnap) => {
               const data = childSnap.val();
+              if (!data || typeof data.text !== 'string') return;
               let ts = 'Just now';
-              if (typeof data.createdAt === 'number') {
-                ts = new Date(data.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              const createdNum = typeof data.createdAt === 'number' ? data.createdAt : undefined;
+              if (createdNum) {
+                ts = new Date(createdNum).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
               } else if (data.timestamp) {
                 ts = data.timestamp;
               }
               liveMsgs.push({
                 id: childSnap.key || Date.now().toString(),
                 sender: data.sender || 'Anonymous',
-                text: data.text || '',
+                senderKey: data.senderKey || sanitizeDbKey(data.sender || 'Anonymous'),
+                text: data.text,
                 timestamp: ts,
-                avatarUrl: data.avatarUrl || null,
+                createdAt: createdNum,
+                avatarUrl: sanitizeMediaUrl(data.avatarUrl),
                 pfpBorderId: data.pfpBorderId || null,
-                pfpBorderThickness: data.pfpBorderThickness || 2
+                pfpBorderThickness: typeof data.pfpBorderThickness === 'number' ? data.pfpBorderThickness : 2,
+                replyTo: data.replyTo || null
               });
             });
             setMessages(liveMsgs);
           } else {
             setMessages([]);
+            try {
+              localStorage.removeItem('chat_community_messages');
+            } catch (_) {}
           }
         },
         (err) => {
@@ -417,6 +485,7 @@ export default function App() {
   }, []);
 
   // Real-time listener for all registered/online users in Firebase Realtime Database
+  // Filters out any incomplete ghost nodes and automatically cleans them up in RTDB
   useEffect(() => {
     try {
       const usersRef = ref(rtdb, 'users');
@@ -427,33 +496,45 @@ export default function App() {
             const list: UserProfileData[] = [];
             snapshot.forEach((childSnap) => {
               const val = childSnap.val();
-              if (val) {
-                const uName = val.username || childSnap.key || '';
-                list.push({
-                  username: uName,
-                  avatarUrl: val.avatarUrl || null,
-                  avatarPublicId: val.avatarPublicId || null,
-                  avatarDeleteToken: val.avatarDeleteToken || null,
-                  bannerUrl: val.bannerUrl || null,
-                  bannerPublicId: val.bannerPublicId || null,
-                  bannerDeleteToken: val.bannerDeleteToken || null,
-                  age: val.age ? String(val.age) : '18',
-                  gender: val.gender || 'MALE',
-                  relationship: val.relationship || 'Rather not say',
-                  country: val.country || 'Global',
-                  language: val.language || 'English',
-                  bio: val.bio || '',
-                  mood: val.mood || '',
-                  glowColor: val.glowColor || null,
-                  glowThickness: typeof val.glowThickness === 'number' ? val.glowThickness : 18,
-                  profileBorderId: val.profileBorderId || 'pb-default',
-                  profileBorderThickness: typeof val.profileBorderThickness === 'number' ? val.profileBorderThickness : 2,
-                  pfpBorderId: val.pfpBorderId || 'pfp-default',
-                  pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : 2,
-                  musicTrack: val.musicTrack || null,
-                  isOnline: val.isOnline !== false
-                });
+              const key = childSnap.key;
+              if (!val || typeof val !== 'object') return;
+
+              // Check if this node is a valid registered user (must have username string)
+              if (typeof val.username !== 'string' || !val.username.trim()) {
+                // Clean up orphaned ghost node created by stale onDisconnect
+                if (key && !isRenamingRef.current && !isAccountDeletingRef.current) {
+                  remove(ref(rtdb, `users/${key}`)).catch(() => {});
+                }
+                return;
               }
+
+              const uName = val.username.trim();
+              list.push({
+                username: uName,
+                avatarUrl: sanitizeMediaUrl(val.avatarUrl),
+                avatarPublicId: val.avatarPublicId || null,
+                avatarDeleteToken: val.avatarDeleteToken || null,
+                bannerUrl: sanitizeMediaUrl(val.bannerUrl),
+                bannerPublicId: val.bannerPublicId || null,
+                bannerDeleteToken: val.bannerDeleteToken || null,
+                age: val.age ? String(val.age) : '17',
+                gender: val.gender || 'MALE',
+                relationship: val.relationship || 'Rather not say',
+                country: val.country || 'Global',
+                language: val.language || 'English',
+                bio: val.bio || '',
+                mood: val.mood || '',
+                glowColor: val.glowColor || null,
+                glowThickness: typeof val.glowThickness === 'number' ? val.glowThickness : 18,
+                profileBorderId: val.profileBorderId || 'pb-default',
+                profileBorderThickness: typeof val.profileBorderThickness === 'number' ? val.profileBorderThickness : 2,
+                pfpBorderId: val.pfpBorderId || 'pfp-default',
+                pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : 2,
+                musicTrack: val.musicTrack || null,
+                isOnline: val.isOnline === true,
+                lastSeen: val.lastSeen || null,
+                updatedAt: val.updatedAt || null
+              });
             });
             setRegisteredUsers(list);
           } else {
@@ -471,26 +552,35 @@ export default function App() {
   }, []);
 
   // Permanently delete user account:
+  // - Cancels onDisconnect hooks so no ghost node is recreated
   // - Deletes all chat messages sent by this user from Realtime Database
   // - Deletes user node users/${dbKey} from Realtime Database
-  // - Deletes uploaded avatar and banner from Cloudinary
+  // - Deletes uploaded avatar, banner, and music from Cloudinary
   // - Clears all local storage and state, stops audio
   // - Logs the user out completely
-  const handlePermanentAccountDeletion = async (
+  const handlePermanentAccountDeletion = useCallback(async (
     targetUsername: string,
-    profileData?: typeof userProfile
+    profileData?: UserProfileState
   ) => {
     if (isAccountDeletingRef.current) return;
     isAccountDeletingRef.current = true;
+    isSessionVerifiedRef.current = false;
 
     try {
       const trimmedUser = targetUsername.trim();
       const usernameLower = trimmedUser.toLowerCase();
       const dbKey = sanitizeDbKey(trimmedUser);
 
+      // Cancel any pending onDisconnect hooks first so RTDB doesn't recreate a stub node
+      try {
+        await onDisconnect(ref(rtdb, `users/${dbKey}/isOnline`)).cancel();
+        await onDisconnect(ref(rtdb, `users/${dbKey}/lastSeen`)).cancel();
+      } catch (_) {}
+
       // 1. Immediately log out and reset local state
       setCurrentUser(null);
       setUserProfile(initialProfile);
+      setSelectedUser(null);
       setProfileModalOpen(false);
       setActiveEditSubModal(null);
       setShowProfileMenu(false);
@@ -498,6 +588,7 @@ export default function App() {
       setPlayerPopoverOpen(false);
       setShowDeleteAccountModal(false);
       setModalType(null);
+      setReplyingTo(null);
       setLoginError('This account was deleted from the database. All profile information and chat messages have been permanently removed.');
 
       try {
@@ -508,8 +599,8 @@ export default function App() {
 
       if (profileAudioRef.current) {
         profileAudioRef.current.pause();
-        profileAudioRef.current = null;
       }
+      setActiveAudioTrack(null);
       setIsProfileMusicPlaying(false);
 
       // Remove messages locally immediately
@@ -521,16 +612,19 @@ export default function App() {
         const msgsSnap = await get(messagesRef);
         if (msgsSnap.exists()) {
           const allMsgs = msgsSnap.val();
-          const deletePromises: Promise<any>[] = [];
+          const updatesMap: Record<string, null> = {};
           for (const [key, msg] of Object.entries(allMsgs)) {
             const sender = (msg as any)?.sender;
-            if (typeof sender === 'string' && sender.trim().toLowerCase() === usernameLower) {
-              deletePromises.push(remove(ref(rtdb, `messages/${key}`)));
+            const senderKey = (msg as any)?.senderKey;
+            if (
+              (typeof sender === 'string' && sender.trim().toLowerCase() === usernameLower) ||
+              senderKey === dbKey
+            ) {
+              updatesMap[key] = null;
             }
           }
-          if (deletePromises.length > 0) {
-            await Promise.all(deletePromises);
-            console.log(`[Teenverse] Permanently deleted ${deletePromises.length} chat messages for user ${trimmedUser}.`);
+          if (Object.keys(updatesMap).length > 0) {
+            await update(messagesRef, updatesMap);
           }
         }
       } catch (msgErr) {
@@ -544,10 +638,10 @@ export default function App() {
         console.warn('Error removing user record in RTDB:', userErr);
       }
 
-      // 4. Delete avatar & banner from Cloudinary
-      const pfpUrl = profileData?.avatarUrl || userProfile.avatarUrl;
-      const pfpPublicId = profileData?.avatarPublicId || userProfile.avatarPublicId;
-      const pfpToken = profileData?.avatarDeleteToken || userProfile.avatarDeleteToken;
+      // 4. Delete avatar, banner & music from Cloudinary
+      const pfpUrl = profileData?.avatarUrl;
+      const pfpPublicId = profileData?.avatarPublicId;
+      const pfpToken = profileData?.avatarDeleteToken;
       if (pfpUrl || pfpPublicId) {
         deleteFromCloudinary({
           url: pfpUrl,
@@ -557,9 +651,9 @@ export default function App() {
         }).catch(() => {});
       }
 
-      const bannerUrl = profileData?.bannerUrl || userProfile.bannerUrl;
-      const bannerPublicId = profileData?.bannerPublicId || userProfile.bannerPublicId;
-      const bannerToken = profileData?.bannerDeleteToken || userProfile.bannerDeleteToken;
+      const bannerUrl = profileData?.bannerUrl;
+      const bannerPublicId = profileData?.bannerPublicId;
+      const bannerToken = profileData?.bannerDeleteToken;
       if (bannerUrl || bannerPublicId) {
         deleteFromCloudinary({
           url: bannerUrl,
@@ -568,47 +662,84 @@ export default function App() {
           resourceType: 'image'
         }).catch(() => {});
       }
+
+      const music = profileData?.musicTrack;
+      if (music && (music.url || music.publicId)) {
+        deleteFromCloudinary({
+          url: music.url,
+          publicId: music.publicId,
+          deleteToken: music.deleteToken,
+          resourceType: 'video'
+        }).catch(() => {});
+      }
     } finally {
       setIsDeletingAccount(false);
       setTimeout(() => {
         isAccountDeletingRef.current = false;
-      }, 1200);
+      }, 1000);
     }
-  };
+  }, [initialProfile]);
 
-  // Live account listener & deletion handler:
-  // If the user was deleted in the Realtime Database (e.g. from Firebase console or external deletion):
-  // 1. Immediately detects !snap.exists()
-  // 2. Logs them out immediately
-  // 3. Permanently deletes all their messages in main chat, their profile, Cloudinary media, and local cache
+  // Live account listener & presence manager for the current logged-in user
   useEffect(() => {
-    if (!currentUser || !currentUser.username) return;
+    if (!currentUser || !currentUser.username) {
+      isSessionVerifiedRef.current = false;
+      return;
+    }
     if (isAccountDeletingRef.current) return;
 
     const dbKey = sanitizeDbKey(currentUser.username);
     const userRef = ref(rtdb, `users/${dbKey}`);
+    const connectedRef = ref(rtdb, '.info/connected');
+    const userOnlineRef = ref(rtdb, `users/${dbKey}/isOnline`);
+    const userLastSeenRef = ref(rtdb, `users/${dbKey}/lastSeen`);
 
-    const unsubscribe = onValue(
+    let connectedUnsub: (() => void) | null = null;
+
+    const setupPresence = () => {
+      if (connectedUnsub) return;
+      connectedUnsub = onValue(connectedRef, (snap) => {
+        if (isAccountDeletingRef.current || isRenamingRef.current || !isSessionVerifiedRef.current) return;
+        if (snap.val() === true) {
+          onDisconnect(userOnlineRef).set(false);
+          onDisconnect(userLastSeenRef).set(serverTimestamp());
+          update(userRef, {
+            isOnline: true,
+            lastSeen: serverTimestamp()
+          }).catch(() => {});
+        }
+      });
+    };
+
+    const unsubscribeUser = onValue(
       userRef,
       (snap) => {
-        if (isAccountDeletingRef.current) return;
+        if (isAccountDeletingRef.current || isRenamingRef.current) return;
 
-        // If the user was deleted in the Realtime Database:
-        if (!snap.exists()) {
-          console.warn(`[Teenverse] User "${currentUser.username}" was deleted in Realtime Database. Triggering permanent account deletion & cleanup...`);
+        // If the user node was deleted or is a ghost node without username:
+        if (!snap.exists() || !snap.val()?.username) {
+          console.warn(`[Teenverse] User "${currentUser.username}" no longer exists in Realtime Database. Logging out & cleaning up...`);
           handlePermanentAccountDeletion(currentUser.username, userProfile);
           return;
         }
 
-        // Account exists: restore / sync remote profile attributes
         const val = snap.val();
-        if (val) {
-          setUserProfile((prev) => ({
-            ...prev,
-            avatarUrl: val.avatarUrl !== undefined ? val.avatarUrl : prev.avatarUrl,
+        isSessionVerifiedRef.current = true;
+        setupPresence();
+
+        // Sync remote profile changes into local state only if values actually changed
+        setUserProfile((prev) => {
+          const nextAvatar = val.avatarUrl !== undefined ? sanitizeMediaUrl(val.avatarUrl) : prev.avatarUrl;
+          const nextBanner = val.bannerUrl !== undefined ? sanitizeMediaUrl(val.bannerUrl) : prev.bannerUrl;
+          // Preserve local blob preview if currently uploading
+          const effectiveAvatar = prev.avatarUrl?.startsWith('blob:') ? prev.avatarUrl : nextAvatar;
+          const effectiveBanner = prev.bannerUrl?.startsWith('blob:') ? prev.bannerUrl : nextBanner;
+
+          const nextState: UserProfileState = {
+            avatarUrl: effectiveAvatar,
             avatarPublicId: val.avatarPublicId !== undefined ? val.avatarPublicId : prev.avatarPublicId,
             avatarDeleteToken: val.avatarDeleteToken !== undefined ? val.avatarDeleteToken : prev.avatarDeleteToken,
-            bannerUrl: val.bannerUrl !== undefined ? val.bannerUrl : prev.bannerUrl,
+            bannerUrl: effectiveBanner,
             bannerPublicId: val.bannerPublicId !== undefined ? val.bannerPublicId : prev.bannerPublicId,
             bannerDeleteToken: val.bannerDeleteToken !== undefined ? val.bannerDeleteToken : prev.bannerDeleteToken,
             age: val.age ? String(val.age) : prev.age,
@@ -625,8 +756,13 @@ export default function App() {
             pfpBorderId: val.pfpBorderId || prev.pfpBorderId,
             pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : prev.pfpBorderThickness,
             musicTrack: val.musicTrack || null
-          }));
-        }
+          };
+
+          if (JSON.stringify(prev) === JSON.stringify(nextState)) {
+            return prev;
+          }
+          return nextState;
+        });
       },
       (err) => {
         console.warn('Realtime Database account listener notice:', err);
@@ -634,56 +770,12 @@ export default function App() {
     );
 
     return () => {
-      unsubscribe();
+      unsubscribeUser();
+      if (connectedUnsub) connectedUnsub();
     };
-  }, [currentUser?.username]);
+  }, [currentUser?.username, handlePermanentAccountDeletion]);
 
-  // Presence detection: Set user online when connected and offline on disconnect
-  useEffect(() => {
-    if (!currentUser || !currentUser.username || isAccountDeletingRef.current) return;
-    try {
-      const sanitizedUsername = sanitizeDbKey(currentUser.username);
-      const connectedRef = ref(rtdb, '.info/connected');
-      const userOnlineRef = ref(rtdb, `users/${sanitizedUsername}/isOnline`);
-      const userLastSeenRef = ref(rtdb, `users/${sanitizedUsername}/lastSeen`);
-
-      const unsubscribe = onValue(connectedRef, (snap) => {
-        if (isAccountDeletingRef.current) return;
-        if (snap.val() === true) {
-          onDisconnect(userOnlineRef).set(false);
-          onDisconnect(userLastSeenRef).set(serverTimestamp());
-          set(userOnlineRef, true);
-        }
-      });
-      return () => {
-        unsubscribe();
-      };
-    } catch (e) {
-      console.warn('Presence setup notice:', e);
-    }
-  }, [currentUser]);
-
-  // Sync current user profile changes to Realtime Database using update (preserving credentials)
-  useEffect(() => {
-    if (currentUser && currentUser.username && !isAccountDeletingRef.current) {
-      try {
-        const sanitizedUsername = sanitizeDbKey(currentUser.username);
-        const userRef = ref(rtdb, `users/${sanitizedUsername}`);
-        update(userRef, {
-          username: currentUser.username,
-          ...userProfile,
-          isOnline: true,
-          updatedAt: serverTimestamp()
-        }).catch((err) => {
-          console.warn('Realtime Database user profile sync notice:', err.message);
-        });
-      } catch (err) {
-        console.warn('Realtime Database user ref error:', err);
-      }
-    }
-  }, [currentUser, userProfile]);
-
-  // Combined full users list
+  // Combined full users list (Always keeps current user at top, then online users, then alphabetical)
   const allUsersList = useMemo(() => {
     const map = new Map<string, UserProfileData>();
     registeredUsers.forEach((u) => {
@@ -710,8 +802,17 @@ export default function App() {
     });
   }, [registeredUsers, currentUser, userProfile]);
 
+  // Resolve selectedUser live against allUsersList so profile popovers/modals update in real-time
+  const liveSelectedUser = useMemo<UserProfileData | null>(() => {
+    if (!selectedUser) return null;
+    const found = allUsersList.find(
+      (u) => u.username.toLowerCase() === selectedUser.username.toLowerCase()
+    );
+    return found || selectedUser;
+  }, [selectedUser, allUsersList]);
+
   const onlineCount = useMemo(() => {
-    return allUsersList.filter((u) => u.isOnline !== false).length;
+    return allUsersList.filter((u) => u.isOnline === true).length;
   }, [allUsersList]);
 
   // Welcome Guide State
@@ -719,6 +820,7 @@ export default function App() {
   const [guideStep, setGuideStep] = useState<1 | 2>(1);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
   const genderRef = useRef<HTMLDivElement>(null);
   const dayRef = useRef<HTMLDivElement>(null);
   const monthRef = useRef<HTMLDivElement>(null);
@@ -746,10 +848,9 @@ export default function App() {
         setShowProfileMenu(false);
       }
       if (
-        playerCardRef.current &&
-        !playerCardRef.current.contains(e.target as Node) &&
         playerPopoverRef.current &&
-        !playerPopoverRef.current.contains(e.target as Node)
+        !playerPopoverRef.current.contains(e.target as Node) &&
+        (!playerCardRef.current || !playerCardRef.current.contains(e.target as Node))
       ) {
         setPlayerPopoverOpen(false);
       }
@@ -758,12 +859,14 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Scroll to bottom on new message
+  // Scroll to bottom when message count increases
+  const prevMsgCountRef = useRef(messages.length);
   useEffect(() => {
-    if (currentUser) {
+    if (currentUser && messages.length >= prevMsgCountRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, currentUser]);
+    prevMsgCountRef.current = messages.length;
+  }, [messages.length, currentUser]);
 
   const days = Array.from({ length: 31 }, (_, i) => String(i + 1));
   const months = [
@@ -784,7 +887,7 @@ export default function App() {
     setForgotStatus(null);
   };
 
-  // Sign up action: Enforce unique username & email, required credentials, and create persistent account
+  // Sign up action: Enforce unique username & email, required credentials, and create persistent account in RTDB
   const handleSignUp = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (regLoading) return;
@@ -815,22 +918,22 @@ export default function App() {
     setRegLoading(true);
 
     try {
-      // 4. Query Firebase Realtime Database to guarantee unique username and unique email
+      const sanitizedKey = sanitizeDbKey(trimmedUser);
+
+      // 4. Query Firebase Realtime Database to guarantee unique username, key, and email
       const usersSnap = await get(ref(rtdb, 'users'));
       if (usersSnap.exists()) {
         const usersData = usersSnap.val();
         for (const k of Object.keys(usersData)) {
           const u = usersData[k];
-          if (!u) continue;
+          if (!u || !u.username) continue;
 
-          // Cannot signup with the same username as someone else
-          if (u.username && u.username.toLowerCase() === trimmedUser.toLowerCase()) {
+          if (k === sanitizedKey || u.username.toLowerCase() === trimmedUser.toLowerCase()) {
             setRegError('This username is already taken by someone else. Please choose another username.');
             setRegLoading(false);
             return;
           }
 
-          // Cannot signup with the same email as someone else
           if (u.email && u.email.toLowerCase() === trimmedEmail.toLowerCase()) {
             setRegError('This email is already registered to another account. Please log in instead.');
             setRegLoading(false);
@@ -850,15 +953,9 @@ export default function App() {
 
       // 6. Hash password securely
       const pwdHash = await hashPassword(regPassword);
-      const sanitizedKey = sanitizeDbKey(trimmedUser);
+      const geo = detectedGeoRef.current || initialGeo;
 
-      // 7. Create persistent user account and profile record in Realtime Database
-      const newUserRecord = {
-        username: trimmedUser,
-        usernameLower: trimmedUser.toLowerCase(),
-        email: trimmedEmail,
-        emailLower: trimmedEmail.toLowerCase(),
-        passwordHash: pwdHash,
+      const newProfileState: UserProfileState = {
         avatarUrl: null,
         avatarPublicId: null,
         avatarDeleteToken: null,
@@ -868,8 +965,8 @@ export default function App() {
         age: calculatedAge,
         gender: gender.toUpperCase(),
         relationship: 'Rather not say',
-        country: initialGeo.country || 'Global',
-        language: initialGeo.language || 'English',
+        country: geo.country || 'Global',
+        language: geo.language || 'English',
         bio: '',
         mood: '',
         glowColor: null,
@@ -878,25 +975,37 @@ export default function App() {
         profileBorderThickness: 2,
         pfpBorderId: 'pfp-default',
         pfpBorderThickness: 2,
-        musicTrack: null,
+        musicTrack: null
+      };
+
+      // 7. Create persistent user account and profile record in Realtime Database
+      const newUserRecord = {
+        username: trimmedUser,
+        usernameLower: trimmedUser.toLowerCase(),
+        email: trimmedEmail,
+        emailLower: trimmedEmail.toLowerCase(),
+        passwordHash: pwdHash,
+        ...newProfileState,
         isOnline: true,
         createdAt: serverTimestamp(),
+        lastSeen: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
 
+      isSessionVerifiedRef.current = true;
       await set(ref(rtdb, `users/${sanitizedKey}`), newUserRecord);
 
-      // 8. Save user details in localStorage
+      // 8. Save user details in localStorage & state
       const userObj = {
         username: trimmedUser,
         gender: gender.toUpperCase(),
         email: trimmedEmail
       };
       localStorage.setItem('chat_community_user', JSON.stringify(userObj));
-      localStorage.setItem('chat_community_profile', JSON.stringify(newUserRecord));
+      localStorage.setItem('chat_community_profile', JSON.stringify(newProfileState));
 
+      setUserProfile(newProfileState);
       setCurrentUser(userObj);
-      setUserProfile(newUserRecord);
       setRegUsername('');
       setRegEmail('');
       setRegPassword('');
@@ -912,7 +1021,7 @@ export default function App() {
     }
   };
 
-  // Login action: Verifies username/email and password against real database accounts, prevents fake accounts, and restores pfp/banner
+  // Login action: Verifies username/email and password against Realtime Database accounts
   const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (loginLoading) return;
@@ -948,9 +1057,9 @@ export default function App() {
       // Locate user by matching username OR email (case-insensitive)
       for (const k of Object.keys(allUsers)) {
         const u = allUsers[k];
-        if (!u) continue;
+        if (!u || !u.username) continue;
 
-        const uNameMatch = u.username && u.username.toLowerCase() === identifier.toLowerCase();
+        const uNameMatch = u.username.toLowerCase() === identifier.toLowerCase();
         const uEmailMatch = u.email && u.email.toLowerCase() === identifier.toLowerCase();
 
         if (uNameMatch || uEmailMatch) {
@@ -960,7 +1069,6 @@ export default function App() {
         }
       }
 
-      // If no account exists -> forbid fake login!
       if (!matchedUser || !matchedKey) {
         setLoginError('Incorrect username/email or password. Please verify your details.');
         setLoginLoading(false);
@@ -979,12 +1087,12 @@ export default function App() {
         return;
       }
 
-      // 3. Restore all saved profile data (pfp, banner, music, glow, borders, bio, mood, info)
-      const loadedProfile = {
-        avatarUrl: matchedUser.avatarUrl || null,
+      // 3. Restore all saved profile data
+      const loadedProfile: UserProfileState = {
+        avatarUrl: sanitizeMediaUrl(matchedUser.avatarUrl),
         avatarPublicId: matchedUser.avatarPublicId || null,
         avatarDeleteToken: matchedUser.avatarDeleteToken || null,
-        bannerUrl: matchedUser.bannerUrl || null,
+        bannerUrl: sanitizeMediaUrl(matchedUser.bannerUrl),
         bannerPublicId: matchedUser.bannerPublicId || null,
         bannerDeleteToken: matchedUser.bannerDeleteToken || null,
         age: matchedUser.age ? String(matchedUser.age) : '17',
@@ -1009,19 +1117,20 @@ export default function App() {
         email: matchedUser.email || ''
       };
 
-      // 4. Save login details & session in localStorage (automatically logged in on reload)
+      // 4. Save login details & session in localStorage
       localStorage.setItem('chat_community_user', JSON.stringify(userObj));
       localStorage.setItem('chat_community_profile', JSON.stringify(loadedProfile));
 
       // 5. Update online status in Realtime Database
-      update(ref(rtdb, `users/${matchedKey}`), {
+      isSessionVerifiedRef.current = true;
+      await update(ref(rtdb, `users/${matchedKey}`), {
         isOnline: true,
         lastSeen: serverTimestamp()
       }).catch((e) => console.warn('Online status update notice:', e));
 
       // 6. Set app state
-      setCurrentUser(userObj);
       setUserProfile(loadedProfile);
+      setCurrentUser(userObj);
       setLoginEmail('');
       setLoginPassword('');
       setLoginError(null);
@@ -1034,6 +1143,46 @@ export default function App() {
     }
   };
 
+  // Sign out cleanly: cancel onDisconnect hooks and mark user offline in RTDB
+  const handleSignOut = async () => {
+    if (currentUser?.username) {
+      const key = sanitizeDbKey(currentUser.username);
+      isSessionVerifiedRef.current = false;
+      try {
+        await onDisconnect(ref(rtdb, `users/${key}/isOnline`)).cancel();
+        await onDisconnect(ref(rtdb, `users/${key}/lastSeen`)).cancel();
+        await update(ref(rtdb, `users/${key}`), {
+          isOnline: false,
+          lastSeen: serverTimestamp()
+        });
+      } catch (_) {}
+    }
+
+    if (profileAudioRef.current) {
+      profileAudioRef.current.pause();
+    }
+    setActiveAudioTrack(null);
+    setIsProfileMusicPlaying(false);
+    setCurrentUser(null);
+    setSelectedUser(null);
+    setReplyingTo(null);
+
+    try {
+      localStorage.removeItem('chat_community_user');
+      localStorage.removeItem('chat_community_profile');
+    } catch (_) {}
+
+    setLoginEmail('');
+    setLoginPassword('');
+    setLoginError(null);
+    setShowProfileMenu(false);
+    setShowGuide(false);
+    setProfileModalOpen(false);
+    setPlayerPopoverOpen(false);
+  };
+
+  const [forgotNewPassword, setForgotNewPassword] = useState('');
+
   // Forgot password action
   const handleForgotPassword = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -1045,18 +1194,34 @@ export default function App() {
     setForgotStatus(null);
     try {
       const snap = await get(ref(rtdb, 'users'));
-      let exists = false;
+      let matchedKey: string | null = null;
+      let matchedUsername: string | null = null;
       if (snap.exists()) {
         const val = snap.val();
         for (const k of Object.keys(val)) {
           if (val[k]?.email && val[k].email.toLowerCase() === forgotEmail.trim().toLowerCase()) {
-            exists = true;
+            matchedKey = k;
+            matchedUsername = val[k].username;
             break;
           }
         }
       }
-      if (exists) {
-        setForgotStatus('Account verified! If password recovery email service is configured, reset instructions are on their way.');
+      if (matchedKey && matchedUsername) {
+        if (forgotNewPassword.trim()) {
+          if (forgotNewPassword.trim().length < 4) {
+            setForgotStatus('New password must be at least 4 characters long.');
+          } else {
+            const newHash = await hashPassword(forgotNewPassword.trim());
+            await update(ref(rtdb, `users/${matchedKey}`), {
+              passwordHash: newHash,
+              updatedAt: serverTimestamp()
+            });
+            setForgotNewPassword('');
+            setForgotStatus(`Password updated for @${matchedUsername}! You can now log in with your new password.`);
+          }
+        } else {
+          setForgotStatus(`Account verified (@${matchedUsername})! Enter a new password below to reset it immediately.`);
+        }
       } else {
         setForgotStatus('No registered account was found with that email address.');
       }
@@ -1073,7 +1238,9 @@ export default function App() {
     if (!inputText.trim() || !currentUser) return;
 
     const textToSend = inputText.trim();
+    const currentReply = replyingTo;
     setInputText('');
+    setReplyingTo(null);
 
     // Handle /clear command: instantly deletes all messages from Realtime Database and local cache
     if (textToSend.toLowerCase() === '/clear') {
@@ -1090,12 +1257,15 @@ export default function App() {
       return;
     }
 
+    const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
     const newMsgData = {
       sender: currentUser.username,
+      senderKey: sanitizeDbKey(currentUser.username),
       text: textToSend,
-      avatarUrl: userProfile.avatarUrl || null,
-      pfpBorderId: userProfile.pfpBorderId || null,
+      avatarUrl: cleanAvatar,
+      pfpBorderId: userProfile.pfpBorderId || 'pfp-default',
       pfpBorderThickness: userProfile.pfpBorderThickness || 2,
+      replyTo: currentReply || null,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       createdAt: serverTimestamp()
     };
@@ -1105,29 +1275,83 @@ export default function App() {
       await push(messagesRef, newMsgData);
     } catch (err) {
       console.warn('Realtime Database push fallback:', err);
-      // Fallback local append if offline
       const fallbackMsg: ChatMessage = {
         id: Date.now().toString(),
         sender: currentUser.username,
+        senderKey: sanitizeDbKey(currentUser.username),
         text: textToSend,
         timestamp: 'Just now',
-        avatarUrl: userProfile.avatarUrl,
+        createdAt: Date.now(),
+        avatarUrl: cleanAvatar,
         pfpBorderId: userProfile.pfpBorderId,
-        pfpBorderThickness: userProfile.pfpBorderThickness
+        pfpBorderThickness: userProfile.pfpBorderThickness,
+        replyTo: currentReply || null
       };
       setMessages((prev) => [...prev, fallbackMsg]);
     }
   };
 
-  // Avatar and Banner file handlers (Compacted to tiny KB, uploaded to Cloudinary, deleting previous asset)
+  // Delete a specific chat message (own message) from Realtime Database
+  const handleDeleteMessage = async (msgId: string) => {
+    try {
+      await remove(ref(rtdb, `messages/${msgId}`));
+    } catch (err) {
+      console.warn('Error deleting message:', err);
+      setMessages((prev) => prev.filter((m) => m.id !== msgId));
+    }
+  };
+
+  // Voice input toggle using Web Speech API
+  const handleToggleVoiceInput = () => {
+    if (isListeningVoice && recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (_) {}
+      setIsListeningVoice(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      chatInputRef.current?.focus();
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'en-US';
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      recognition.onstart = () => setIsListeningVoice(true);
+      recognition.onend = () => setIsListeningVoice(false);
+      recognition.onerror = () => setIsListeningVoice(false);
+      recognition.onresult = (event: any) => {
+        const transcript = event.results?.[0]?.[0]?.transcript;
+        if (transcript) {
+          setInputText((prev) => (prev ? `${prev} ${transcript}` : transcript));
+          chatInputRef.current?.focus();
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (_) {
+      setIsListeningVoice(false);
+    }
+  };
+
+  // Avatar and Banner file handlers (Compacted to tiny KB, uploaded to Cloudinary, synced to RTDB)
   const handlePfpUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = '';
 
-    // Cache previous avatar info to delete it
-    const oldAvatarUrl = userProfile.avatarUrl;
+    const oldAvatarUrl = sanitizeMediaUrl(userProfile.avatarUrl);
     const oldAvatarPublicId = userProfile.avatarPublicId;
     const oldAvatarToken = userProfile.avatarDeleteToken;
+
+    setIsUploadingAvatar(true);
 
     // 1. Compact image size to tiny KB (Canvas WebP/JPEG compression)
     let uploadFile = file;
@@ -1152,29 +1376,45 @@ export default function App() {
       }).catch((delErr) => console.warn('Old avatar delete notice:', delErr));
     }
 
-    // 3. Upload compacted file to Cloudinary in 'avatars' folder
+    // 3. Upload compacted file to Cloudinary in 'avatars' folder, then sync permanent URL to RTDB
     try {
       const uploadRes = await uploadToCloudinary(uploadFile, 'image', 'avatars');
       const finalUrl = uploadRes.secure_url || uploadRes.url;
-      setUserProfile((prev) => ({
-        ...prev,
+      const updates: Partial<UserProfileState> = {
         avatarUrl: finalUrl,
         avatarPublicId: uploadRes.public_id,
         avatarDeleteToken: uploadRes.delete_token || null
-      }));
+      };
+      setUserProfile((prev) => ({ ...prev, ...updates }));
+      await saveProfileToRtdb(updates);
     } catch (err) {
-      console.warn('Cloudinary avatar upload notice:', err);
+      console.warn('Cloudinary avatar upload fallback to compact Data URL:', err);
+      try {
+        const dataUrl = await fileToDataUrl(uploadFile);
+        const updates: Partial<UserProfileState> = {
+          avatarUrl: dataUrl,
+          avatarPublicId: null,
+          avatarDeleteToken: null
+        };
+        setUserProfile((prev) => ({ ...prev, ...updates }));
+        await saveProfileToRtdb(updates);
+      } catch (_) {}
+    } finally {
+      URL.revokeObjectURL(localPreview);
+      setIsUploadingAvatar(false);
     }
   };
 
   const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = '';
 
-    // Cache previous banner info to delete it
-    const oldBannerUrl = userProfile.bannerUrl;
+    const oldBannerUrl = sanitizeMediaUrl(userProfile.bannerUrl);
     const oldBannerPublicId = userProfile.bannerPublicId;
     const oldBannerToken = userProfile.bannerDeleteToken;
+
+    setIsUploadingBanner(true);
 
     // 1. Compact banner size to tiny KB (Canvas WebP/JPEG compression)
     let uploadFile = file;
@@ -1199,26 +1439,46 @@ export default function App() {
       }).catch((delErr) => console.warn('Old banner delete notice:', delErr));
     }
 
-    // 3. Upload compacted file to Cloudinary in 'banners' folder
+    // 3. Upload compacted file to Cloudinary in 'banners' folder, then sync permanent URL to RTDB
     try {
       const uploadRes = await uploadToCloudinary(uploadFile, 'image', 'banners');
       const finalUrl = uploadRes.secure_url || uploadRes.url;
-      setUserProfile((prev) => ({
-        ...prev,
+      const updates: Partial<UserProfileState> = {
         bannerUrl: finalUrl,
         bannerPublicId: uploadRes.public_id,
         bannerDeleteToken: uploadRes.delete_token || null
-      }));
+      };
+      setUserProfile((prev) => ({ ...prev, ...updates }));
+      await saveProfileToRtdb(updates);
     } catch (err) {
-      console.warn('Cloudinary banner upload notice:', err);
+      console.warn('Cloudinary banner upload fallback to compact Data URL:', err);
+      try {
+        const dataUrl = await fileToDataUrl(uploadFile);
+        const updates: Partial<UserProfileState> = {
+          bannerUrl: dataUrl,
+          bannerPublicId: null,
+          bannerDeleteToken: null
+        };
+        setUserProfile((prev) => ({ ...prev, ...updates }));
+        await saveProfileToRtdb(updates);
+      } catch (_) {}
+    } finally {
+      URL.revokeObjectURL(localPreview);
+      setIsUploadingBanner(false);
     }
   };
 
   const handleRemoveAvatar = async () => {
-    const oldUrl = userProfile.avatarUrl;
+    const oldUrl = sanitizeMediaUrl(userProfile.avatarUrl);
     const oldPublicId = userProfile.avatarPublicId;
     const oldToken = userProfile.avatarDeleteToken;
-    setUserProfile((p) => ({ ...p, avatarUrl: null, avatarPublicId: null, avatarDeleteToken: null }));
+    const updates: Partial<UserProfileState> = {
+      avatarUrl: null,
+      avatarPublicId: null,
+      avatarDeleteToken: null
+    };
+    setUserProfile((p) => ({ ...p, ...updates }));
+    await saveProfileToRtdb(updates);
     if (oldUrl || oldPublicId) {
       deleteFromCloudinary({
         url: oldUrl,
@@ -1230,10 +1490,16 @@ export default function App() {
   };
 
   const handleRemoveBanner = async () => {
-    const oldUrl = userProfile.bannerUrl;
+    const oldUrl = sanitizeMediaUrl(userProfile.bannerUrl);
     const oldPublicId = userProfile.bannerPublicId;
     const oldToken = userProfile.bannerDeleteToken;
-    setUserProfile((p) => ({ ...p, bannerUrl: null, bannerPublicId: null, bannerDeleteToken: null }));
+    const updates: Partial<UserProfileState> = {
+      bannerUrl: null,
+      bannerPublicId: null,
+      bannerDeleteToken: null
+    };
+    setUserProfile((p) => ({ ...p, ...updates }));
+    await saveProfileToRtdb(updates);
     if (oldUrl || oldPublicId) {
       deleteFromCloudinary({
         url: oldUrl,
@@ -1244,16 +1510,29 @@ export default function App() {
     }
   };
 
-  // Control profile music playback
-  useEffect(() => {
-    if (profileAudioRef.current) {
-      if (isProfileMusicPlaying && userProfile.musicTrack) {
-        profileAudioRef.current.play().catch(() => setIsProfileMusicPlaying(false));
-      } else {
-        profileAudioRef.current.pause();
-      }
+  // Toggle playback of any user's profile music track (self or other user)
+  const handleToggleProfileMusic = useCallback((trackToPlay: MusicTrack | null | undefined) => {
+    if (!trackToPlay || !trackToPlay.url) return;
+
+    if (activeAudioTrack?.url === trackToPlay.url) {
+      setIsProfileMusicPlaying((prev) => !prev);
+    } else {
+      setActiveAudioTrack(trackToPlay);
+      setIsProfileMusicPlaying(true);
     }
-  }, [isProfileMusicPlaying, userProfile.musicTrack]);
+  }, [activeAudioTrack]);
+
+  // Control profile music audio element playback
+  useEffect(() => {
+    const audioEl = profileAudioRef.current;
+    if (!audioEl) return;
+
+    if (isProfileMusicPlaying && activeAudioTrack?.url) {
+      audioEl.play().catch(() => setIsProfileMusicPlaying(false));
+    } else {
+      audioEl.pause();
+    }
+  }, [isProfileMusicPlaying, activeAudioTrack]);
 
   // Open Edit Sub-Modal with prefilled values
   const openEditSubModal = (
@@ -1267,6 +1546,7 @@ export default function App() {
       setTempLanguage(userProfile.language);
     } else if (type === 'username') {
       setTempUsername(currentUser?.username || '');
+      setUsernameEditError(null);
     } else if (type === 'bio') {
       setTempBio(userProfile.bio);
     } else if (type === 'mood') {
@@ -1282,12 +1562,15 @@ export default function App() {
       const idx = PFP_BORDERS.findIndex((b) => b.id === userProfile.pfpBorderId);
       setTempPfpBorderIndex(idx >= 0 ? idx : 0);
       setTempPfpBorderThickness(userProfile.pfpBorderThickness || 2);
+    } else if (type === 'music') {
+      // Pause background profile audio while editing music in modal
+      setIsProfileMusicPlaying(false);
     }
     setActiveEditSubModal(type);
   };
 
   // ==========================================
-  // VIEW 1: CHAT UI (After Sign up)
+  // VIEW 1: CHAT UI (After Sign up / Login)
   // ==========================================
   if (currentUser) {
     return (
@@ -1319,13 +1602,14 @@ export default function App() {
                 className="w-8 h-8"
                 showOnline={true}
                 pfpBorderClass={getPfpBorder(userProfile.pfpBorderId).pfpBorderClass}
+                pfpBorderThickness={userProfile.pfpBorderThickness}
               />
             </button>
 
-            {/* Profile Dropdown Menu (Matching Image 1 with our options) */}
+            {/* Profile Dropdown Menu */}
             {showProfileMenu && (
               <div className="absolute right-0 top-full mt-2 w-56 bg-[#181820] border border-[#282834] rounded-2xl shadow-2xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
-                {/* Header with Avatar, Username, and Green Checkmark (Image 1) */}
+                {/* Header with Avatar, Username, and Green Checkmark */}
                 <div className="p-3.5 flex items-center justify-between">
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="w-10 h-10 rounded-xl overflow-hidden bg-[#24252e] border border-white/10 shrink-0">
@@ -1352,12 +1636,13 @@ export default function App() {
 
                 <div className="border-t border-[#252530]" />
 
-                {/* Our Options */}
+                {/* Menu Options */}
                 <div className="p-2 space-y-1">
                   <button
                     type="button"
                     onClick={() => {
                       setShowProfileMenu(false);
+                      setSelectedUser(null);
                       setProfileViewMode('edit');
                       setProfileModalOpen(true);
                     }}
@@ -1371,6 +1656,7 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       setShowProfileMenu(false);
+                      setSelectedUser(null);
                       setProfileViewMode('view');
                       setProfileModalOpen(true);
                     }}
@@ -1395,24 +1681,7 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={() => {
-                      if (currentUser) {
-                        const key = sanitizeDbKey(currentUser.username);
-                        update(ref(rtdb, `users/${key}`), { isOnline: false, lastSeen: serverTimestamp() }).catch(() => {});
-                      }
-                      setCurrentUser(null);
-                      try {
-                        localStorage.removeItem('chat_community_user');
-                        localStorage.removeItem('chat_community_profile');
-                      } catch (_) {}
-                      setLoginEmail('');
-                      setLoginPassword('');
-                      setLoginError(null);
-                      setShowProfileMenu(false);
-                      setShowGuide(false);
-                      setProfileModalOpen(false);
-                      setPlayerPopoverOpen(false);
-                    }}
+                    onClick={handleSignOut}
                     className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-rose-400 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer text-left"
                   >
                     <LogOut className="w-4 h-4" />
@@ -1428,7 +1697,7 @@ export default function App() {
         <div className="flex-1 flex overflow-hidden relative">
           {/* CHAT AREA */}
           <section className="flex-1 flex flex-col bg-[#111114] overflow-hidden relative">
-            {/* MESSAGES LIST (Cleared, No Fake Messages) */}
+            {/* MESSAGES LIST */}
             <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
               {messages.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-zinc-600 pointer-events-none select-none">
@@ -1444,38 +1713,41 @@ export default function App() {
               ) : (
                 messages.map((msg) => {
                   const isSenderMe = Boolean(
-                    currentUser && msg.sender.toLowerCase() === currentUser.username.toLowerCase()
+                    currentUser &&
+                    (msg.sender.toLowerCase() === currentUser.username.toLowerCase() ||
+                      (msg.senderKey && msg.senderKey === sanitizeDbKey(currentUser.username)))
                   );
-                  const senderFromList = registeredUsers.find(
-                    (u) => u.username.toLowerCase() === msg.sender.toLowerCase()
+                  const senderFromList = allUsersList.find(
+                    (u) =>
+                      u.username.toLowerCase() === msg.sender.toLowerCase() ||
+                      (msg.senderKey && sanitizeDbKey(u.username) === msg.senderKey)
                   );
+                  const displaySenderName = isSenderMe
+                    ? currentUser.username
+                    : (senderFromList?.username || msg.sender);
                   const msgAvatarUrl = isSenderMe
-                    ? (userProfile.avatarUrl || msg.avatarUrl)
-                    : (msg.avatarUrl || senderFromList?.avatarUrl || null);
+                    ? userProfile.avatarUrl
+                    : (senderFromList ? senderFromList.avatarUrl : (msg.avatarUrl || null));
                   const msgBorderId = isSenderMe
                     ? userProfile.pfpBorderId
-                    : (msg.pfpBorderId || senderFromList?.pfpBorderId || 'pfp-default');
+                    : (senderFromList?.pfpBorderId || msg.pfpBorderId || 'pfp-default');
                   const msgBorderThickness = isSenderMe
                     ? userProfile.pfpBorderThickness
-                    : (msg.pfpBorderThickness ?? senderFromList?.pfpBorderThickness ?? 2);
+                    : (senderFromList?.pfpBorderThickness ?? msg.pfpBorderThickness ?? 2);
 
                   const handleOpenSenderProfile = (e: React.MouseEvent) => {
                     e.stopPropagation();
-                    if (senderFromList) {
+                    if (isSenderMe) {
+                      setSelectedUser(null);
+                    } else if (senderFromList) {
                       setSelectedUser(senderFromList);
-                    } else if (isSenderMe) {
-                      setSelectedUser({
-                        username: currentUser.username,
-                        ...userProfile,
-                        isOnline: true
-                      });
                     } else {
                       setSelectedUser({
-                        username: msg.sender,
+                        username: displaySenderName,
                         avatarUrl: msg.avatarUrl || null,
                         pfpBorderId: msg.pfpBorderId || null,
                         pfpBorderThickness: msg.pfpBorderThickness,
-                        isOnline: true
+                        isOnline: false
                       });
                     }
                     setProfileViewMode('view');
@@ -1491,7 +1763,7 @@ export default function App() {
                         type="button"
                         onClick={handleOpenSenderProfile}
                         className="cursor-pointer transition-transform hover:scale-105 active:scale-95 focus:outline-none"
-                        title={`View ${msg.sender}'s profile`}
+                        title={`View ${displaySenderName}'s profile`}
                       >
                         <UserAvatar
                           avatarUrl={msgAvatarUrl}
@@ -1502,22 +1774,59 @@ export default function App() {
                       </button>
 
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <button
                               type="button"
                               onClick={handleOpenSenderProfile}
                               className="font-bold text-white text-sm sm:text-base tracking-wide hover:text-cyan-300 transition-colors cursor-pointer text-left focus:outline-none"
                             >
-                              {msg.sender}
+                              {displaySenderName}
                             </button>
                           </div>
-                          <div className="flex items-center gap-2 text-zinc-500 text-xs">
+
+                          <div className="flex items-center gap-1.5 text-zinc-500 text-xs">
+                            {/* Quick message actions on hover: Reply & Delete own */}
+                            <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity mr-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReplyingTo({
+                                    id: msg.id,
+                                    sender: displaySenderName,
+                                    text: msg.text
+                                  });
+                                  chatInputRef.current?.focus();
+                                }}
+                                title="Reply to message"
+                                className="p-1 rounded hover:bg-white/10 text-zinc-400 hover:text-cyan-300 transition-colors cursor-pointer"
+                              >
+                                <Reply className="w-3.5 h-3.5" />
+                              </button>
+                              {isSenderMe && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteMessage(msg.id)}
+                                  title="Delete message"
+                                  className="p-1 rounded hover:bg-rose-500/15 text-zinc-400 hover:text-rose-400 transition-colors cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
                             <span>{msg.timestamp}</span>
                           </div>
                         </div>
 
-                        <p className="text-white font-medium text-sm sm:text-base mt-0.5 break-words leading-relaxed">
+                        {/* Quoted Reply Preview if message is a reply */}
+                        {msg.replyTo && (
+                          <div className="mt-1 mb-1 pl-2.5 py-1 border-l-2 border-cyan-500/60 bg-white/[0.03] rounded-r-lg text-xs text-zinc-400 truncate">
+                            <span className="font-bold text-cyan-400 mr-1.5">@{msg.replyTo.sender}:</span>
+                            <span className="text-zinc-300">{msg.replyTo.text}</span>
+                          </div>
+                        )}
+
+                        <p className="text-white font-medium text-sm sm:text-base mt-0.5 break-words leading-relaxed select-text">
                           {msg.text}
                         </p>
                       </div>
@@ -1553,6 +1862,25 @@ export default function App() {
               </div>
             )}
 
+            {/* REPLYING TO BAR */}
+            {replyingTo && (
+              <div className="mx-4 mb-1.5 bg-[#181822] border border-cyan-500/30 rounded-xl px-3.5 py-2 flex items-center justify-between text-xs animate-in fade-in duration-100">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Reply className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                  <span className="text-zinc-400 shrink-0">Replying to</span>
+                  <span className="font-bold text-cyan-300 shrink-0">@{replyingTo.sender}</span>
+                  <span className="text-zinc-300 truncate">{replyingTo.text}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReplyingTo(null)}
+                  className="text-zinc-400 hover:text-white p-0.5 rounded cursor-pointer shrink-0 ml-2"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* CHAT INPUT BAR */}
             <div className="p-4 pt-1 bg-[#111114]">
               <form
@@ -1560,17 +1888,24 @@ export default function App() {
                 className="bg-[#18181e] border border-[#24242d] rounded-2xl px-4 py-2.5 flex items-center gap-2 focus-within:border-cyan-500/60 transition-colors shadow-lg"
               >
                 <input
+                  ref={chatInputRef}
                   type="text"
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
-                  placeholder="Type here..."
+                  placeholder={replyingTo ? `Reply to @${replyingTo.sender}...` : 'Type here...'}
                   className="flex-1 bg-transparent text-white text-sm sm:text-base placeholder-zinc-500 focus:outline-none px-1"
                 />
 
                 <button
                   type="button"
+                  onClick={handleToggleVoiceInput}
                   aria-label="Voice input"
-                  className="text-zinc-400 hover:text-white p-1 rounded-md transition-colors cursor-pointer"
+                  title={isListeningVoice ? 'Listening... Click to stop' : 'Voice dictation'}
+                  className={`p-1 rounded-md transition-colors cursor-pointer ${
+                    isListeningVoice
+                      ? 'text-rose-400 bg-rose-500/15 animate-pulse'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
                 >
                   <Mic className="w-5 h-5" />
                 </button>
@@ -1627,7 +1962,7 @@ export default function App() {
                     currentUser &&
                     userItem.username.toLowerCase() === currentUser.username.toLowerCase()
                   );
-                  const isOnline = userItem.isOnline !== false;
+                  const isOnline = userItem.isOnline === true;
                   return (
                     <div
                       key={userItem.username}
@@ -1636,11 +1971,11 @@ export default function App() {
                         e.stopPropagation();
                         setSelectedUser(userItem);
                         const rect = e.currentTarget.getBoundingClientRect();
-                        const popoverWidth = 240;
+                        const popoverWidth = 256;
                         const targetRight = window.innerWidth - rect.left + 14;
                         setPopoverPos({
                           top: Math.max(16, Math.min(window.innerHeight - 280, rect.top - 8)),
-                          right: Math.min(window.innerWidth - popoverWidth - 16, targetRight)
+                          right: Math.max(16, Math.min(window.innerWidth - popoverWidth - 16, targetRight))
                         });
                         setPlayerPopoverOpen(true);
                       }}
@@ -1681,9 +2016,9 @@ export default function App() {
             </aside>
           )}
 
-          {/* Options popover shown on the left of the player (Image 2) - Entire top bit is banner */}
+          {/* Options popover shown on the left of the player - Entire top bit is banner */}
           {playerPopoverOpen && (() => {
-            const activePopoverUser: UserProfileData = selectedUser || (currentUser ? {
+            const activePopoverUser: UserProfileData = liveSelectedUser || (currentUser ? {
               username: currentUser.username,
               ...userProfile,
               isOnline: true
@@ -1694,6 +2029,12 @@ export default function App() {
             const isSelectedUserMe = Boolean(
               currentUser &&
               activePopoverUser.username.toLowerCase() === currentUser.username.toLowerCase()
+            );
+            const popoverMusicTrack = isSelectedUserMe ? userProfile.musicTrack : activePopoverUser.musicTrack;
+            const isThisTrackPlaying = Boolean(
+              isProfileMusicPlaying &&
+              popoverMusicTrack &&
+              activeAudioTrack?.url === popoverMusicTrack.url
             );
 
             return (
@@ -1744,7 +2085,7 @@ export default function App() {
                       <span>{activePopoverUser.username}</span>
                     </h3>
                     <p className="text-xs text-zinc-300 font-medium mt-0.5 drop-shadow-sm truncate">
-                      {(isSelectedUserMe ? userProfile.age : activePopoverUser.age) || '18'} years · {(isSelectedUserMe ? userProfile.gender : activePopoverUser.gender) || 'Unknown'}
+                      {(isSelectedUserMe ? userProfile.age : activePopoverUser.age) || '17'} years · {(isSelectedUserMe ? userProfile.gender : activePopoverUser.gender) || 'Unknown'}
                     </p>
                   </div>
                 </div>
@@ -1771,6 +2112,7 @@ export default function App() {
                       type="button"
                       onClick={() => {
                         setPlayerPopoverOpen(false);
+                        setSelectedUser(null);
                         setProfileViewMode('edit');
                         setProfileModalOpen(true);
                       }}
@@ -1782,20 +2124,20 @@ export default function App() {
                   )}
 
                   {/* 3. Profile Music play/pause button if track exists */}
-                  {((isSelectedUserMe ? userProfile.musicTrack : activePopoverUser.musicTrack)) && (
+                  {popoverMusicTrack && (
                     <button
                       type="button"
-                      onClick={() => setIsProfileMusicPlaying(!isProfileMusicPlaying)}
+                      onClick={() => handleToggleProfileMusic(popoverMusicTrack)}
                       className="w-full bg-[#181822] hover:bg-[#20202e] text-cyan-300 font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer border border-cyan-500/20"
                     >
-                      {isProfileMusicPlaying ? (
+                      {isThisTrackPlaying ? (
                         <>
-                          <Pause className="w-3.5 h-3.5 fill-cyan-400" />
+                          <Pause className="w-3.5 h-3.5 fill-cyan-400 shrink-0" />
                           <span className="truncate">Pause Music</span>
                         </>
                       ) : (
                         <>
-                          <Play className="w-3.5 h-3.5 fill-cyan-400" />
+                          <Play className="w-3.5 h-3.5 fill-cyan-400 shrink-0" />
                           <span className="truncate">Play Profile Music</span>
                         </>
                       )}
@@ -1807,11 +2149,11 @@ export default function App() {
           })()}
         </div>
 
-        {/* Hidden Audio Element for Profile Music */}
-        {userProfile.musicTrack && (
+        {/* Hidden Audio Element for Profile Music (Supports self or any viewed user's track) */}
+        {activeAudioTrack && (
           <audio
             ref={profileAudioRef}
-            src={userProfile.musicTrack.url}
+            src={activeAudioTrack.url}
             onEnded={() => setIsProfileMusicPlaying(false)}
           />
         )}
@@ -1820,8 +2162,8 @@ export default function App() {
         {/* PROFILE MODAL (EDIT & VIEW MODES)                    */}
         {/* ==================================================== */}
         {profileModalOpen && (() => {
-          const activeModalUser: UserProfileData = (selectedUser && (!currentUser || selectedUser.username.toLowerCase() !== currentUser.username.toLowerCase()))
-            ? selectedUser
+          const activeModalUser: UserProfileData = (liveSelectedUser && (!currentUser || liveSelectedUser.username.toLowerCase() !== currentUser.username.toLowerCase()))
+            ? liveSelectedUser
             : (currentUser ? {
                 username: currentUser.username,
                 ...userProfile,
@@ -1836,31 +2178,36 @@ export default function App() {
           );
           const effectiveProfileViewMode = isViewingSelf ? profileViewMode : 'view';
 
-          const bannerToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+          const bannerToShow = isViewingSelf
             ? userProfile.bannerUrl
             : activeModalUser.bannerUrl;
-          const avatarToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+          const avatarToShow = isViewingSelf
             ? userProfile.avatarUrl
             : activeModalUser.avatarUrl;
-          const pfpBorderIdToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+          const pfpBorderIdToShow = isViewingSelf
             ? userProfile.pfpBorderId
             : activeModalUser.pfpBorderId;
-          const pfpBorderThicknessToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+          const pfpBorderThicknessToShow = isViewingSelf
             ? userProfile.pfpBorderThickness
             : (activeModalUser.pfpBorderThickness || 2);
-          const profileBorderIdToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+          const profileBorderIdToShow = isViewingSelf
             ? userProfile.profileBorderId
             : activeModalUser.profileBorderId;
-          const profileBorderThicknessToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+          const profileBorderThicknessToShow = isViewingSelf
             ? userProfile.profileBorderThickness
             : (activeModalUser.profileBorderThickness || 2);
           const usernameToShow = activeModalUser.username;
-          const moodToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+          const moodToShow = isViewingSelf
             ? userProfile.mood
             : activeModalUser.mood;
           const musicToShow = isViewingSelf
             ? userProfile.musicTrack
             : activeModalUser.musicTrack;
+          const isModalTrackPlaying = Boolean(
+            isProfileMusicPlaying &&
+            musicToShow &&
+            activeAudioTrack?.url === musicToShow.url
+          );
 
           return (
             <div
@@ -1906,6 +2253,12 @@ export default function App() {
                     />
                   ) : (
                     <div className="w-full h-full opacity-40 bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:16px_16px]" />
+                  )}
+
+                  {isUploadingBanner && isViewingSelf && (
+                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-10">
+                      <Loader2 className="w-6 h-6 text-cyan-400 animate-spin" />
+                    </div>
                   )}
 
                   {/* BANNER CONTROLS (Top Right) */}
@@ -1990,6 +2343,12 @@ export default function App() {
                         >
                           <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
                         </svg>
+                      </div>
+                    )}
+
+                    {isUploadingAvatar && isViewingSelf && (
+                      <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-10">
+                        <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" />
                       </div>
                     )}
 
@@ -2331,10 +2690,10 @@ export default function App() {
                             </div>
                             <button
                               type="button"
-                              onClick={() => setIsProfileMusicPlaying(!isProfileMusicPlaying)}
+                              onClick={() => handleToggleProfileMusic(musicToShow)}
                               className="w-8 h-8 rounded-lg bg-[#00c2ff] hover:bg-[#00aee6] text-white flex items-center justify-center shrink-0 cursor-pointer shadow-sm ml-2"
                             >
-                              {isProfileMusicPlaying ? (
+                              {isModalTrackPlaying ? (
                                 <Pause className="w-4 h-4 fill-white" />
                               ) : (
                                 <Play className="w-4 h-4 fill-white translate-x-0.5" />
@@ -2345,7 +2704,7 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* Tab 2: About me (Pure text, NO BOX, scrollable for big ass bios) */}
+                    {/* Tab 2: About me (Pure text, NO BOX, scrollable for long bios) */}
                     {publicProfileTab === 'aboutme' && (
                       <div className="w-full max-h-[340px] overflow-y-auto px-1 py-1 pr-2">
                         {((isViewingSelf ? userProfile.bio : activeModalUser.bio)) ? (
@@ -2493,14 +2852,18 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        setUserProfile((p) => ({
-                          ...p,
+                        const updates: Partial<UserProfileState> = {
                           age: tempAge,
                           gender: tempGender,
                           relationship: tempRelationship,
-                          country: tempCountry || 'United Kingdom',
-                          language: tempLanguage || 'English'
-                        }));
+                          country: tempCountry.trim() || 'United Kingdom',
+                          language: tempLanguage.trim() || 'English'
+                        };
+                        setUserProfile((p) => ({ ...p, ...updates }));
+                        if (currentUser) {
+                          setCurrentUser({ ...currentUser, gender: tempGender });
+                        }
+                        saveProfileToRtdb(updates);
                         setActiveEditSubModal(null);
                       }}
                       className="w-full bg-[#00c2ff] hover:bg-[#00aee6] text-white font-extrabold py-2.5 rounded-xl text-sm transition-colors cursor-pointer shadow-md shadow-cyan-500/25"
@@ -2512,7 +2875,7 @@ export default function App() {
               </div>
             )}
 
-            {/* 2. Edit about me (bio) sub-modal - ALLOW BIG ASS BIOS */}
+            {/* 2. Edit about me (bio) sub-modal */}
             {activeEditSubModal === 'bio' && (
               <div className="w-full max-w-[480px] bg-[#141418] border border-[#272736] rounded-3xl p-5 sm:p-6 shadow-2xl relative z-10 text-white animate-in zoom-in-95 duration-100">
                 <div className="flex items-center justify-between mb-3">
@@ -2546,6 +2909,7 @@ export default function App() {
                       type="button"
                       onClick={() => {
                         setUserProfile((p) => ({ ...p, bio: tempBio }));
+                        saveProfileToRtdb({ bio: tempBio });
                         setActiveEditSubModal(null);
                       }}
                       className="bg-[#00c2ff] hover:bg-[#00aee6] text-white font-extrabold px-6 py-2.5 rounded-xl text-sm transition-colors cursor-pointer shadow-md shadow-cyan-500/25"
@@ -2600,7 +2964,7 @@ export default function App() {
                       onClick={async () => {
                         const newName = tempUsername.trim();
                         if (!newName || !currentUser) return;
-                        if (newName.toLowerCase() === currentUser.username.toLowerCase()) {
+                        if (newName === currentUser.username) {
                           setActiveEditSubModal(null);
                           return;
                         }
@@ -2609,32 +2973,88 @@ export default function App() {
                           setUsernameEditError(uVal.message || 'Invalid username.');
                           return;
                         }
+
+                        const oldName = currentUser.username;
+                        const oldKey = sanitizeDbKey(oldName);
+                        const newKey = sanitizeDbKey(newName);
+
                         setUsernameEditLoading(true);
                         setUsernameEditError(null);
+                        isRenamingRef.current = true;
+
                         try {
                           const usersSnap = await get(ref(rtdb, 'users'));
                           if (usersSnap.exists()) {
                             const data = usersSnap.val();
                             for (const k of Object.keys(data)) {
-                              if (data[k]?.username && data[k].username.toLowerCase() === newName.toLowerCase()) {
+                              if (k === oldKey) continue;
+                              if (
+                                k === newKey ||
+                                (data[k]?.username && data[k].username.toLowerCase() === newName.toLowerCase())
+                              ) {
                                 setUsernameEditError('That username is already taken by someone else.');
                                 setUsernameEditLoading(false);
+                                isRenamingRef.current = false;
                                 return;
                               }
                             }
                           }
-                          const oldKey = sanitizeDbKey(currentUser.username);
-                          const newKey = sanitizeDbKey(newName);
-                          const oldSnap = await get(ref(rtdb, `users/${oldKey}`));
-                          const oldData = oldSnap.exists() ? oldSnap.val() : {};
 
-                          await set(ref(rtdb, `users/${newKey}`), {
-                            ...oldData,
-                            username: newName,
-                            usernameLower: newName.toLowerCase(),
-                            updatedAt: serverTimestamp()
-                          });
-                          await remove(ref(rtdb, `users/${oldKey}`));
+                          if (oldKey === newKey) {
+                            // Casing-only change (e.g. "alex" -> "Alex")
+                            await update(ref(rtdb, `users/${oldKey}`), {
+                              username: newName,
+                              usernameLower: newName.toLowerCase(),
+                              updatedAt: serverTimestamp()
+                            });
+                          } else {
+                            // Key change: cancel old onDisconnect, copy full user node to newKey, then remove oldKey
+                            try {
+                              await onDisconnect(ref(rtdb, `users/${oldKey}/isOnline`)).cancel();
+                              await onDisconnect(ref(rtdb, `users/${oldKey}/lastSeen`)).cancel();
+                            } catch (_) {}
+
+                            const oldSnap = await get(ref(rtdb, `users/${oldKey}`));
+                            const oldData = oldSnap.exists() ? oldSnap.val() : {};
+
+                            await set(ref(rtdb, `users/${newKey}`), {
+                              ...oldData,
+                              ...userProfile,
+                              avatarUrl: sanitizeMediaUrl(userProfile.avatarUrl),
+                              bannerUrl: sanitizeMediaUrl(userProfile.bannerUrl),
+                              username: newName,
+                              usernameLower: newName.toLowerCase(),
+                              isOnline: true,
+                              lastSeen: serverTimestamp(),
+                              updatedAt: serverTimestamp()
+                            });
+                            await remove(ref(rtdb, `users/${oldKey}`));
+                          }
+
+                          // Also update sender name on all messages sent by this user in Realtime Database
+                          try {
+                            const msgsRef = ref(rtdb, 'messages');
+                            const msgsSnap = await get(msgsRef);
+                            if (msgsSnap.exists()) {
+                              const allMsgs = msgsSnap.val();
+                              const msgUpdates: Record<string, any> = {};
+                              for (const [mKey, mVal] of Object.entries(allMsgs)) {
+                                const m = mVal as any;
+                                if (
+                                  (m?.sender && m.sender.toLowerCase() === oldName.toLowerCase()) ||
+                                  m?.senderKey === oldKey
+                                ) {
+                                  msgUpdates[`${mKey}/sender`] = newName;
+                                  msgUpdates[`${mKey}/senderKey`] = newKey;
+                                }
+                              }
+                              if (Object.keys(msgUpdates).length > 0) {
+                                await update(msgsRef, msgUpdates);
+                              }
+                            }
+                          } catch (msgUpdateErr) {
+                            console.warn('Notice updating message sender names:', msgUpdateErr);
+                          }
 
                           const updated = { ...currentUser, username: newName };
                           setCurrentUser(updated);
@@ -2644,6 +3064,9 @@ export default function App() {
                           setUsernameEditError(err.message || 'Failed to update username.');
                         } finally {
                           setUsernameEditLoading(false);
+                          setTimeout(() => {
+                            isRenamingRef.current = false;
+                          }, 400);
                         }
                       }}
                       className="w-full bg-[#00c2ff] hover:bg-[#00aee6] text-white font-extrabold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-cyan-500/25 disabled:opacity-50"
@@ -2651,7 +3074,7 @@ export default function App() {
                       {usernameEditLoading ? (
                         <>
                           <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>Checking availability...</span>
+                          <span>Updating username...</span>
                         </>
                       ) : (
                         <>
@@ -2692,7 +3115,9 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        setUserProfile((p) => ({ ...p, mood: tempMood.trim() }));
+                        const cleanMood = tempMood.trim();
+                        setUserProfile((p) => ({ ...p, mood: cleanMood }));
+                        saveProfileToRtdb({ mood: cleanMood });
                         setActiveEditSubModal(null);
                       }}
                       className="w-full bg-[#00c2ff] hover:bg-[#00aee6] text-white font-extrabold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-cyan-500/25"
@@ -2705,7 +3130,7 @@ export default function App() {
               </div>
             )}
 
-            {/* 5. User glow sub-modal (Free, in front) */}
+            {/* 5. User glow sub-modal */}
             {activeEditSubModal === 'glow' && (
               <GlowModal
                 initialColor={userProfile.glowColor}
@@ -2715,14 +3140,16 @@ export default function App() {
                 pfpBorderClass={getPfpBorder(userProfile.pfpBorderId).pfpBorderClass}
                 pfpBorderThickness={userProfile.pfpBorderThickness || 2}
                 onSave={(color, thick) => {
-                  setUserProfile((p) => ({ ...p, glowColor: color, glowThickness: thick }));
+                  const updates: Partial<UserProfileState> = { glowColor: color, glowThickness: thick };
+                  setUserProfile((p) => ({ ...p, ...updates }));
+                  saveProfileToRtdb(updates);
                   setActiveEditSubModal(null);
                 }}
                 onClose={() => setActiveEditSubModal(null)}
               />
             )}
 
-            {/* 6. Profile borders sub-modal (Clean Screenshot 3 UI, in front) */}
+            {/* 6. Profile borders sub-modal */}
             {activeEditSubModal === 'profileBorder' && (
               <BorderModal
                 type="profileBorder"
@@ -2736,18 +3163,19 @@ export default function App() {
                 language={userProfile.language}
                 bio={userProfile.bio}
                 onSave={(idx, thick) => {
-                  setUserProfile((p) => ({
-                    ...p,
+                  const updates: Partial<UserProfileState> = {
                     profileBorderId: PROFILE_BORDERS[idx].id,
                     profileBorderThickness: thick
-                  }));
+                  };
+                  setUserProfile((p) => ({ ...p, ...updates }));
+                  saveProfileToRtdb(updates);
                   setActiveEditSubModal(null);
                 }}
                 onClose={() => setActiveEditSubModal(null)}
               />
             )}
 
-            {/* 7. Profile picture borders sub-modal (Clean Screenshot 3 UI, in front) */}
+            {/* 7. Profile picture borders sub-modal */}
             {activeEditSubModal === 'pfpBorder' && (
               <BorderModal
                 type="pfpBorder"
@@ -2761,25 +3189,30 @@ export default function App() {
                 language={userProfile.language}
                 bio={userProfile.bio}
                 onSave={(idx, thick) => {
-                  setUserProfile((p) => ({
-                    ...p,
+                  const updates: Partial<UserProfileState> = {
                     pfpBorderId: PFP_BORDERS[idx].id,
                     pfpBorderThickness: thick
-                  }));
+                  };
+                  setUserProfile((p) => ({ ...p, ...updates }));
+                  saveProfileToRtdb(updates);
                   setActiveEditSubModal(null);
                 }}
                 onClose={() => setActiveEditSubModal(null)}
               />
             )}
 
-            {/* 8. Profile music / Music player sub-modal (Free, in front) */}
+            {/* 8. Profile music / Music player sub-modal */}
             {activeEditSubModal === 'music' && (
               <MusicPlayerModal
                 currentTrack={userProfile.musicTrack}
                 onSaveTrack={(track) => {
                   setUserProfile((p) => ({ ...p, musicTrack: track }));
+                  saveProfileToRtdb({ musicTrack: track });
                   if (!track) {
+                    setActiveAudioTrack(null);
                     setIsProfileMusicPlaying(false);
+                  } else {
+                    setActiveAudioTrack(track);
                   }
                 }}
                 onClose={() => setActiveEditSubModal(null)}
@@ -3506,7 +3939,7 @@ export default function App() {
 
               {forgotStatus && (
                 <div className={`mb-3.5 text-xs sm:text-sm px-3.5 py-2.5 rounded-xl flex items-start gap-2.5 animate-in fade-in ${
-                  forgotStatus.includes('verified')
+                  forgotStatus.includes('verified') || forgotStatus.includes('updated')
                     ? 'bg-emerald-500/15 border border-emerald-500/40 text-emerald-300'
                     : 'bg-amber-500/15 border border-amber-500/40 text-amber-300'
                 }`}>
@@ -3516,7 +3949,7 @@ export default function App() {
               )}
 
               <p className="text-xs sm:text-sm text-zinc-400 mb-4 text-left">
-                Enter your account email address to verify your account registration.
+                Enter your account email address to verify your username or set a new password.
               </p>
 
               <form onSubmit={handleForgotPassword} className="space-y-3.5">
@@ -3525,7 +3958,15 @@ export default function App() {
                   required
                   value={forgotEmail}
                   onChange={(e) => setForgotEmail(e.target.value)}
-                  placeholder="Email"
+                  placeholder="Account Email"
+                  className="w-full bg-[#1e1e24] border border-[#2d2d35] rounded-lg px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500 transition-colors"
+                />
+
+                <input
+                  type="password"
+                  value={forgotNewPassword}
+                  onChange={(e) => setForgotNewPassword(e.target.value)}
+                  placeholder="New Password (optional, min 4 chars)"
                   className="w-full bg-[#1e1e24] border border-[#2d2d35] rounded-lg px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500 transition-colors"
                 />
 
@@ -3537,10 +3978,10 @@ export default function App() {
                   {forgotLoading ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>Verifying account...</span>
+                      <span>Processing...</span>
                     </>
                   ) : (
-                    <span>Check Account</span>
+                    <span>{forgotNewPassword.trim() ? 'Reset Password' : 'Verify Account'}</span>
                   )}
                 </button>
 
@@ -3549,6 +3990,7 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       setForgotStatus(null);
+                      setForgotNewPassword('');
                       setModalType('login');
                     }}
                     className="text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer"
