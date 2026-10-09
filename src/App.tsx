@@ -45,15 +45,14 @@ import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
 import { detectUserCountry, getInstantUserCountry } from './utils/countryDetect';
 import { uploadToCloudinary } from './lib/cloudinary';
 import {
-  db,
-  collection,
-  addDoc,
-  doc,
-  setDoc,
-  onSnapshot,
+  rtdb,
+  ref,
+  push,
+  set,
+  remove,
+  onValue,
   query,
-  orderBy,
-  limit,
+  limitToLast,
   serverTimestamp
 } from './lib/firebase';
 
@@ -276,64 +275,64 @@ export default function App() {
     } catch (_) {}
   }, [messages]);
 
-  // Real-time Firestore messages listener
+  // Real-time Firebase Realtime Database messages listener
   useEffect(() => {
     try {
-      const messagesRef = collection(db, 'messages');
-      const q = query(messagesRef, orderBy('createdAt', 'asc'), limit(150));
-      const unsubscribe = onSnapshot(
-        q,
+      const messagesRef = ref(rtdb, 'messages');
+      const messagesQuery = query(messagesRef, limitToLast(150));
+      const unsubscribe = onValue(
+        messagesQuery,
         (snapshot) => {
-          if (!snapshot.empty) {
-            const liveMsgs: ChatMessage[] = snapshot.docs.map((docSnap) => {
-              const data = docSnap.data();
+          if (snapshot.exists()) {
+            const liveMsgs: ChatMessage[] = [];
+            snapshot.forEach((childSnap) => {
+              const data = childSnap.val();
               let ts = 'Just now';
-              if (data.createdAt?.toDate) {
-                ts = data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              if (typeof data.createdAt === 'number') {
+                ts = new Date(data.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
               } else if (data.timestamp) {
                 ts = data.timestamp;
               }
-              return {
-                id: docSnap.id,
+              liveMsgs.push({
+                id: childSnap.key || Date.now().toString(),
                 sender: data.sender || 'Anonymous',
                 text: data.text || '',
                 timestamp: ts,
                 avatarUrl: data.avatarUrl || null,
                 pfpBorderId: data.pfpBorderId || null,
                 pfpBorderThickness: data.pfpBorderThickness || 2
-              };
+              });
             });
             setMessages(liveMsgs);
+          } else {
+            setMessages([]);
           }
         },
         (err) => {
-          console.warn('Firestore real-time messages listener notice:', err.message);
+          console.warn('Realtime Database messages listener notice:', err.message);
         }
       );
       return () => unsubscribe();
     } catch (err) {
-      console.warn('Firestore initialization notice:', err);
+      console.warn('Realtime Database initialization notice:', err);
     }
   }, []);
 
-  // Sync current user profile to Firestore
+  // Sync current user profile to Realtime Database
   useEffect(() => {
     if (currentUser && currentUser.username) {
       try {
-        const userDocRef = doc(db, 'users', currentUser.username.toLowerCase());
-        setDoc(
-          userDocRef,
-          {
-            username: currentUser.username,
-            ...userProfile,
-            updatedAt: serverTimestamp()
-          },
-          { merge: true }
-        ).catch((err) => {
-          console.warn('Firestore user profile sync notice:', err.message);
+        const sanitizedUsername = currentUser.username.toLowerCase().replace(/[.#$\[\]]/g, '_');
+        const userRef = ref(rtdb, `users/${sanitizedUsername}`);
+        set(userRef, {
+          username: currentUser.username,
+          ...userProfile,
+          updatedAt: serverTimestamp()
+        }).catch((err) => {
+          console.warn('Realtime Database user profile sync notice:', err.message);
         });
       } catch (err) {
-        console.warn('Firestore user doc error:', err);
+        console.warn('Realtime Database user ref error:', err);
       }
     }
   }, [currentUser, userProfile]);
@@ -435,7 +434,7 @@ export default function App() {
     setShowGuide(true);
   };
 
-  // Send message in chat (Saved to Firestore for live real-time synchronization)
+  // Send message in chat (Saved to Realtime Database for live real-time synchronization)
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!inputText.trim() || !currentUser) return;
@@ -443,20 +442,36 @@ export default function App() {
     const textToSend = inputText.trim();
     setInputText('');
 
+    // Handle /clear command: instantly deletes all messages from Realtime Database and local cache
+    if (textToSend.toLowerCase() === '/clear') {
+      try {
+        const messagesRef = ref(rtdb, 'messages');
+        await remove(messagesRef);
+        localStorage.removeItem('chat_community_messages');
+        setMessages([]);
+      } catch (err) {
+        console.warn('Error clearing messages in RTDB:', err);
+        localStorage.removeItem('chat_community_messages');
+        setMessages([]);
+      }
+      return;
+    }
+
     const newMsgData = {
       sender: currentUser.username,
       text: textToSend,
-      avatarUrl: userProfile.avatarUrl,
-      pfpBorderId: userProfile.pfpBorderId,
+      avatarUrl: userProfile.avatarUrl || null,
+      pfpBorderId: userProfile.pfpBorderId || null,
       pfpBorderThickness: userProfile.pfpBorderThickness || 2,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       createdAt: serverTimestamp()
     };
 
     try {
-      await addDoc(collection(db, 'messages'), newMsgData);
+      const messagesRef = ref(rtdb, 'messages');
+      await push(messagesRef, newMsgData);
     } catch (err) {
-      console.warn('Firestore addDoc fallback:', err);
+      console.warn('Realtime Database push fallback:', err);
       // Fallback local append if offline
       const fallbackMsg: ChatMessage = {
         id: Date.now().toString(),

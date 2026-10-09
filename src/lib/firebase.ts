@@ -1,23 +1,23 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
-  getFirestore,
-  collection,
-  addDoc,
-  doc,
-  setDoc,
-  getDoc,
-  onSnapshot,
+  getDatabase,
+  ref,
+  push,
+  set,
+  get,
+  remove,
+  onValue,
   query,
-  orderBy,
-  limit,
+  limitToLast,
   serverTimestamp,
-  Timestamp
-} from 'firebase/firestore';
+  Database
+} from 'firebase/database';
 
 // User's provided Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyB-KCwg6WtgjYNsY_B7fwVZxsUNRLgzX6E",
   authDomain: "chatnova-21675.firebaseapp.com",
+  databaseURL: "https://chatnova-21675-default-rtdb.firebaseio.com",
   projectId: "chatnova-21675",
   storageBucket: "chatnova-21675.firebasestorage.app",
   messagingSenderId: "550189017450",
@@ -25,22 +25,21 @@ const firebaseConfig = {
   measurementId: "G-K5WWTFH0SF"
 };
 
-// Initialize Firebase
-export const app = initializeApp(firebaseConfig);
+// Initialize Firebase App
+export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Cloud Firestore
-export const db = getFirestore(app);
+// Initialize Firebase Realtime Database
+export const rtdb: Database = getDatabase(app);
 
 export {
-  collection,
-  addDoc,
-  doc,
-  setDoc,
-  getDoc,
-  onSnapshot,
+  ref,
+  push,
+  set,
+  get,
+  remove,
+  onValue,
   query,
-  orderBy,
-  limit,
-  serverTimestamp,
-  Timestamp
+  limitToLast,
+  serverTimestamp
 };
+
