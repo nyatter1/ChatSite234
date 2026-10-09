@@ -94,12 +94,19 @@ function UserAvatar({
 }
 
 export default function App() {
-  // Authentication & Current User State
-  const [currentUser, setCurrentUser] = useState<{ username: string; gender: string } | null>(null);
-
   const initialGeo = getInstantUserCountry();
 
-  // Profile Details State
+  // Authentication & Current User State (Loaded from localStorage)
+  const [currentUser, setCurrentUser] = useState<{ username: string; gender: string } | null>(() => {
+    try {
+      const saved = localStorage.getItem('chat_community_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch (_) {
+      return null;
+    }
+  });
+
+  // Profile Details State (Loaded from localStorage)
   const [userProfile, setUserProfile] = useState<{
     avatarUrl: string | null;
     bannerUrl: string | null;
@@ -117,23 +124,32 @@ export default function App() {
     pfpBorderId: string | null;
     pfpBorderThickness: number;
     musicTrack: MusicTrack | null;
-  }>({
-    avatarUrl: null,
-    bannerUrl: null,
-    age: '17',
-    gender: 'MALE',
-    relationship: 'Rather not say',
-    country: initialGeo.country,
-    language: initialGeo.language,
-    bio: '',
-    mood: '',
-    glowColor: null,
-    glowThickness: 18,
-    profileBorderId: 'pb-default',
-    profileBorderThickness: 2,
-    pfpBorderId: 'pfp-default',
-    pfpBorderThickness: 2,
-    musicTrack: null
+  }>(() => {
+    const base = {
+      avatarUrl: null,
+      bannerUrl: null,
+      age: '17',
+      gender: 'MALE',
+      relationship: 'Rather not say',
+      country: initialGeo.country,
+      language: initialGeo.language,
+      bio: '',
+      mood: '',
+      glowColor: null,
+      glowThickness: 18,
+      profileBorderId: 'pb-default',
+      profileBorderThickness: 2,
+      pfpBorderId: 'pfp-default',
+      pfpBorderThickness: 2,
+      musicTrack: null
+    };
+    try {
+      const saved = localStorage.getItem('chat_community_profile');
+      if (saved) {
+        return { ...base, ...JSON.parse(saved) };
+      }
+    } catch (_) {}
+    return base;
   });
 
   // Profile Modal State
@@ -202,14 +218,48 @@ export default function App() {
   const [monthDropdownOpen, setMonthDropdownOpen] = useState(false);
   const [yearDropdownOpen, setYearDropdownOpen] = useState(false);
 
-  // Chat View State
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Chat View State (Loaded from localStorage)
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem('chat_community_messages');
+      return saved ? JSON.parse(saved) : [];
+    } catch (_) {
+      return [];
+    }
+  });
   const [inputText, setInputText] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showTopic, setShowTopic] = useState(true);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [playerPopoverOpen, setPlayerPopoverOpen] = useState(false);
   const [popoverPos, setPopoverPos] = useState<{ top: number; right: number }>({ top: 80, right: 330 });
+
+  // Sync state to localStorage
+  useEffect(() => {
+    if (currentUser) {
+      try {
+        localStorage.setItem('chat_community_user', JSON.stringify(currentUser));
+      } catch (_) {}
+    } else {
+      try {
+        localStorage.removeItem('chat_community_user');
+      } catch (_) {}
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (currentUser) {
+      try {
+        localStorage.setItem('chat_community_profile', JSON.stringify(userProfile));
+      } catch (_) {}
+    }
+  }, [userProfile, currentUser]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('chat_community_messages', JSON.stringify(messages));
+    } catch (_) {}
+  }, [messages]);
 
   // Welcome Guide State
   const [showGuide, setShowGuide] = useState(false);
@@ -501,6 +551,9 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       setCurrentUser(null);
+                      try {
+                        localStorage.removeItem('chat_community_user');
+                      } catch (_) {}
                       setShowProfileMenu(false);
                       setShowGuide(false);
                       setProfileModalOpen(false);
