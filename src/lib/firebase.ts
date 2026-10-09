@@ -10,6 +10,7 @@ import {
   query,
   limitToLast,
   serverTimestamp,
+  onDisconnect,
   Database
 } from 'firebase/database';
 
@@ -17,7 +18,7 @@ import {
 const firebaseConfig = {
   apiKey: "AIzaSyB-KCwg6WtgjYNsY_B7fwVZxsUNRLgzX6E",
   authDomain: "chatnova-21675.firebaseapp.com",
-  databaseURL: "https://chatnova-21675-default-rtdb.firebaseio.com",
+  databaseURL: "https://chatnova-21675-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "chatnova-21675",
   storageBucket: "chatnova-21675.firebasestorage.app",
   messagingSenderId: "550189017450",
@@ -40,6 +41,7 @@ export {
   onValue,
   query,
   limitToLast,
-  serverTimestamp
+  serverTimestamp,
+  onDisconnect
 };
 

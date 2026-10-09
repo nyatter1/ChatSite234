@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   LogIn,
   SquarePen,
@@ -53,7 +53,8 @@ import {
   onValue,
   query,
   limitToLast,
-  serverTimestamp
+  serverTimestamp,
+  onDisconnect
 } from './lib/firebase';
 
 interface ChatMessage {
@@ -71,12 +72,14 @@ function UserAvatar({
   avatarUrl,
   className = 'w-10 h-10',
   showOnline = false,
+  isOnline = true,
   pfpBorderClass,
   pfpBorderThickness
 }: {
   avatarUrl?: string | null;
   className?: string;
   showOnline?: boolean;
+  isOnline?: boolean;
   pfpBorderClass?: string;
   pfpBorderThickness?: number;
 }) {
@@ -101,10 +104,37 @@ function UserAvatar({
         )}
       </div>
       {showOnline && (
-        <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-[#121215] rounded-full" />
+        <span
+          className={`absolute bottom-0 right-0 w-3 h-3 border-2 border-[#121215] rounded-full ${
+            isOnline ? 'bg-emerald-500' : 'bg-zinc-500'
+          }`}
+        />
       )}
     </div>
   );
+}
+
+interface UserProfileData {
+  username: string;
+  avatarUrl?: string | null;
+  bannerUrl?: string | null;
+  age?: string;
+  gender?: string;
+  relationship?: string;
+  country?: string;
+  language?: string;
+  bio?: string;
+  mood?: string;
+  glowColor?: string | null;
+  glowThickness?: number;
+  profileBorderId?: string | null;
+  profileBorderThickness?: number;
+  pfpBorderId?: string | null;
+  pfpBorderThickness?: number;
+  musicTrack?: MusicTrack | null;
+  isOnline?: boolean;
+  lastSeen?: any;
+  updatedAt?: any;
 }
 
 export default function App() {
@@ -247,6 +277,8 @@ export default function App() {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [playerPopoverOpen, setPlayerPopoverOpen] = useState(false);
   const [popoverPos, setPopoverPos] = useState<{ top: number; right: number }>({ top: 80, right: 330 });
+  const [selectedUser, setSelectedUser] = useState<UserProfileData | null>(null);
+  const [registeredUsers, setRegisteredUsers] = useState<UserProfileData[]>([]);
 
   // Sync state to localStorage
   useEffect(() => {
@@ -318,6 +350,80 @@ export default function App() {
     }
   }, []);
 
+  // Real-time listener for all registered/online users in Firebase Realtime Database
+  useEffect(() => {
+    try {
+      const usersRef = ref(rtdb, 'users');
+      const unsubscribe = onValue(
+        usersRef,
+        (snapshot) => {
+          if (snapshot.exists()) {
+            const list: UserProfileData[] = [];
+            snapshot.forEach((childSnap) => {
+              const val = childSnap.val();
+              if (val) {
+                const uName = val.username || childSnap.key || '';
+                list.push({
+                  username: uName,
+                  avatarUrl: val.avatarUrl || null,
+                  bannerUrl: val.bannerUrl || null,
+                  age: val.age ? String(val.age) : '18',
+                  gender: val.gender || 'MALE',
+                  relationship: val.relationship || 'Rather not say',
+                  country: val.country || 'Global',
+                  language: val.language || 'English',
+                  bio: val.bio || '',
+                  mood: val.mood || '',
+                  glowColor: val.glowColor || null,
+                  glowThickness: typeof val.glowThickness === 'number' ? val.glowThickness : 18,
+                  profileBorderId: val.profileBorderId || 'pb-default',
+                  profileBorderThickness: typeof val.profileBorderThickness === 'number' ? val.profileBorderThickness : 2,
+                  pfpBorderId: val.pfpBorderId || 'pfp-default',
+                  pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : 2,
+                  musicTrack: val.musicTrack || null,
+                  isOnline: val.isOnline !== false
+                });
+              }
+            });
+            setRegisteredUsers(list);
+          } else {
+            setRegisteredUsers([]);
+          }
+        },
+        (err) => {
+          console.warn('Realtime Database users listener notice:', err.message);
+        }
+      );
+      return () => unsubscribe();
+    } catch (err) {
+      console.warn('Realtime Database users listener initialization notice:', err);
+    }
+  }, []);
+
+  // Presence detection: Set user online when connected and offline on disconnect
+  useEffect(() => {
+    if (!currentUser || !currentUser.username) return;
+    try {
+      const sanitizedUsername = currentUser.username.toLowerCase().replace(/[.#$\[\]]/g, '_');
+      const connectedRef = ref(rtdb, '.info/connected');
+      const userOnlineRef = ref(rtdb, `users/${sanitizedUsername}/isOnline`);
+      const userLastSeenRef = ref(rtdb, `users/${sanitizedUsername}/lastSeen`);
+
+      const unsubscribe = onValue(connectedRef, (snap) => {
+        if (snap.val() === true) {
+          onDisconnect(userOnlineRef).set(false);
+          onDisconnect(userLastSeenRef).set(serverTimestamp());
+          set(userOnlineRef, true);
+        }
+      });
+      return () => {
+        unsubscribe();
+      };
+    } catch (e) {
+      console.warn('Presence setup notice:', e);
+    }
+  }, [currentUser]);
+
   // Sync current user profile to Realtime Database
   useEffect(() => {
     if (currentUser && currentUser.username) {
@@ -327,6 +433,7 @@ export default function App() {
         set(userRef, {
           username: currentUser.username,
           ...userProfile,
+          isOnline: true,
           updatedAt: serverTimestamp()
         }).catch((err) => {
           console.warn('Realtime Database user profile sync notice:', err.message);
@@ -336,6 +443,37 @@ export default function App() {
       }
     }
   }, [currentUser, userProfile]);
+
+  // Combined full users list
+  const allUsersList = useMemo(() => {
+    const map = new Map<string, UserProfileData>();
+    registeredUsers.forEach((u) => {
+      if (u.username) {
+        map.set(u.username.toLowerCase(), u);
+      }
+    });
+    if (currentUser && currentUser.username) {
+      map.set(currentUser.username.toLowerCase(), {
+        username: currentUser.username,
+        ...userProfile,
+        isOnline: true
+      });
+    }
+    const list = Array.from(map.values());
+    return list.sort((a, b) => {
+      const aIsMe = currentUser && a.username.toLowerCase() === currentUser.username.toLowerCase();
+      const bIsMe = currentUser && b.username.toLowerCase() === currentUser.username.toLowerCase();
+      if (aIsMe) return -1;
+      if (bIsMe) return 1;
+      if (a.isOnline && !b.isOnline) return -1;
+      if (!a.isOnline && b.isOnline) return 1;
+      return a.username.localeCompare(b.username);
+    });
+  }, [registeredUsers, currentUser, userProfile]);
+
+  const onlineCount = useMemo(() => {
+    return allUsersList.filter((u) => u.isOnline !== false).length;
+  }, [allUsersList]);
 
   // Welcome Guide State
   const [showGuide, setShowGuide] = useState(false);
@@ -709,55 +847,104 @@ export default function App() {
                   </p>
                 </div>
               ) : (
-                messages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className="flex items-start gap-3.5 group hover:bg-white/[0.02] -mx-2 px-2 py-1.5 rounded-lg transition-colors"
-                  >
-                    <UserAvatar
-                      avatarUrl={msg.avatarUrl || userProfile.avatarUrl}
-                      className="w-10 h-10 mt-0.5"
-                      pfpBorderClass={
-                        msg.pfpBorderId
-                          ? getPfpBorder(msg.pfpBorderId).pfpBorderClass
-                          : msg.sender === currentUser.username
-                          ? getPfpBorder(userProfile.pfpBorderId).pfpBorderClass
-                          : undefined
-                      }
-                      pfpBorderThickness={
-                        msg.pfpBorderThickness !== undefined
-                          ? msg.pfpBorderThickness
-                          : msg.sender === currentUser.username
-                          ? userProfile.pfpBorderThickness
-                          : undefined
-                      }
-                    />
+                messages.map((msg) => {
+                  const isSenderMe = Boolean(
+                    currentUser && msg.sender.toLowerCase() === currentUser.username.toLowerCase()
+                  );
+                  const senderFromList = registeredUsers.find(
+                    (u) => u.username.toLowerCase() === msg.sender.toLowerCase()
+                  );
+                  const msgAvatarUrl = isSenderMe
+                    ? (userProfile.avatarUrl || msg.avatarUrl)
+                    : (msg.avatarUrl || senderFromList?.avatarUrl || null);
+                  const msgBorderId = isSenderMe
+                    ? userProfile.pfpBorderId
+                    : (msg.pfpBorderId || senderFromList?.pfpBorderId || 'pfp-default');
+                  const msgBorderThickness = isSenderMe
+                    ? userProfile.pfpBorderThickness
+                    : (msg.pfpBorderThickness ?? senderFromList?.pfpBorderThickness ?? 2);
 
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-bold text-white text-sm sm:text-base tracking-wide">
-                            {msg.sender}
-                          </span>
+                  const handleOpenSenderProfile = (e: React.MouseEvent) => {
+                    e.stopPropagation();
+                    if (senderFromList) {
+                      setSelectedUser(senderFromList);
+                    } else if (isSenderMe) {
+                      setSelectedUser({
+                        username: currentUser.username,
+                        ...userProfile,
+                        isOnline: true
+                      });
+                    } else {
+                      setSelectedUser({
+                        username: msg.sender,
+                        avatarUrl: msg.avatarUrl || null,
+                        pfpBorderId: msg.pfpBorderId || null,
+                        pfpBorderThickness: msg.pfpBorderThickness,
+                        isOnline: true
+                      });
+                    }
+                    setProfileViewMode('view');
+                    setProfileModalOpen(true);
+                  };
+
+                  return (
+                    <div
+                      key={msg.id}
+                      className="flex items-start gap-3.5 group hover:bg-white/[0.02] -mx-2 px-2 py-1.5 rounded-lg transition-colors"
+                    >
+                      <button
+                        type="button"
+                        onClick={handleOpenSenderProfile}
+                        className="cursor-pointer transition-transform hover:scale-105 active:scale-95 focus:outline-none"
+                        title={`View ${msg.sender}'s profile`}
+                      >
+                        <UserAvatar
+                          avatarUrl={msgAvatarUrl}
+                          className="w-10 h-10 mt-0.5"
+                          pfpBorderClass={getPfpBorder(msgBorderId).pfpBorderClass}
+                          pfpBorderThickness={msgBorderThickness}
+                        />
+                      </button>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={handleOpenSenderProfile}
+                              className="font-bold text-white text-sm sm:text-base tracking-wide hover:text-cyan-300 transition-colors cursor-pointer text-left focus:outline-none"
+                            >
+                              {msg.sender}
+                            </button>
+                            {isSenderMe && (
+                              <span className="text-[10px] text-cyan-400 font-medium px-1 rounded bg-cyan-950/60 border border-cyan-500/20">
+                                You
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-zinc-500 text-xs">
+                            <span>{msg.timestamp}</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setInputText((prev) => `@${msg.sender} ${prev}`);
+                              }}
+                              aria-label="Mention user"
+                              title={`Mention @${msg.sender}`}
+                              className="text-zinc-500 hover:text-cyan-400 p-0.5 rounded cursor-pointer transition-colors"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 text-zinc-500 text-xs">
-                          <span>{msg.timestamp}</span>
-                          <button
-                            type="button"
-                            aria-label="Message options"
-                            className="text-zinc-500 hover:text-white p-0.5 rounded cursor-pointer"
-                          >
-                            <MoreHorizontal className="w-4 h-4" />
-                          </button>
-                        </div>
+
+                        <p className="text-white font-medium text-sm sm:text-base mt-0.5 break-words leading-relaxed">
+                          {msg.text}
+                        </p>
                       </div>
-
-                      <p className="text-white font-medium text-sm sm:text-base mt-0.5 break-words leading-relaxed">
-                        {msg.text}
-                      </p>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
               <div ref={messagesEndRef} />
             </div>
@@ -842,163 +1029,225 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="px-4 py-3 flex items-center gap-2">
-                <span className="font-bold text-white text-sm">Online</span>
-                <span className="bg-[#00a8e8] text-white text-xs font-bold px-2 py-0.5 rounded-full leading-none">
-                  1
+              <div className="px-4 py-3 flex items-center justify-between border-b border-[#202026]/60">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-white text-sm">Online</span>
+                  <span className="bg-[#00a8e8] text-white text-xs font-bold px-2 py-0.5 rounded-full leading-none">
+                    {onlineCount}
+                  </span>
+                </div>
+                <span className="text-[11px] text-zinc-500 font-medium">
+                  {allUsersList.length} total
                 </span>
               </div>
 
-              {/* USER LIST (Clicking card opens options on the left - Image 2) */}
-              <div className="flex-1 overflow-y-auto px-3 space-y-2">
-                <div
-                  ref={playerCardRef}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const popoverWidth = 240;
-                    const targetRight = window.innerWidth - rect.left + 14;
-                    setPopoverPos({
-                      top: Math.max(16, Math.min(window.innerHeight - 280, rect.top - 8)),
-                      right: Math.min(window.innerWidth - popoverWidth - 16, targetRight)
-                    });
-                    setPlayerPopoverOpen((prev) => !prev);
-                  }}
-                  style={
-                    userProfile.glowColor
-                      ? {
-                          borderColor: userProfile.glowColor,
-                          boxShadow: `0 0 ${userProfile.glowThickness || 18}px ${userProfile.glowColor}99, inset 0 0 ${Math.max(3, Math.round((userProfile.glowThickness || 18) / 3))}px ${userProfile.glowColor}33`
-                        }
-                      : undefined
-                  }
-                  className={`bg-[#18181f] border ${
-                    userProfile.glowColor ? '' : 'border-[#2b2b38] hover:border-cyan-500/40'
-                  } rounded-xl p-2.5 flex items-center gap-3 transition-all cursor-pointer group`}
-                >
-                  <UserAvatar
-                    avatarUrl={userProfile.avatarUrl}
-                    className="w-10 h-10"
-                    showOnline={true}
-                    pfpBorderClass={getPfpBorder(userProfile.pfpBorderId).pfpBorderClass}
-                    pfpBorderThickness={userProfile.pfpBorderThickness}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors block">
-                      {currentUser.username}
-                    </span>
-                    <p className="text-xs text-zinc-400 truncate">
-                      {userProfile.mood ? userProfile.mood : 'Online'}
-                    </p>
-                  </div>
-                </div>
+              {/* USER LIST (Clicking card opens options on the left) */}
+              <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
+                {allUsersList.map((userItem) => {
+                  const isMe = Boolean(
+                    currentUser &&
+                    userItem.username.toLowerCase() === currentUser.username.toLowerCase()
+                  );
+                  const isOnline = userItem.isOnline !== false;
+                  return (
+                    <div
+                      key={userItem.username}
+                      ref={isMe ? playerCardRef : undefined}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedUser(userItem);
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const popoverWidth = 240;
+                        const targetRight = window.innerWidth - rect.left + 14;
+                        setPopoverPos({
+                          top: Math.max(16, Math.min(window.innerHeight - 280, rect.top - 8)),
+                          right: Math.min(window.innerWidth - popoverWidth - 16, targetRight)
+                        });
+                        setPlayerPopoverOpen(true);
+                      }}
+                      style={
+                        userItem.glowColor
+                          ? {
+                              borderColor: userItem.glowColor,
+                              boxShadow: `0 0 ${userItem.glowThickness || 18}px ${userItem.glowColor}99, inset 0 0 ${Math.max(3, Math.round((userItem.glowThickness || 18) / 3))}px ${userItem.glowColor}33`
+                            }
+                          : undefined
+                      }
+                      className={`bg-[#18181f] border ${
+                        userItem.glowColor ? '' : 'border-[#2b2b38] hover:border-cyan-500/40'
+                      } rounded-xl p-2.5 flex items-center gap-3 transition-all cursor-pointer group`}
+                    >
+                      <UserAvatar
+                        avatarUrl={isMe ? userProfile.avatarUrl : userItem.avatarUrl}
+                        className="w-10 h-10"
+                        showOnline={true}
+                        isOnline={isOnline}
+                        pfpBorderClass={getPfpBorder(isMe ? userProfile.pfpBorderId : userItem.pfpBorderId).pfpBorderClass}
+                        pfpBorderThickness={isMe ? userProfile.pfpBorderThickness : userItem.pfpBorderThickness}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors">
+                            {userItem.username}
+                          </span>
+                          {isMe && (
+                            <span className="text-[10px] text-cyan-400/90 font-medium px-1 rounded bg-cyan-950/60 border border-cyan-500/20">
+                              You
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-zinc-400 truncate mt-0.5">
+                          {userItem.mood ? userItem.mood : (isOnline ? 'Online' : 'Offline')}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </aside>
           )}
 
           {/* Options popover shown on the left of the player (Image 2) - Entire top bit is banner */}
-          {playerPopoverOpen && (
-            <div
-              ref={playerPopoverRef}
-              style={{ top: `${popoverPos.top}px`, right: `${popoverPos.right}px` }}
-              className="fixed w-64 bg-[#141419] border border-[#282834] rounded-2xl shadow-2xl overflow-hidden z-50 text-center animate-in fade-in zoom-in-95 duration-150 flex flex-col"
-            >
-              {/* Entire Top Bit covered by Banner */}
-              <div className="relative w-full overflow-hidden flex flex-col items-center pt-5 pb-4 px-4 text-center shrink-0">
-                {/* Banner background covering this whole top section */}
-                {userProfile.bannerUrl ? (
-                  <img
-                    src={userProfile.bannerUrl}
-                    alt="Banner"
-                    className="absolute inset-0 w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="absolute inset-0 w-full h-full bg-gradient-to-b from-[#282836] via-[#1e1e27] to-[#15151c]" />
-                )}
+          {playerPopoverOpen && (() => {
+            const activePopoverUser: UserProfileData = selectedUser || (currentUser ? {
+              username: currentUser.username,
+              ...userProfile,
+              isOnline: true
+            } : {
+              username: 'Guest',
+              isOnline: true
+            });
+            const isSelectedUserMe = Boolean(
+              currentUser &&
+              activePopoverUser.username.toLowerCase() === currentUser.username.toLowerCase()
+            );
 
-                {/* Subtle gradient scrim overlay for contrast */}
-                <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-black/35 to-black/70 pointer-events-none" />
-
-                {/* Centered Circular Avatar with custom border */}
-                <div
-                  className={`w-20 h-20 rounded-full overflow-hidden bg-[#24252e] shadow-2xl relative shrink-0 z-10 transition-all ${
-                    getPfpBorder(userProfile.pfpBorderId).pfpBorderClass || 'border-2 border-white'
-                  }`}
-                  style={{ borderWidth: `${userProfile.pfpBorderThickness || 2}px` }}
-                >
-                  {userProfile.avatarUrl ? (
-                    <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+            return (
+              <div
+                ref={playerPopoverRef}
+                style={{ top: `${popoverPos.top}px`, right: `${popoverPos.right}px` }}
+                className="fixed w-64 bg-[#141419] border border-[#282834] rounded-2xl shadow-2xl overflow-hidden z-50 text-center animate-in fade-in zoom-in-95 duration-150 flex flex-col"
+              >
+                {/* Entire Top Bit covered by Banner */}
+                <div className="relative w-full overflow-hidden flex flex-col items-center pt-5 pb-4 px-4 text-center shrink-0">
+                  {/* Banner background covering this whole top section */}
+                  {(isSelectedUserMe ? userProfile.bannerUrl : activePopoverUser.bannerUrl) ? (
+                    <img
+                      src={(isSelectedUserMe ? userProfile.bannerUrl : activePopoverUser.bannerUrl) || ''}
+                      alt="Banner"
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
                   ) : (
-                    <svg viewBox="0 0 40 40" className="w-full h-full text-zinc-400 fill-current translate-y-1">
-                      <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
-                    </svg>
+                    <div className="absolute inset-0 w-full h-full bg-gradient-to-b from-[#282836] via-[#1e1e27] to-[#15151c]" />
                   )}
+
+                  {/* Subtle gradient scrim overlay for contrast */}
+                  <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-black/35 to-black/70 pointer-events-none" />
+
+                  {/* Centered Circular Avatar with custom border */}
+                  <div
+                    className={`w-20 h-20 rounded-full overflow-hidden bg-[#24252e] shadow-2xl relative shrink-0 z-10 transition-all ${
+                      getPfpBorder(isSelectedUserMe ? userProfile.pfpBorderId : activePopoverUser.pfpBorderId).pfpBorderClass || 'border-2 border-white'
+                    }`}
+                    style={{ borderWidth: `${(isSelectedUserMe ? userProfile.pfpBorderThickness : activePopoverUser.pfpBorderThickness) || 2}px` }}
+                  >
+                    {(isSelectedUserMe ? userProfile.avatarUrl : activePopoverUser.avatarUrl) ? (
+                      <img
+                        src={(isSelectedUserMe ? userProfile.avatarUrl : activePopoverUser.avatarUrl) || ''}
+                        alt="Avatar"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <svg viewBox="0 0 40 40" className="w-full h-full text-zinc-400 fill-current translate-y-1">
+                        <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
+                      </svg>
+                    )}
+                  </div>
+
+                  {/* User Details over the banner */}
+                  <div className="relative z-10 mt-2.5">
+                    <h3 className="font-extrabold text-white text-base tracking-wide drop-shadow-md truncate flex items-center justify-center gap-1.5">
+                      <span>{activePopoverUser.username}</span>
+                      {isSelectedUserMe && (
+                        <span className="text-[10px] text-cyan-300 font-semibold px-1 py-0.5 rounded bg-cyan-900/60 border border-cyan-400/30">
+                          You
+                        </span>
+                      )}
+                    </h3>
+                    <p className="text-xs text-zinc-300 font-medium mt-0.5 drop-shadow-sm truncate">
+                      {(isSelectedUserMe ? userProfile.age : activePopoverUser.age) || '18'} years · {(isSelectedUserMe ? userProfile.gender : activePopoverUser.gender) || 'Unknown'}
+                    </p>
+                  </div>
                 </div>
 
-                {/* User Details over the banner (without UK flag, without star, without likes) */}
-                <div className="relative z-10 mt-2.5">
-                  <h3 className="font-extrabold text-white text-base tracking-wide drop-shadow-md truncate">
-                    {currentUser.username}
-                  </h3>
-                  <p className="text-xs text-zinc-300 font-medium mt-0.5 drop-shadow-sm truncate">
-                    {userProfile.age} years · {userProfile.gender}
-                  </p>
-                </div>
-              </div>
-
-              {/* Actions Section: View profile & Edit */}
-              <div className="p-3 pt-2.5 border-t border-[#23232c] bg-[#121216] space-y-1.5">
-                {/* 1. View profile button (views profile) */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPlayerPopoverOpen(false);
-                    setProfileViewMode('view');
-                    setProfileModalOpen(true);
-                  }}
-                  className="w-full bg-[#1e1e26] hover:bg-[#282834] text-white font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer shadow-sm"
-                >
-                  <User className="w-4 h-4 text-zinc-300" />
-                  <span>View profile</span>
-                </button>
-
-                {/* 2. Edit button (edits profile) */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPlayerPopoverOpen(false);
-                    setProfileViewMode('edit');
-                    setProfileModalOpen(true);
-                  }}
-                  className="w-full hover:bg-[#1e1e26] text-white font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer"
-                >
-                  <SquarePen className="w-4 h-4 text-cyan-400" />
-                  <span>Edit</span>
-                </button>
-
-                {/* 3. Profile Music play/pause button if track exists */}
-                {userProfile.musicTrack && (
+                {/* Actions Section */}
+                <div className="p-3 pt-2.5 border-t border-[#23232c] bg-[#121216] space-y-1.5">
+                  {/* 1. View profile button */}
                   <button
                     type="button"
-                    onClick={() => setIsProfileMusicPlaying(!isProfileMusicPlaying)}
-                    className="w-full bg-[#181822] hover:bg-[#20202e] text-cyan-300 font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer border border-cyan-500/20"
+                    onClick={() => {
+                      setPlayerPopoverOpen(false);
+                      setProfileViewMode('view');
+                      setProfileModalOpen(true);
+                    }}
+                    className="w-full bg-[#1e1e26] hover:bg-[#282834] text-white font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer shadow-sm"
                   >
-                    {isProfileMusicPlaying ? (
-                      <>
-                        <Pause className="w-3.5 h-3.5 fill-cyan-400" />
-                        <span className="truncate">Pause Music</span>
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-3.5 h-3.5 fill-cyan-400" />
-                        <span className="truncate">Play Profile Music</span>
-                      </>
-                    )}
+                    <User className="w-4 h-4 text-zinc-300" />
+                    <span>View profile</span>
                   </button>
-                )}
+
+                  {/* 2. Edit button (self) OR Mention/Message (other) */}
+                  {isSelectedUserMe ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlayerPopoverOpen(false);
+                        setProfileViewMode('edit');
+                        setProfileModalOpen(true);
+                      }}
+                      className="w-full hover:bg-[#1e1e26] text-white font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer"
+                    >
+                      <SquarePen className="w-4 h-4 text-cyan-400" />
+                      <span>Edit</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlayerPopoverOpen(false);
+                        setInputText((prev) => `@${activePopoverUser.username} ${prev}`);
+                      }}
+                      className="w-full bg-[#181822] hover:bg-[#20202e] text-cyan-300 font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer border border-cyan-500/20"
+                    >
+                      <MessageSquare className="w-4 h-4 text-cyan-400" />
+                      <span>Message @{activePopoverUser.username}</span>
+                    </button>
+                  )}
+
+                  {/* 3. Profile Music play/pause button if track exists */}
+                  {((isSelectedUserMe ? userProfile.musicTrack : activePopoverUser.musicTrack)) && (
+                    <button
+                      type="button"
+                      onClick={() => setIsProfileMusicPlaying(!isProfileMusicPlaying)}
+                      className="w-full bg-[#181822] hover:bg-[#20202e] text-cyan-300 font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer border border-cyan-500/20"
+                    >
+                      {isProfileMusicPlaying ? (
+                        <>
+                          <Pause className="w-3.5 h-3.5 fill-cyan-400" />
+                          <span className="truncate">Pause Music</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-3.5 h-3.5 fill-cyan-400" />
+                          <span className="truncate">Play Profile Music</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
 
         {/* Hidden Audio Element for Profile Music */}
@@ -1013,486 +1262,545 @@ export default function App() {
         {/* ==================================================== */}
         {/* PROFILE MODAL (EDIT & VIEW MODES)                    */}
         {/* ==================================================== */}
-        {profileModalOpen && (
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-[2px] flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200"
-          >
-            {/* Hidden file inputs */}
-            <input
-              type="file"
-              ref={bannerInputRef}
-              accept="image/*"
-              className="hidden"
-              onChange={handleBannerUpload}
-            />
-            <input
-              type="file"
-              ref={pfpInputRef}
-              accept="image/*"
-              className="hidden"
-              onChange={handlePfpUpload}
-            />
+        {profileModalOpen && (() => {
+          const activeModalUser: UserProfileData = (selectedUser && (!currentUser || selectedUser.username.toLowerCase() !== currentUser.username.toLowerCase()))
+            ? selectedUser
+            : (currentUser ? {
+                username: currentUser.username,
+                ...userProfile,
+                isOnline: true
+              } : {
+                username: 'Guest',
+                isOnline: true
+              });
+          const isViewingSelf = Boolean(
+            currentUser &&
+            activeModalUser.username.toLowerCase() === currentUser.username.toLowerCase()
+          );
+          const effectiveProfileViewMode = isViewingSelf ? profileViewMode : 'view';
 
+          const bannerToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+            ? userProfile.bannerUrl
+            : activeModalUser.bannerUrl;
+          const avatarToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+            ? userProfile.avatarUrl
+            : activeModalUser.avatarUrl;
+          const pfpBorderIdToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+            ? userProfile.pfpBorderId
+            : activeModalUser.pfpBorderId;
+          const pfpBorderThicknessToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+            ? userProfile.pfpBorderThickness
+            : (activeModalUser.pfpBorderThickness || 2);
+          const profileBorderIdToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+            ? userProfile.profileBorderId
+            : activeModalUser.profileBorderId;
+          const profileBorderThicknessToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+            ? userProfile.profileBorderThickness
+            : (activeModalUser.profileBorderThickness || 2);
+          const usernameToShow = activeModalUser.username;
+          const moodToShow = isViewingSelf && effectiveProfileViewMode === 'edit'
+            ? userProfile.mood
+            : activeModalUser.mood;
+          const musicToShow = isViewingSelf
+            ? userProfile.musicTrack
+            : activeModalUser.musicTrack;
+
+          return (
             <div
-              className={`w-full max-w-[480px] max-h-[92vh] bg-[#141418] rounded-3xl overflow-hidden shadow-2xl flex flex-col text-white animate-in zoom-in-95 duration-150 relative transition-all ${
-                profileViewMode === 'view'
-                  ? (getProfileBorder(userProfile.profileBorderId).cardBorderClass || 'border border-[#252530]')
-                  : 'border border-[#252530]'
-              }`}
-              style={
-                profileViewMode === 'view' && userProfile.profileBorderThickness
-                  ? { borderWidth: `${userProfile.profileBorderThickness}px` }
-                  : undefined
-              }
+              role="dialog"
+              aria-modal="true"
+              className="fixed inset-0 z-50 bg-black/80 backdrop-blur-[2px] flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200"
             >
-              {/* BANNER AREA */}
-              <div className="h-36 sm:h-40 w-full relative bg-gradient-to-r from-[#1c1c24] via-[#242430] to-[#1c1c24] shrink-0 overflow-hidden">
-                {userProfile.bannerUrl ? (
-                  <img
-                    src={userProfile.bannerUrl}
-                    alt="Banner"
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="w-full h-full opacity-40 bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:16px_16px]" />
-                )}
+              {/* Hidden file inputs */}
+              <input
+                type="file"
+                ref={bannerInputRef}
+                accept="image/*"
+                className="hidden"
+                onChange={handleBannerUpload}
+              />
+              <input
+                type="file"
+                ref={pfpInputRef}
+                accept="image/*"
+                className="hidden"
+                onChange={handlePfpUpload}
+              />
 
-                {/* BANNER CONTROLS (Top Right) */}
-                <div className="absolute top-3 right-3 flex items-center gap-2 z-20">
-                  {/* In Edit mode: Pill with X and Camera for banner */}
-                  {profileViewMode === 'edit' && (
-                    <div className="bg-black/60 backdrop-blur-md rounded-full px-3 py-1.5 flex items-center gap-3 border border-white/10 shadow-lg">
-                      <button
-                        type="button"
-                        onClick={() => setUserProfile((p) => ({ ...p, bannerUrl: null }))}
-                        title="Delete banner"
-                        className="text-white hover:text-rose-400 transition-colors cursor-pointer"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => bannerInputRef.current?.click()}
-                        title="Upload banner"
-                        className="text-white hover:text-cyan-300 transition-colors cursor-pointer"
-                      >
-                        <Camera className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Mode switcher: Eye (view) or SquarePen (edit) */}
-                  {profileViewMode === 'edit' ? (
-                    <button
-                      type="button"
-                      onClick={() => setProfileViewMode('view')}
-                      title="View public profile"
-                      className="bg-black/60 hover:bg-black/80 backdrop-blur-md p-2 rounded-full border border-white/10 text-white hover:text-cyan-300 transition-colors cursor-pointer shadow-lg"
-                    >
-                      <Eye className="w-4 h-4" />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setProfileViewMode('edit')}
-                      title="Edit profile"
-                      className="bg-black/60 hover:bg-black/80 backdrop-blur-md p-2 rounded-full border border-white/10 text-white hover:text-cyan-300 transition-colors cursor-pointer shadow-lg"
-                    >
-                      <SquarePen className="w-4 h-4" />
-                    </button>
-                  )}
-
-                  {/* Close modal button */}
-                  <button
-                    type="button"
-                    onClick={() => setProfileModalOpen(false)}
-                    title="Close"
-                    className="bg-black/60 hover:bg-black/80 backdrop-blur-md p-2 rounded-full border border-white/10 text-white hover:text-rose-400 transition-colors cursor-pointer shadow-lg"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              {/* AVATAR + USERNAME SECTION */}
-              <div className="px-5 pb-3 flex items-end gap-3.5 relative z-10 shrink-0">
-                {/* PFP Box (Rounded square with selected PFP border) */}
-                <div
-                  className={`w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden bg-[#1f1f26] relative shrink-0 shadow-2xl -mt-12 sm:-mt-14 transition-all ${
-                    getPfpBorder(userProfile.pfpBorderId).pfpBorderClass || 'border-2 border-white/90'
-                  }`}
-                  style={{ borderWidth: `${userProfile.pfpBorderThickness || 2}px` }}
-                >
-                  {userProfile.avatarUrl ? (
+              <div
+                className={`w-full max-w-[480px] max-h-[92vh] bg-[#141418] rounded-3xl overflow-hidden shadow-2xl flex flex-col text-white animate-in zoom-in-95 duration-150 relative transition-all ${
+                  effectiveProfileViewMode === 'view'
+                    ? (getProfileBorder(profileBorderIdToShow).cardBorderClass || 'border border-[#252530]')
+                    : 'border border-[#252530]'
+                }`}
+                style={
+                  effectiveProfileViewMode === 'view' && profileBorderThicknessToShow
+                    ? { borderWidth: `${profileBorderThicknessToShow}px` }
+                    : undefined
+                }
+              >
+                {/* BANNER AREA */}
+                <div className="h-36 sm:h-40 w-full relative bg-gradient-to-r from-[#1c1c24] via-[#242430] to-[#1c1c24] shrink-0 overflow-hidden">
+                  {bannerToShow ? (
                     <img
-                      src={userProfile.avatarUrl}
-                      alt="PFP"
+                      src={bannerToShow}
+                      alt="Banner"
                       className="w-full h-full object-cover"
                     />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-[#252530]">
-                      <svg
-                        viewBox="0 0 40 40"
-                        className="w-14 h-14 text-zinc-400 fill-current translate-y-1"
-                      >
-                        <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
-                      </svg>
-                    </div>
+                    <div className="w-full h-full opacity-40 bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:16px_16px]" />
                   )}
 
-                  {/* Edit mode: controls inside PFP (Delete X and Upload Camera) */}
-                  {profileViewMode === 'edit' && (
-                    <div className="absolute inset-x-0 bottom-0 bg-black/70 backdrop-blur-xs py-1.5 px-3 flex items-center justify-between">
-                      <button
-                        type="button"
-                        onClick={() => setUserProfile((p) => ({ ...p, avatarUrl: null }))}
-                        title="Delete avatar"
-                        className="text-white hover:text-rose-400 transition-colors cursor-pointer"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => pfpInputRef.current?.click()}
-                        title="Upload avatar"
-                        className="text-white hover:text-cyan-300 transition-colors cursor-pointer"
-                      >
-                        <Camera className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
-
-                  {/* View mode: online status indicator */}
-                  {profileViewMode === 'view' && (
-                    <span className="absolute bottom-1 right-1 w-4 h-4 bg-[#70c91f] border-2 border-white rounded-full shadow-md" />
-                  )}
-                </div>
-
-                {/* Username & Mood */}
-                <div className="flex-1 min-w-0 pb-1">
-                  <h2 className="text-xl sm:text-2xl font-black text-white tracking-wide truncate">
-                    {currentUser.username}
-                  </h2>
-                  {userProfile.mood ? (
-                    <p className="text-xs text-cyan-400 font-medium truncate mt-0.5">
-                      {userProfile.mood}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-zinc-500 truncate mt-0.5">Online</p>
-                  )}
-                </div>
-              </div>
-
-              {/* ========================================================= */}
-              {/* MODE 1: EDIT PROFILE (Screenshot 5: Account & Customisation tabs) */}
-              {/* ========================================================= */}
-              {profileViewMode === 'edit' && (
-                <div className="p-4 sm:p-5 pt-3 overflow-y-auto flex-1 flex flex-col">
-                  {/* Top Tabs (Screenshot 5: Account, Customisation) */}
-                  <div className="flex items-center gap-2 border-b border-[#23232c] pb-3 mb-3 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setEditOptionsTab('account')}
-                      className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-extrabold transition-all cursor-pointer ${
-                        editOptionsTab === 'account'
-                          ? 'bg-[#252530] text-white shadow-sm'
-                          : 'text-zinc-400 hover:text-white hover:bg-white/5'
-                      }`}
-                    >
-                      Account
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditOptionsTab('customisation')}
-                      className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-extrabold transition-all cursor-pointer ${
-                        editOptionsTab === 'customisation'
-                          ? 'bg-[#252530] text-white shadow-sm'
-                          : 'text-zinc-400 hover:text-white hover:bg-white/5'
-                      }`}
-                    >
-                      Customisation
-                    </button>
-                  </div>
-
-                  {/* TAB 1: ACCOUNT (Screenshot 5) */}
-                  {editOptionsTab === 'account' && (
-                    <div className="space-y-1">
-                      {/* 1. Edit info */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('info')}
-                        className="w-full flex items-center gap-3.5 px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                      >
-                        <CreditCard className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                        <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors">
-                          Edit info
-                        </span>
-                      </button>
-
-                      {/* 2. Edit about me */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('bio')}
-                        className="w-full flex items-center gap-3.5 px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                      >
-                        <HelpCircle className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                        <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors">
-                          Edit about me
-                        </span>
-                      </button>
-
-                      {/* 3. Edit username */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('username')}
-                        className="w-full flex items-center gap-3.5 px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                      >
-                        <SquarePen className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                        <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors">
-                          Edit username
-                        </span>
-                      </button>
-
-                      {/* 4. Edit mood */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('mood')}
-                        className="w-full flex items-center gap-3.5 px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                      >
-                        <Heart className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                        <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors">
-                          Edit mood
-                        </span>
-                      </button>
-                    </div>
-                  )}
-
-                  {/* TAB 2: CUSTOMISATION (Screenshot 5) */}
-                  {editOptionsTab === 'customisation' && (
-                    <div className="space-y-1">
-                      {/* 1. Profile Music (Screenshot 4) */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('music')}
-                        className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                      >
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          <Music className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                          <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
-                            Profile Music
-                          </span>
-                        </div>
-                        {userProfile.musicTrack ? (
-                          <span className="text-xs text-cyan-400 font-bold max-w-[130px] truncate ml-2">
-                            {userProfile.musicTrack.name}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-zinc-500 font-medium ml-2">None</span>
-                        )}
-                      </button>
-
-                      {/* 2. Profile Border (Screenshot 3) */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('profileBorder')}
-                        className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                      >
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          <Layers className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                          <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
-                            Profile Border
-                          </span>
-                        </div>
-                        <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px] ml-2">
-                          {getProfileBorder(userProfile.profileBorderId).name.replace(/^\d+\.\s*/, '')}
-                        </span>
-                      </button>
-
-                      {/* 3. Profile Picture Border (Screenshot 3 layout) */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('pfpBorder')}
-                        className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                      >
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          <CircleDot className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                          <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
-                            Profile Picture Border
-                          </span>
-                        </div>
-                        <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px] ml-2">
-                          {getPfpBorder(userProfile.pfpBorderId).name.replace(/^\d+\.\s*/, '')}
-                        </span>
-                      </button>
-
-                      {/* 4. Userlist background glow (Screenshot 1 & 2) */}
-                      <button
-                        type="button"
-                        onClick={() => openEditSubModal('glow')}
-                        className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                      >
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          <Sparkles className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                          <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
-                            Userlist background glow
-                          </span>
-                        </div>
-                        {userProfile.glowColor ? (
-                          <span
-                            className="w-4 h-4 rounded-full border border-white/60 shadow-sm shrink-0 ml-2"
-                            style={{
-                              backgroundColor: userProfile.glowColor,
-                              boxShadow: `0 0 8px ${userProfile.glowColor}`
-                            }}
-                          />
-                        ) : (
-                          <span className="text-xs text-zinc-500 font-medium ml-2">None</span>
-                        )}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ========================================================= */}
-              {/* MODE 2: PUBLIC VIEW (How everyone else sees your profile) */}
-              {/* Only Info and About me tabs (No friends, gifts, etc.)    */}
-              {/* ========================================================= */}
-              {profileViewMode === 'view' && (
-                <div className="p-5 pt-2 overflow-y-auto flex-1 flex flex-col">
-                  {/* Two Tabs: Info and About me */}
-                  <div className="flex items-center gap-2 border-b border-[#22222a] pb-3 mb-4">
-                    <button
-                      type="button"
-                      onClick={() => setPublicProfileTab('info')}
-                      className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                        publicProfileTab === 'info'
-                          ? 'bg-[#252532] text-white shadow-sm'
-                          : 'text-zinc-400 hover:text-white hover:bg-white/5'
-                      }`}
-                    >
-                      Info
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPublicProfileTab('aboutme')}
-                      className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                        publicProfileTab === 'aboutme'
-                          ? 'bg-[#252532] text-white shadow-sm'
-                          : 'text-zinc-400 hover:text-white hover:bg-white/5'
-                      }`}
-                    >
-                      About me
-                    </button>
-                  </div>
-
-                  {/* Tab 1: Info */}
-                  {publicProfileTab === 'info' && (
-                    <div className="space-y-2.5">
-                      {/* Country */}
-                      <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
-                          <Globe className="w-4 h-4 text-zinc-400" />
-                          <span>Country</span>
-                        </div>
-                        <span className="text-sm font-bold text-white">
-                          {userProfile.country}
-                        </span>
+                  {/* BANNER CONTROLS (Top Right) */}
+                  <div className="absolute top-3 right-3 flex items-center gap-2 z-20">
+                    {/* In Edit mode: Pill with X and Camera for banner */}
+                    {isViewingSelf && effectiveProfileViewMode === 'edit' && (
+                      <div className="bg-black/60 backdrop-blur-md rounded-full px-3 py-1.5 flex items-center gap-3 border border-white/10 shadow-lg">
+                        <button
+                          type="button"
+                          onClick={() => setUserProfile((p) => ({ ...p, bannerUrl: null }))}
+                          title="Delete banner"
+                          className="text-white hover:text-rose-400 transition-colors cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => bannerInputRef.current?.click()}
+                          title="Upload banner"
+                          className="text-white hover:text-cyan-300 transition-colors cursor-pointer"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                        </button>
                       </div>
+                    )}
 
-                      {/* Gender */}
-                      <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
-                          <span className="text-base text-zinc-400">⚥</span>
-                          <span>Gender</span>
-                        </div>
-                        <span className="text-sm font-bold text-white">
-                          {userProfile.gender}
-                        </span>
-                      </div>
-
-                      {/* Language */}
-                      <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
-                          <Languages className="w-4 h-4 text-zinc-400" />
-                          <span>Language</span>
-                        </div>
-                        <span className="text-sm font-bold text-white">
-                          {userProfile.language}
-                        </span>
-                      </div>
-
-                      {/* Age */}
-                      <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
-                          <Calendar className="w-4 h-4 text-zinc-400" />
-                          <span>Age</span>
-                        </div>
-                        <span className="text-sm font-bold text-white">
-                          {userProfile.age} years old
-                        </span>
-                      </div>
-
-                      {/* Relationship */}
-                      <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
-                          <Heart className="w-4 h-4 text-zinc-400" />
-                          <span>Relationship</span>
-                        </div>
-                        <span className="text-sm font-bold text-white">
-                          {userProfile.relationship}
-                        </span>
-                      </div>
-
-                      {/* Profile Music widget in Info tab if track exists */}
-                      {userProfile.musicTrack && (
-                        <div className="bg-[#181820] border border-[#282838] rounded-xl px-4 py-3 flex items-center justify-between shadow-md">
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <Music className="w-4 h-4 text-cyan-400 shrink-0" />
-                            <div className="min-w-0">
-                              <span className="text-xs font-bold text-white truncate block">
-                                {userProfile.musicTrack.name}
-                              </span>
-                              <span className="text-[10px] text-zinc-400">Profile Music</span>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setIsProfileMusicPlaying(!isProfileMusicPlaying)}
-                            className="w-8 h-8 rounded-lg bg-[#00c2ff] hover:bg-[#00aee6] text-white flex items-center justify-center shrink-0 cursor-pointer shadow-sm ml-2"
-                          >
-                            {isProfileMusicPlaying ? (
-                              <Pause className="w-4 h-4 fill-white" />
-                            ) : (
-                              <Play className="w-4 h-4 fill-white translate-x-0.5" />
-                            )}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Tab 2: About me (Pure text, NO BOX, scrollable for big ass bios) */}
-                  {publicProfileTab === 'aboutme' && (
-                    <div className="w-full max-h-[340px] overflow-y-auto px-1 py-1 pr-2">
-                      {userProfile.bio ? (
-                        <p className="text-sm text-zinc-200 whitespace-pre-wrap break-words leading-relaxed select-text font-normal">
-                          {userProfile.bio}
-                        </p>
+                    {/* Mode switcher: Eye (view) or SquarePen (edit) - Only for own profile */}
+                    {isViewingSelf && (
+                      effectiveProfileViewMode === 'edit' ? (
+                        <button
+                          type="button"
+                          onClick={() => setProfileViewMode('view')}
+                          title="View public profile"
+                          className="bg-black/60 hover:bg-black/80 backdrop-blur-md p-2 rounded-full border border-white/10 text-white hover:text-cyan-300 transition-colors cursor-pointer shadow-lg"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
                       ) : (
-                        <p className="text-sm text-zinc-500 italic">
-                          No about me info provided yet.
-                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setProfileViewMode('edit')}
+                          title="Edit profile"
+                          className="bg-black/60 hover:bg-black/80 backdrop-blur-md p-2 rounded-full border border-white/10 text-white hover:text-cyan-300 transition-colors cursor-pointer shadow-lg"
+                        >
+                          <SquarePen className="w-4 h-4" />
+                        </button>
+                      )
+                    )}
+
+                    {/* Close modal button */}
+                    <button
+                      type="button"
+                      onClick={() => setProfileModalOpen(false)}
+                      title="Close"
+                      className="bg-black/60 hover:bg-black/80 backdrop-blur-md p-2 rounded-full border border-white/10 text-white hover:text-rose-400 transition-colors cursor-pointer shadow-lg"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* AVATAR + USERNAME SECTION */}
+                <div className="px-5 pb-3 flex items-end gap-3.5 relative z-10 shrink-0">
+                  {/* PFP Box (Rounded square with selected PFP border) */}
+                  <div
+                    className={`w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden bg-[#1f1f26] relative shrink-0 shadow-2xl -mt-12 sm:-mt-14 transition-all ${
+                      getPfpBorder(pfpBorderIdToShow).pfpBorderClass || 'border-2 border-white/90'
+                    }`}
+                    style={{ borderWidth: `${pfpBorderThicknessToShow || 2}px` }}
+                  >
+                    {avatarToShow ? (
+                      <img
+                        src={avatarToShow}
+                        alt="PFP"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center bg-[#252530]">
+                        <svg
+                          viewBox="0 0 40 40"
+                          className="w-14 h-14 text-zinc-400 fill-current translate-y-1"
+                        >
+                          <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
+                        </svg>
+                      </div>
+                    )}
+
+                    {/* Edit mode: controls inside PFP (Delete X and Upload Camera) */}
+                    {isViewingSelf && effectiveProfileViewMode === 'edit' && (
+                      <div className="absolute inset-x-0 bottom-0 bg-black/70 backdrop-blur-xs py-1.5 px-3 flex items-center justify-between">
+                        <button
+                          type="button"
+                          onClick={() => setUserProfile((p) => ({ ...p, avatarUrl: null }))}
+                          title="Delete avatar"
+                          className="text-white hover:text-rose-400 transition-colors cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => pfpInputRef.current?.click()}
+                          title="Upload avatar"
+                          className="text-white hover:text-cyan-300 transition-colors cursor-pointer"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* View mode: online status indicator */}
+                    {effectiveProfileViewMode === 'view' && (
+                      <span
+                        className={`absolute bottom-1 right-1 w-4 h-4 border-2 border-white rounded-full shadow-md ${
+                          activeModalUser.isOnline !== false ? 'bg-[#70c91f]' : 'bg-zinc-500'
+                        }`}
+                      />
+                    )}
+                  </div>
+
+                  {/* Username & Mood */}
+                  <div className="flex-1 min-w-0 pb-1">
+                    <div className="flex items-center gap-1.5">
+                      <h2 className="text-xl sm:text-2xl font-black text-white tracking-wide truncate">
+                        {usernameToShow}
+                      </h2>
+                      {isViewingSelf && (
+                        <span className="text-[10px] text-cyan-300 font-semibold px-1.5 py-0.5 rounded bg-cyan-900/60 border border-cyan-400/30">
+                          You
+                        </span>
                       )}
                     </div>
-                  )}
+                    {moodToShow ? (
+                      <p className="text-xs text-cyan-400 font-medium truncate mt-0.5">
+                        {moodToShow}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-zinc-500 truncate mt-0.5">
+                        {activeModalUser.isOnline !== false ? 'Online' : 'Offline'}
+                      </p>
+                    )}
+                  </div>
                 </div>
-              )}
+
+                {/* ========================================================= */}
+                {/* MODE 1: EDIT PROFILE (Screenshot 5: Account & Customisation tabs) */}
+                {/* ========================================================= */}
+                {isViewingSelf && effectiveProfileViewMode === 'edit' && (
+                  <div className="p-4 sm:p-5 pt-3 overflow-y-auto flex-1 flex flex-col">
+                    {/* Top Tabs (Screenshot 5: Account, Customisation) */}
+                    <div className="flex items-center gap-2 border-b border-[#23232c] pb-3 mb-3 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setEditOptionsTab('account')}
+                        className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-extrabold transition-all cursor-pointer ${
+                          editOptionsTab === 'account'
+                            ? 'bg-[#252530] text-white shadow-sm'
+                            : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        Account
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditOptionsTab('customisation')}
+                        className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-extrabold transition-all cursor-pointer ${
+                          editOptionsTab === 'customisation'
+                            ? 'bg-[#252530] text-white shadow-sm'
+                            : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        Customisation
+                      </button>
+                    </div>
+
+                    {/* TAB 1: ACCOUNT (Screenshot 5) */}
+                    {editOptionsTab === 'account' && (
+                      <div className="space-y-1">
+                        {/* 1. Edit info */}
+                        <button
+                          type="button"
+                          onClick={() => openEditSubModal('info')}
+                          className="w-full flex items-center gap-3.5 px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
+                        >
+                          <CreditCard className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
+                          <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors">
+                            Edit info
+                          </span>
+                        </button>
+
+                        {/* 2. Edit about me */}
+                        <button
+                          type="button"
+                          onClick={() => openEditSubModal('bio')}
+                          className="w-full flex items-center gap-3.5 px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
+                        >
+                          <HelpCircle className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
+                          <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors">
+                            Edit about me
+                          </span>
+                        </button>
+
+                        {/* 3. Edit username */}
+                        <button
+                          type="button"
+                          onClick={() => openEditSubModal('username')}
+                          className="w-full flex items-center gap-3.5 px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
+                        >
+                          <SquarePen className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
+                          <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors">
+                            Edit username
+                          </span>
+                        </button>
+
+                        {/* 4. Edit mood */}
+                        <button
+                          type="button"
+                          onClick={() => openEditSubModal('mood')}
+                          className="w-full flex items-center gap-3.5 px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
+                        >
+                          <Heart className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
+                          <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors">
+                            Edit mood
+                          </span>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* TAB 2: CUSTOMISATION (Screenshot 5) */}
+                    {editOptionsTab === 'customisation' && (
+                      <div className="space-y-1">
+                        {/* 1. Profile Music (Screenshot 4) */}
+                        <button
+                          type="button"
+                          onClick={() => openEditSubModal('music')}
+                          className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
+                        >
+                          <div className="flex items-center gap-3.5 min-w-0">
+                            <Music className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
+                            <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
+                              Profile Music
+                            </span>
+                          </div>
+                          {userProfile.musicTrack ? (
+                            <span className="text-xs text-cyan-400 font-bold max-w-[130px] truncate ml-2">
+                              {userProfile.musicTrack.name}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-zinc-500 font-medium ml-2">None</span>
+                          )}
+                        </button>
+
+                        {/* 2. Profile Border (Screenshot 3) */}
+                        <button
+                          type="button"
+                          onClick={() => openEditSubModal('profileBorder')}
+                          className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
+                        >
+                          <div className="flex items-center gap-3.5 min-w-0">
+                            <Layers className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
+                            <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
+                              Profile Border
+                            </span>
+                          </div>
+                          <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px] ml-2">
+                            {getProfileBorder(userProfile.profileBorderId).name.replace(/^\d+\.\s*/, '')}
+                          </span>
+                        </button>
+
+                        {/* 3. Profile Picture Border (Screenshot 3 layout) */}
+                        <button
+                          type="button"
+                          onClick={() => openEditSubModal('pfpBorder')}
+                          className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
+                        >
+                          <div className="flex items-center gap-3.5 min-w-0">
+                            <CircleDot className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
+                            <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
+                              Profile Picture Border
+                            </span>
+                          </div>
+                          <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px] ml-2">
+                            {getPfpBorder(userProfile.pfpBorderId).name.replace(/^\d+\.\s*/, '')}
+                          </span>
+                        </button>
+
+                        {/* 4. Userlist background glow (Screenshot 1 & 2) */}
+                        <button
+                          type="button"
+                          onClick={() => openEditSubModal('glow')}
+                          className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
+                        >
+                          <div className="flex items-center gap-3.5 min-w-0">
+                            <Sparkles className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
+                            <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
+                              Userlist background glow
+                            </span>
+                          </div>
+                          {userProfile.glowColor ? (
+                            <span
+                              className="w-4 h-4 rounded-full border border-white/60 shadow-sm shrink-0 ml-2"
+                              style={{
+                                backgroundColor: userProfile.glowColor,
+                                boxShadow: `0 0 8px ${userProfile.glowColor}`
+                              }}
+                            />
+                          ) : (
+                            <span className="text-xs text-zinc-500 font-medium ml-2">None</span>
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ========================================================= */}
+                {/* MODE 2: PUBLIC VIEW (How everyone else sees your profile) */}
+                {/* Only Info and About me tabs (No friends, gifts, etc.)    */}
+                {/* ========================================================= */}
+                {effectiveProfileViewMode === 'view' && (
+                  <div className="p-5 pt-2 overflow-y-auto flex-1 flex flex-col">
+                    {/* Two Tabs: Info and About me */}
+                    <div className="flex items-center gap-2 border-b border-[#22222a] pb-3 mb-4">
+                      <button
+                        type="button"
+                        onClick={() => setPublicProfileTab('info')}
+                        className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                          publicProfileTab === 'info'
+                            ? 'bg-[#252532] text-white shadow-sm'
+                            : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        Info
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPublicProfileTab('aboutme')}
+                        className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                          publicProfileTab === 'aboutme'
+                            ? 'bg-[#252532] text-white shadow-sm'
+                            : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        About me
+                      </button>
+                    </div>
+
+                    {/* Tab 1: Info */}
+                    {publicProfileTab === 'info' && (
+                      <div className="space-y-2.5">
+                        {/* Country */}
+                        <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
+                            <Globe className="w-4 h-4 text-zinc-400" />
+                            <span>Country</span>
+                          </div>
+                          <span className="text-sm font-bold text-white">
+                            {(isViewingSelf ? userProfile.country : activeModalUser.country) || 'Global'}
+                          </span>
+                        </div>
+
+                        {/* Gender */}
+                        <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
+                            <span className="text-base text-zinc-400">⚥</span>
+                            <span>Gender</span>
+                          </div>
+                          <span className="text-sm font-bold text-white">
+                            {(isViewingSelf ? userProfile.gender : activeModalUser.gender) || 'Unknown'}
+                          </span>
+                        </div>
+
+                        {/* Language */}
+                        <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
+                            <Languages className="w-4 h-4 text-zinc-400" />
+                            <span>Language</span>
+                          </div>
+                          <span className="text-sm font-bold text-white">
+                            {(isViewingSelf ? userProfile.language : activeModalUser.language) || 'English'}
+                          </span>
+                        </div>
+
+                        {/* Age */}
+                        <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
+                            <Calendar className="w-4 h-4 text-zinc-400" />
+                            <span>Age</span>
+                          </div>
+                          <span className="text-sm font-bold text-white">
+                            {(isViewingSelf ? userProfile.age : activeModalUser.age) || '18'} years old
+                          </span>
+                        </div>
+
+                        {/* Relationship */}
+                        <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
+                            <Heart className="w-4 h-4 text-zinc-400" />
+                            <span>Relationship</span>
+                          </div>
+                          <span className="text-sm font-bold text-white">
+                            {(isViewingSelf ? userProfile.relationship : activeModalUser.relationship) || 'Rather not say'}
+                          </span>
+                        </div>
+
+                        {/* Profile Music widget in Info tab if track exists */}
+                        {musicToShow && (
+                          <div className="bg-[#181820] border border-[#282838] rounded-xl px-4 py-3 flex items-center justify-between shadow-md">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <Music className="w-4 h-4 text-cyan-400 shrink-0" />
+                              <div className="min-w-0">
+                                <span className="text-xs font-bold text-white truncate block">
+                                  {musicToShow.name}
+                                </span>
+                                <span className="text-[10px] text-zinc-400">Profile Music</span>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setIsProfileMusicPlaying(!isProfileMusicPlaying)}
+                              className="w-8 h-8 rounded-lg bg-[#00c2ff] hover:bg-[#00aee6] text-white flex items-center justify-center shrink-0 cursor-pointer shadow-sm ml-2"
+                            >
+                              {isProfileMusicPlaying ? (
+                                <Pause className="w-4 h-4 fill-white" />
+                              ) : (
+                                <Play className="w-4 h-4 fill-white translate-x-0.5" />
+                              )}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Tab 2: About me (Pure text, NO BOX, scrollable for big ass bios) */}
+                    {publicProfileTab === 'aboutme' && (
+                      <div className="w-full max-h-[340px] overflow-y-auto px-1 py-1 pr-2">
+                        {((isViewingSelf ? userProfile.bio : activeModalUser.bio)) ? (
+                          <p className="text-sm text-zinc-200 whitespace-pre-wrap break-words leading-relaxed select-text font-normal">
+                            {isViewingSelf ? userProfile.bio : activeModalUser.bio}
+                          </p>
+                        ) : (
+                          <p className="text-sm text-zinc-500 italic">
+                            No about me info provided yet.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ========================================================= */}
         {/* SUB-MODALS FOR EDIT ACTIONS (Overlapping IN FRONT of Edit Profile) */}
