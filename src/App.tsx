@@ -43,7 +43,8 @@ import GlowModal from './components/GlowModal';
 import BorderModal from './components/BorderModal';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
 import { detectUserCountry, getInstantUserCountry } from './utils/countryDetect';
-import { uploadToCloudinary } from './lib/cloudinary';
+import { uploadToCloudinary, deleteFromCloudinary } from './lib/cloudinary';
+import { compressAvatar, compressBanner, formatBytes } from './utils/imageCompressor';
 import {
   rtdb,
   ref,
@@ -117,7 +118,11 @@ function UserAvatar({
 interface UserProfileData {
   username: string;
   avatarUrl?: string | null;
+  avatarPublicId?: string | null;
+  avatarDeleteToken?: string | null;
   bannerUrl?: string | null;
+  bannerPublicId?: string | null;
+  bannerDeleteToken?: string | null;
   age?: string;
   gender?: string;
   relationship?: string;
@@ -153,7 +158,11 @@ export default function App() {
   // Profile Details State (Loaded from localStorage)
   const [userProfile, setUserProfile] = useState<{
     avatarUrl: string | null;
+    avatarPublicId?: string | null;
+    avatarDeleteToken?: string | null;
     bannerUrl: string | null;
+    bannerPublicId?: string | null;
+    bannerDeleteToken?: string | null;
     age: string;
     gender: string;
     relationship: string;
@@ -171,7 +180,11 @@ export default function App() {
   }>(() => {
     const base = {
       avatarUrl: null,
+      avatarPublicId: null,
+      avatarDeleteToken: null,
       bannerUrl: null,
+      bannerPublicId: null,
+      bannerDeleteToken: null,
       age: '17',
       gender: 'MALE',
       relationship: 'Rather not say',
@@ -366,7 +379,11 @@ export default function App() {
                 list.push({
                   username: uName,
                   avatarUrl: val.avatarUrl || null,
+                  avatarPublicId: val.avatarPublicId || null,
+                  avatarDeleteToken: val.avatarDeleteToken || null,
                   bannerUrl: val.bannerUrl || null,
+                  bannerPublicId: val.bannerPublicId || null,
+                  bannerDeleteToken: val.bannerDeleteToken || null,
                   age: val.age ? String(val.age) : '18',
                   gender: val.gender || 'MALE',
                   relationship: val.relationship || 'Rather not say',
@@ -624,18 +641,49 @@ export default function App() {
     }
   };
 
-  // Avatar and Banner file handlers (Direct to Cloudinary preset "cloudd", no chat alerts)
+  // Avatar and Banner file handlers (Compacted to tiny KB, uploaded to Cloudinary, deleting previous asset)
   const handlePfpUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Cache previous avatar info to delete it
+    const oldAvatarUrl = userProfile.avatarUrl;
+    const oldAvatarPublicId = userProfile.avatarPublicId;
+    const oldAvatarToken = userProfile.avatarDeleteToken;
+
+    // 1. Compact image size to tiny KB (Canvas WebP/JPEG compression)
+    let uploadFile = file;
+    try {
+      const comp = await compressAvatar(file);
+      uploadFile = comp.file;
+    } catch (compErr) {
+      console.warn('Avatar compression notice:', compErr);
+    }
+
     // Instant local preview
-    const localPreview = URL.createObjectURL(file);
+    const localPreview = URL.createObjectURL(uploadFile);
     setUserProfile((prev) => ({ ...prev, avatarUrl: localPreview }));
 
+    // 2. Delete previous avatar from Cloudinary (if previously uploaded)
+    if (oldAvatarUrl || oldAvatarPublicId) {
+      deleteFromCloudinary({
+        url: oldAvatarUrl,
+        publicId: oldAvatarPublicId,
+        deleteToken: oldAvatarToken,
+        resourceType: 'image'
+      }).catch((delErr) => console.warn('Old avatar delete notice:', delErr));
+    }
+
+    // 3. Upload compacted file to Cloudinary in 'avatars' folder
     try {
-      const secureUrl = await uploadToCloudinary(file, 'image');
-      setUserProfile((prev) => ({ ...prev, avatarUrl: secureUrl }));
+      const uploadRes = await uploadToCloudinary(uploadFile, 'image', 'avatars');
+      const finalUrl = uploadRes.secure_url || uploadRes.url;
+      setUserProfile((prev) => ({
+        ...prev,
+        avatarUrl: finalUrl,
+        avatarPublicId: uploadRes.public_id,
+        avatarDeleteToken: uploadRes.delete_token || null
+      }));
     } catch (err) {
       console.warn('Cloudinary avatar upload notice:', err);
     }
@@ -645,15 +693,76 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Cache previous banner info to delete it
+    const oldBannerUrl = userProfile.bannerUrl;
+    const oldBannerPublicId = userProfile.bannerPublicId;
+    const oldBannerToken = userProfile.bannerDeleteToken;
+
+    // 1. Compact banner size to tiny KB (Canvas WebP/JPEG compression)
+    let uploadFile = file;
+    try {
+      const comp = await compressBanner(file);
+      uploadFile = comp.file;
+    } catch (compErr) {
+      console.warn('Banner compression notice:', compErr);
+    }
+
     // Instant local preview
-    const localPreview = URL.createObjectURL(file);
+    const localPreview = URL.createObjectURL(uploadFile);
     setUserProfile((prev) => ({ ...prev, bannerUrl: localPreview }));
 
+    // 2. Delete previous banner from Cloudinary (if previously uploaded)
+    if (oldBannerUrl || oldBannerPublicId) {
+      deleteFromCloudinary({
+        url: oldBannerUrl,
+        publicId: oldBannerPublicId,
+        deleteToken: oldBannerToken,
+        resourceType: 'image'
+      }).catch((delErr) => console.warn('Old banner delete notice:', delErr));
+    }
+
+    // 3. Upload compacted file to Cloudinary in 'banners' folder
     try {
-      const secureUrl = await uploadToCloudinary(file, 'image');
-      setUserProfile((prev) => ({ ...prev, bannerUrl: secureUrl }));
+      const uploadRes = await uploadToCloudinary(uploadFile, 'image', 'banners');
+      const finalUrl = uploadRes.secure_url || uploadRes.url;
+      setUserProfile((prev) => ({
+        ...prev,
+        bannerUrl: finalUrl,
+        bannerPublicId: uploadRes.public_id,
+        bannerDeleteToken: uploadRes.delete_token || null
+      }));
     } catch (err) {
       console.warn('Cloudinary banner upload notice:', err);
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    const oldUrl = userProfile.avatarUrl;
+    const oldPublicId = userProfile.avatarPublicId;
+    const oldToken = userProfile.avatarDeleteToken;
+    setUserProfile((p) => ({ ...p, avatarUrl: null, avatarPublicId: null, avatarDeleteToken: null }));
+    if (oldUrl || oldPublicId) {
+      deleteFromCloudinary({
+        url: oldUrl,
+        publicId: oldPublicId,
+        deleteToken: oldToken,
+        resourceType: 'image'
+      }).catch(() => {});
+    }
+  };
+
+  const handleRemoveBanner = async () => {
+    const oldUrl = userProfile.bannerUrl;
+    const oldPublicId = userProfile.bannerPublicId;
+    const oldToken = userProfile.bannerDeleteToken;
+    setUserProfile((p) => ({ ...p, bannerUrl: null, bannerPublicId: null, bannerDeleteToken: null }));
+    if (oldUrl || oldPublicId) {
+      deleteFromCloudinary({
+        url: oldUrl,
+        publicId: oldPublicId,
+        deleteToken: oldToken,
+        resourceType: 'image'
+      }).catch(() => {});
     }
   };
 
@@ -916,25 +1025,9 @@ export default function App() {
                             >
                               {msg.sender}
                             </button>
-                            {isSenderMe && (
-                              <span className="text-[10px] text-cyan-400 font-medium px-1 rounded bg-cyan-950/60 border border-cyan-500/20">
-                                You
-                              </span>
-                            )}
                           </div>
                           <div className="flex items-center gap-2 text-zinc-500 text-xs">
                             <span>{msg.timestamp}</span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setInputText((prev) => `@${msg.sender} ${prev}`);
-                              }}
-                              aria-label="Mention user"
-                              title={`Mention @${msg.sender}`}
-                              className="text-zinc-500 hover:text-cyan-400 p-0.5 rounded cursor-pointer transition-colors"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5" />
-                            </button>
                           </div>
                         </div>
 
@@ -1090,11 +1183,6 @@ export default function App() {
                           <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors">
                             {userItem.username}
                           </span>
-                          {isMe && (
-                            <span className="text-[10px] text-cyan-400/90 font-medium px-1 rounded bg-cyan-950/60 border border-cyan-500/20">
-                              You
-                            </span>
-                          )}
                         </div>
                         <p className="text-xs text-zinc-400 truncate mt-0.5">
                           {userItem.mood ? userItem.mood : (isOnline ? 'Online' : 'Offline')}
@@ -1168,11 +1256,6 @@ export default function App() {
                   <div className="relative z-10 mt-2.5">
                     <h3 className="font-extrabold text-white text-base tracking-wide drop-shadow-md truncate flex items-center justify-center gap-1.5">
                       <span>{activePopoverUser.username}</span>
-                      {isSelectedUserMe && (
-                        <span className="text-[10px] text-cyan-300 font-semibold px-1 py-0.5 rounded bg-cyan-900/60 border border-cyan-400/30">
-                          You
-                        </span>
-                      )}
                     </h3>
                     <p className="text-xs text-zinc-300 font-medium mt-0.5 drop-shadow-sm truncate">
                       {(isSelectedUserMe ? userProfile.age : activePopoverUser.age) || '18'} years · {(isSelectedUserMe ? userProfile.gender : activePopoverUser.gender) || 'Unknown'}
@@ -1196,8 +1279,8 @@ export default function App() {
                     <span>View profile</span>
                   </button>
 
-                  {/* 2. Edit button (self) OR Mention/Message (other) */}
-                  {isSelectedUserMe ? (
+                  {/* 2. Edit button (self only) */}
+                  {isSelectedUserMe && (
                     <button
                       type="button"
                       onClick={() => {
@@ -1209,18 +1292,6 @@ export default function App() {
                     >
                       <SquarePen className="w-4 h-4 text-cyan-400" />
                       <span>Edit</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPlayerPopoverOpen(false);
-                        setInputText((prev) => `@${activePopoverUser.username} ${prev}`);
-                      }}
-                      className="w-full bg-[#181822] hover:bg-[#20202e] text-cyan-300 font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer border border-cyan-500/20"
-                    >
-                      <MessageSquare className="w-4 h-4 text-cyan-400" />
-                      <span>Message @{activePopoverUser.username}</span>
                     </button>
                   )}
 
@@ -1358,7 +1429,7 @@ export default function App() {
                       <div className="bg-black/60 backdrop-blur-md rounded-full px-3 py-1.5 flex items-center gap-3 border border-white/10 shadow-lg">
                         <button
                           type="button"
-                          onClick={() => setUserProfile((p) => ({ ...p, bannerUrl: null }))}
+                          onClick={handleRemoveBanner}
                           title="Delete banner"
                           className="text-white hover:text-rose-400 transition-colors cursor-pointer"
                         >
@@ -1441,7 +1512,7 @@ export default function App() {
                       <div className="absolute inset-x-0 bottom-0 bg-black/70 backdrop-blur-xs py-1.5 px-3 flex items-center justify-between">
                         <button
                           type="button"
-                          onClick={() => setUserProfile((p) => ({ ...p, avatarUrl: null }))}
+                          onClick={handleRemoveAvatar}
                           title="Delete avatar"
                           className="text-white hover:text-rose-400 transition-colors cursor-pointer"
                         >
@@ -1474,11 +1545,6 @@ export default function App() {
                       <h2 className="text-xl sm:text-2xl font-black text-white tracking-wide truncate">
                         {usernameToShow}
                       </h2>
-                      {isViewingSelf && (
-                        <span className="text-[10px] text-cyan-300 font-semibold px-1.5 py-0.5 rounded bg-cyan-900/60 border border-cyan-400/30">
-                          You
-                        </span>
-                      )}
                     </div>
                     {moodToShow ? (
                       <p className="text-xs text-cyan-400 font-medium truncate mt-0.5">
@@ -2285,7 +2351,7 @@ export default function App() {
                           <Check className="w-2.5 h-2.5 stroke-[3]" />
                         </div>
                         <span className="text-xs font-semibold text-white">
-                          Type @ to tag a username in talk or friend wall.
+                          Chat in real-time with everyone in the room.
                         </span>
                       </div>
                     </div>

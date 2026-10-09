@@ -1,11 +1,13 @@
 import React, { useState, useRef } from 'react';
 import { X, UploadCloud, Play, Pause, Trash2, Music, Loader2 } from 'lucide-react';
-import { uploadToCloudinary } from '../lib/cloudinary';
+import { uploadToCloudinary, deleteFromCloudinary } from '../lib/cloudinary';
 
 export interface MusicTrack {
   name: string;
   url: string;
   size?: string;
+  publicId?: string | null;
+  deleteToken?: string | null;
 }
 
 interface MusicPlayerModalProps {
@@ -44,13 +46,29 @@ export default function MusicPlayerModal({
     setIsUploading(true);
     const sizeInMB = (file.size / (1024 * 1024)).toFixed(1) + 'MB';
 
+    // If an existing track was uploaded, delete it from Cloudinary first
+    if (track && (track.url || track.publicId)) {
+      try {
+        await deleteFromCloudinary({
+          url: track.url,
+          publicId: track.publicId,
+          deleteToken: track.deleteToken,
+          resourceType: 'video'
+        });
+      } catch (delErr) {
+        console.warn('Failed to delete old music track from Cloudinary:', delErr);
+      }
+    }
+
     try {
-      // Upload to Cloudinary unsigned preset
-      const uploadedUrl = await uploadToCloudinary(file, 'auto');
+      // Upload to Cloudinary unsigned preset in 'music' folder
+      const uploadRes = await uploadToCloudinary(file, 'auto', 'music');
       const newTrack: MusicTrack = {
         name: file.name,
-        url: uploadedUrl,
-        size: sizeInMB
+        url: uploadRes.secure_url || uploadRes.url,
+        size: sizeInMB,
+        publicId: uploadRes.public_id,
+        deleteToken: uploadRes.delete_token
       };
       setTrack(newTrack);
       onSaveTrack(newTrack);
@@ -100,13 +118,27 @@ export default function MusicPlayerModal({
     }
   };
 
-  const handleRemoveTrack = () => {
+  const handleRemoveTrack = async () => {
     if (audioRef.current) {
       audioRef.current.pause();
     }
+    const oldTrack = track;
     setTrack(null);
     setIsPlaying(false);
     onSaveTrack(null);
+
+    if (oldTrack && (oldTrack.url || oldTrack.publicId)) {
+      try {
+        await deleteFromCloudinary({
+          url: oldTrack.url,
+          publicId: oldTrack.publicId,
+          deleteToken: oldTrack.deleteToken,
+          resourceType: 'video'
+        });
+      } catch (delErr) {
+        console.warn('Failed to delete removed track from Cloudinary:', delErr);
+      }
+    }
   };
 
   const formatTime = (secs: number) => {
