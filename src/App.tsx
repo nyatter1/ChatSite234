@@ -42,6 +42,7 @@ import {
 import GlowModal from './components/GlowModal';
 import BorderModal from './components/BorderModal';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
+import { detectUserCountry, getInstantUserCountry } from './utils/countryDetect';
 
 interface ChatMessage {
   id: string;
@@ -93,6 +94,8 @@ export default function App() {
   // Authentication & Current User State
   const [currentUser, setCurrentUser] = useState<{ username: string; gender: string } | null>(null);
 
+  const initialGeo = getInstantUserCountry();
+
   // Profile Details State
   const [userProfile, setUserProfile] = useState<{
     avatarUrl: string | null;
@@ -114,8 +117,8 @@ export default function App() {
     age: '17',
     gender: 'MALE',
     relationship: 'Rather not say',
-    country: 'United Kingdom',
-    language: 'English',
+    country: initialGeo.country,
+    language: initialGeo.language,
     bio: '',
     mood: '',
     glowColor: null,
@@ -137,8 +140,8 @@ export default function App() {
   const [tempAge, setTempAge] = useState('17');
   const [tempGender, setTempGender] = useState('MALE');
   const [tempRelationship, setTempRelationship] = useState('Rather not say');
-  const [tempCountry, setTempCountry] = useState('United Kingdom');
-  const [tempLanguage, setTempLanguage] = useState('English');
+  const [tempCountry, setTempCountry] = useState(initialGeo.country);
+  const [tempLanguage, setTempLanguage] = useState(initialGeo.language);
   const [tempUsername, setTempUsername] = useState('');
   const [tempBio, setTempBio] = useState('');
   const [tempMood, setTempMood] = useState('');
@@ -147,6 +150,19 @@ export default function App() {
   const [tempPfpBorderIndex, setTempPfpBorderIndex] = useState(0);
   const [isProfileMusicPlaying, setIsProfileMusicPlaying] = useState(false);
   const profileAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Automatically detect user's country on load
+  useEffect(() => {
+    detectUserCountry().then(({ country, language }) => {
+      setUserProfile((prev) => ({
+        ...prev,
+        country: prev.country === 'United Kingdom' || !prev.country ? country : prev.country,
+        language: prev.language === 'English' || !prev.language ? language : prev.language
+      }));
+      setTempCountry((prev) => (!prev || prev === 'United Kingdom' ? country : prev));
+      setTempLanguage((prev) => (!prev || prev === 'English' ? language : prev));
+    });
+  }, []);
 
   // Hidden file inputs for avatar & banner uploads
   const pfpInputRef = useRef<HTMLInputElement>(null);
@@ -1252,11 +1268,11 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Tab 2: About me */}
+                  {/* Tab 2: About me (Pure text, NO BOX, scrollable for big ass bios) */}
                   {publicProfileTab === 'aboutme' && (
-                    <div className="bg-[#181820] border border-[#242430] rounded-2xl p-4 min-h-[120px] flex-1">
+                    <div className="w-full max-h-[340px] overflow-y-auto px-1 py-1 pr-2">
                       {userProfile.bio ? (
-                        <p className="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed">
+                        <p className="text-sm text-zinc-200 whitespace-pre-wrap break-words leading-relaxed select-text font-normal">
                           {userProfile.bio}
                         </p>
                       ) : (
@@ -1268,328 +1284,357 @@ export default function App() {
                   )}
                 </div>
               )}
-
-              {/* ========================================================= */}
-              {/* SUB-MODALS FOR EDIT ACTIONS (Matching Screenshots 1, 2, 3, 4) */}
-              {/* ========================================================= */}
-              {activeEditSubModal && (
-                <div className="absolute inset-0 z-30 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-100">
-                  {/* 1. Edit info sub-modal */}
-                  {activeEditSubModal === 'info' && (
-                    <div className="w-full max-w-[360px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100">
-                      <div className="flex items-center justify-between mb-3">
-                        <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                          Edit Info
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setActiveEditSubModal(null)}
-                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <div className="space-y-3">
-                        {/* Age */}
-                        <div>
-                          <label className="block text-xs font-bold text-white mb-1">
-                            Age
-                          </label>
-                          <select
-                            value={tempAge}
-                            onChange={(e) => setTempAge(e.target.value)}
-                            className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
-                          >
-                            {Array.from({ length: 80 }, (_, i) => String(i + 13)).map((a) => (
-                              <option key={a} value={a}>
-                                {a}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {/* Gender */}
-                        <div>
-                          <label className="block text-xs font-bold text-white mb-1">
-                            Gender
-                          </label>
-                          <select
-                            value={tempGender}
-                            onChange={(e) => setTempGender(e.target.value)}
-                            className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
-                          >
-                            <option value="MALE">MALE</option>
-                            <option value="FEMALE">FEMALE</option>
-                            <option value="OTHER">OTHER</option>
-                          </select>
-                        </div>
-
-                        {/* Relationship */}
-                        <div>
-                          <label className="block text-xs font-bold text-white mb-1">
-                            Relationship
-                          </label>
-                          <select
-                            value={tempRelationship}
-                            onChange={(e) => setTempRelationship(e.target.value)}
-                            className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
-                          >
-                            <option value="Rather not say">Rather not say</option>
-                            <option value="Single">Single</option>
-                            <option value="Taken">Taken</option>
-                            <option value="In a relationship">In a relationship</option>
-                            <option value="Married">Married</option>
-                          </select>
-                        </div>
-
-                        {/* Country */}
-                        <div>
-                          <label className="block text-xs font-bold text-white mb-1">
-                            Country
-                          </label>
-                          <input
-                            type="text"
-                            value={tempCountry}
-                            onChange={(e) => setTempCountry(e.target.value)}
-                            placeholder="Country"
-                            className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
-                          />
-                        </div>
-
-                        {/* Language */}
-                        <div>
-                          <label className="block text-xs font-bold text-white mb-1">
-                            Language
-                          </label>
-                          <input
-                            type="text"
-                            value={tempLanguage}
-                            onChange={(e) => setTempLanguage(e.target.value)}
-                            placeholder="Language"
-                            className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
-                          />
-                        </div>
-
-                        <div className="pt-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setUserProfile((p) => ({
-                                ...p,
-                                age: tempAge,
-                                gender: tempGender,
-                                relationship: tempRelationship,
-                                country: tempCountry || 'United Kingdom',
-                                language: tempLanguage || 'English'
-                              }));
-                              setActiveEditSubModal(null);
-                            }}
-                            className="w-full bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold py-2.5 rounded-xl text-sm transition-colors cursor-pointer shadow-md shadow-cyan-500/20"
-                          >
-                            Save
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 2. Edit about me (bio) sub-modal */}
-                  {activeEditSubModal === 'bio' && (
-                    <div className="w-full max-w-[380px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100">
-                      <div className="flex items-center justify-between mb-3">
-                        <h3 className="text-base font-bold text-white">About me</h3>
-                        <button
-                          type="button"
-                          onClick={() => setActiveEditSubModal(null)}
-                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <div className="space-y-4">
-                        <textarea
-                          rows={5}
-                          value={tempBio}
-                          onChange={(e) => setTempBio(e.target.value)}
-                          placeholder="Tell everyone about yourself..."
-                          className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl p-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500 resize-none"
-                        />
-
-                        <div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setUserProfile((p) => ({ ...p, bio: tempBio }));
-                              setActiveEditSubModal(null);
-                            }}
-                            className="bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold px-6 py-2.5 rounded-xl text-sm transition-colors cursor-pointer shadow-md shadow-cyan-500/20"
-                          >
-                            Save
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 3. Edit username sub-modal */}
-                  {activeEditSubModal === 'username' && (
-                    <div className="w-full max-w-[360px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100">
-                      <div className="flex items-center justify-between mb-3">
-                        <h3 className="text-base font-bold text-white">Username</h3>
-                        <button
-                          type="button"
-                          onClick={() => setActiveEditSubModal(null)}
-                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <div className="space-y-4">
-                        <input
-                          type="text"
-                          value={tempUsername}
-                          onChange={(e) => setTempUsername(e.target.value)}
-                          placeholder="Username"
-                          className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
-                        />
-
-                        <div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (tempUsername.trim()) {
-                                setCurrentUser((u) => (u ? { ...u, username: tempUsername.trim() } : u));
-                              }
-                              setActiveEditSubModal(null);
-                            }}
-                            className="bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center gap-2 shadow-md shadow-cyan-500/20"
-                          >
-                            <Save className="w-4 h-4" />
-                            <span>Save</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 4. Edit mood sub-modal */}
-                  {activeEditSubModal === 'mood' && (
-                    <div className="w-full max-w-[360px] bg-[#17171d] border border-[#262632] rounded-2xl p-5 shadow-2xl relative text-white animate-in zoom-in-95 duration-100">
-                      <div className="flex items-center justify-between mb-3">
-                        <h3 className="text-base font-bold text-white">Mood</h3>
-                        <button
-                          type="button"
-                          onClick={() => setActiveEditSubModal(null)}
-                          className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <div className="space-y-4">
-                        <input
-                          type="text"
-                          value={tempMood}
-                          onChange={(e) => setTempMood(e.target.value)}
-                          placeholder="What's your current mood?"
-                          className="w-full bg-[#1f1f26] border border-[#2d2d38] rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
-                        />
-
-                        <div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setUserProfile((p) => ({ ...p, mood: tempMood.trim() }));
-                              setActiveEditSubModal(null);
-                            }}
-                            className="bg-[#00a8e8] hover:bg-[#0096d1] text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center gap-2 shadow-md shadow-cyan-500/20"
-                          >
-                            <Save className="w-4 h-4" />
-                            <span>Save</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 5. User glow sub-modal (Screenshots 1 & 2) */}
-                  {activeEditSubModal === 'glow' && (
-                    <GlowModal
-                      initialColor={userProfile.glowColor}
-                      username={currentUser.username}
-                      avatarUrl={userProfile.avatarUrl}
-                      pfpBorderClass={getPfpBorder(userProfile.pfpBorderId).pfpBorderClass}
-                      onSave={(color) => {
-                        setUserProfile((p) => ({ ...p, glowColor: color }));
-                        setActiveEditSubModal(null);
-                      }}
-                      onClose={() => setActiveEditSubModal(null)}
-                    />
-                  )}
-
-                  {/* 6. Profile borders sub-modal (Screenshot 3) */}
-                  {activeEditSubModal === 'profileBorder' && (
-                    <BorderModal
-                      type="profileBorder"
-                      borders={PROFILE_BORDERS}
-                      currentIndex={tempProfileBorderIndex}
-                      username={currentUser.username}
-                      avatarUrl={userProfile.avatarUrl}
-                      gender={userProfile.gender}
-                      country={userProfile.country}
-                      language={userProfile.language}
-                      onSave={(idx) => {
-                        setUserProfile((p) => ({
-                          ...p,
-                          profileBorderId: PROFILE_BORDERS[idx].id
-                        }));
-                        setActiveEditSubModal(null);
-                      }}
-                      onClose={() => setActiveEditSubModal(null)}
-                    />
-                  )}
-
-                  {/* 7. Profile picture borders sub-modal (Screenshot 3 layout) */}
-                  {activeEditSubModal === 'pfpBorder' && (
-                    <BorderModal
-                      type="pfpBorder"
-                      borders={PFP_BORDERS}
-                      currentIndex={tempPfpBorderIndex}
-                      username={currentUser.username}
-                      avatarUrl={userProfile.avatarUrl}
-                      gender={userProfile.gender}
-                      country={userProfile.country}
-                      language={userProfile.language}
-                      onSave={(idx) => {
-                        setUserProfile((p) => ({
-                          ...p,
-                          pfpBorderId: PFP_BORDERS[idx].id
-                        }));
-                        setActiveEditSubModal(null);
-                      }}
-                      onClose={() => setActiveEditSubModal(null)}
-                    />
-                  )}
-
-                  {/* 8. Profile music / Music player sub-modal (Screenshot 4) */}
-                  {activeEditSubModal === 'music' && (
-                    <MusicPlayerModal
-                      currentTrack={userProfile.musicTrack}
-                      onSaveTrack={(track) => {
-                        setUserProfile((p) => ({ ...p, musicTrack: track }));
-                        if (!track) {
-                          setIsProfileMusicPlaying(false);
-                        }
-                      }}
-                      onClose={() => setActiveEditSubModal(null)}
-                    />
-                  )}
-                </div>
-              )}
             </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* SUB-MODALS FOR EDIT ACTIONS (Overlapping IN FRONT of Edit Profile) */}
+        {/* ========================================================= */}
+        {profileModalOpen && activeEditSubModal && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-[65] bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150 overflow-y-auto select-none"
+          >
+            {/* Click backdrop to close */}
+            <div className="fixed inset-0" onClick={() => setActiveEditSubModal(null)} />
+
+            {/* 1. Edit info sub-modal */}
+            {activeEditSubModal === 'info' && (
+              <div className="w-full max-w-[390px] bg-[#141418] border border-[#272736] rounded-3xl p-5 sm:p-6 shadow-2xl relative z-10 text-white animate-in zoom-in-95 duration-100">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="text-base font-extrabold text-white">Edit Info</h3>
+                    <p className="text-xs text-zinc-400">Update your account details</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveEditSubModal(null)}
+                    className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="space-y-3.5">
+                  {/* Age */}
+                  <div>
+                    <label className="block text-xs font-bold text-white mb-1">
+                      Age
+                    </label>
+                    <select
+                      value={tempAge}
+                      onChange={(e) => setTempAge(e.target.value)}
+                      className="w-full bg-[#1c1c24] border border-[#2d2d38] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
+                    >
+                      {Array.from({ length: 80 }, (_, i) => String(i + 13)).map((a) => (
+                        <option key={a} value={a}>
+                          {a}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Gender */}
+                  <div>
+                    <label className="block text-xs font-bold text-white mb-1">
+                      Gender
+                    </label>
+                    <select
+                      value={tempGender}
+                      onChange={(e) => setTempGender(e.target.value)}
+                      className="w-full bg-[#1c1c24] border border-[#2d2d38] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
+                    >
+                      <option value="MALE">MALE</option>
+                      <option value="FEMALE">FEMALE</option>
+                      <option value="OTHER">OTHER</option>
+                    </select>
+                  </div>
+
+                  {/* Relationship */}
+                  <div>
+                    <label className="block text-xs font-bold text-white mb-1">
+                      Relationship
+                    </label>
+                    <select
+                      value={tempRelationship}
+                      onChange={(e) => setTempRelationship(e.target.value)}
+                      className="w-full bg-[#1c1c24] border border-[#2d2d38] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
+                    >
+                      <option value="Rather not say">Rather not say</option>
+                      <option value="Single">Single</option>
+                      <option value="Taken">Taken</option>
+                      <option value="In a relationship">In a relationship</option>
+                      <option value="Married">Married</option>
+                    </select>
+                  </div>
+
+                  {/* Country (with Auto-detect) */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-bold text-white">
+                        Country
+                      </label>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const det = await detectUserCountry();
+                          setTempCountry(det.country);
+                        }}
+                        className="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold flex items-center gap-1 cursor-pointer"
+                      >
+                        <Globe className="w-3 h-3" />
+                        <span>Auto-detect</span>
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      value={tempCountry}
+                      onChange={(e) => setTempCountry(e.target.value)}
+                      placeholder="Country"
+                      className="w-full bg-[#1c1c24] border border-[#2d2d38] rounded-xl px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+
+                  {/* Language */}
+                  <div>
+                    <label className="block text-xs font-bold text-white mb-1">
+                      Language
+                    </label>
+                    <input
+                      type="text"
+                      value={tempLanguage}
+                      onChange={(e) => setTempLanguage(e.target.value)}
+                      placeholder="Language"
+                      className="w-full bg-[#1c1c24] border border-[#2d2d38] rounded-xl px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUserProfile((p) => ({
+                          ...p,
+                          age: tempAge,
+                          gender: tempGender,
+                          relationship: tempRelationship,
+                          country: tempCountry || 'United Kingdom',
+                          language: tempLanguage || 'English'
+                        }));
+                        setActiveEditSubModal(null);
+                      }}
+                      className="w-full bg-[#00c2ff] hover:bg-[#00aee6] text-white font-extrabold py-2.5 rounded-xl text-sm transition-colors cursor-pointer shadow-md shadow-cyan-500/25"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 2. Edit about me (bio) sub-modal - ALLOW BIG ASS BIOS */}
+            {activeEditSubModal === 'bio' && (
+              <div className="w-full max-w-[480px] bg-[#141418] border border-[#272736] rounded-3xl p-5 sm:p-6 shadow-2xl relative z-10 text-white animate-in zoom-in-95 duration-100">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-base font-extrabold text-white">Edit About Me</h3>
+                    <p className="text-xs text-zinc-400 mt-0.5">Write whatever you want — long bios can be scrolled!</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveEditSubModal(null)}
+                    className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <textarea
+                    rows={9}
+                    value={tempBio}
+                    onChange={(e) => setTempBio(e.target.value)}
+                    placeholder="Tell everyone about yourself... No length limit, bios can be as big as you want!"
+                    className="w-full bg-[#1b1b22] border border-[#2d2d38] rounded-xl p-3.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500 resize-y max-h-[340px]"
+                  />
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-zinc-500 font-medium">
+                      {tempBio.length} characters
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUserProfile((p) => ({ ...p, bio: tempBio }));
+                        setActiveEditSubModal(null);
+                      }}
+                      className="bg-[#00c2ff] hover:bg-[#00aee6] text-white font-extrabold px-6 py-2.5 rounded-xl text-sm transition-colors cursor-pointer shadow-md shadow-cyan-500/25"
+                    >
+                      Save Bio
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 3. Edit username sub-modal */}
+            {activeEditSubModal === 'username' && (
+              <div className="w-full max-w-[380px] bg-[#141418] border border-[#272736] rounded-3xl p-5 sm:p-6 shadow-2xl relative z-10 text-white animate-in zoom-in-95 duration-100">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-base font-extrabold text-white">Edit Username</h3>
+                  <button
+                    type="button"
+                    onClick={() => setActiveEditSubModal(null)}
+                    className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <input
+                    type="text"
+                    value={tempUsername}
+                    onChange={(e) => setTempUsername(e.target.value)}
+                    placeholder="Username"
+                    className="w-full bg-[#1c1c24] border border-[#2d2d38] rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+                  />
+
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (tempUsername.trim()) {
+                          setCurrentUser((u) => (u ? { ...u, username: tempUsername.trim() } : u));
+                        }
+                        setActiveEditSubModal(null);
+                      }}
+                      className="w-full bg-[#00c2ff] hover:bg-[#00aee6] text-white font-extrabold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-cyan-500/25"
+                    >
+                      <Save className="w-4 h-4" />
+                      <span>Save Username</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 4. Edit mood sub-modal */}
+            {activeEditSubModal === 'mood' && (
+              <div className="w-full max-w-[380px] bg-[#141418] border border-[#272736] rounded-3xl p-5 sm:p-6 shadow-2xl relative z-10 text-white animate-in zoom-in-95 duration-100">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-base font-extrabold text-white">Edit Mood</h3>
+                  <button
+                    type="button"
+                    onClick={() => setActiveEditSubModal(null)}
+                    className="text-zinc-400 hover:text-white p-1 rounded-md cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <input
+                    type="text"
+                    value={tempMood}
+                    onChange={(e) => setTempMood(e.target.value)}
+                    placeholder="What's your current mood?"
+                    className="w-full bg-[#1c1c24] border border-[#2d2d38] rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+                  />
+
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUserProfile((p) => ({ ...p, mood: tempMood.trim() }));
+                        setActiveEditSubModal(null);
+                      }}
+                      className="w-full bg-[#00c2ff] hover:bg-[#00aee6] text-white font-extrabold py-2.5 rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-cyan-500/25"
+                    >
+                      <Save className="w-4 h-4" />
+                      <span>Save Mood</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 5. User glow sub-modal (Free, in front) */}
+            {activeEditSubModal === 'glow' && (
+              <GlowModal
+                initialColor={userProfile.glowColor}
+                username={currentUser.username}
+                avatarUrl={userProfile.avatarUrl}
+                pfpBorderClass={getPfpBorder(userProfile.pfpBorderId).pfpBorderClass}
+                onSave={(color) => {
+                  setUserProfile((p) => ({ ...p, glowColor: color }));
+                  setActiveEditSubModal(null);
+                }}
+                onClose={() => setActiveEditSubModal(null)}
+              />
+            )}
+
+            {/* 6. Profile borders sub-modal (Zoomed out, in front) */}
+            {activeEditSubModal === 'profileBorder' && (
+              <BorderModal
+                type="profileBorder"
+                borders={PROFILE_BORDERS}
+                currentIndex={tempProfileBorderIndex}
+                username={currentUser.username}
+                avatarUrl={userProfile.avatarUrl}
+                gender={userProfile.gender}
+                country={userProfile.country}
+                language={userProfile.language}
+                bio={userProfile.bio}
+                onSave={(idx) => {
+                  setUserProfile((p) => ({
+                    ...p,
+                    profileBorderId: PROFILE_BORDERS[idx].id
+                  }));
+                  setActiveEditSubModal(null);
+                }}
+                onClose={() => setActiveEditSubModal(null)}
+              />
+            )}
+
+            {/* 7. Profile picture borders sub-modal (Zoomed out, in front) */}
+            {activeEditSubModal === 'pfpBorder' && (
+              <BorderModal
+                type="pfpBorder"
+                borders={PFP_BORDERS}
+                currentIndex={tempPfpBorderIndex}
+                username={currentUser.username}
+                avatarUrl={userProfile.avatarUrl}
+                gender={userProfile.gender}
+                country={userProfile.country}
+                language={userProfile.language}
+                bio={userProfile.bio}
+                onSave={(idx) => {
+                  setUserProfile((p) => ({
+                    ...p,
+                    pfpBorderId: PFP_BORDERS[idx].id
+                  }));
+                  setActiveEditSubModal(null);
+                }}
+                onClose={() => setActiveEditSubModal(null)}
+              />
+            )}
+
+            {/* 8. Profile music / Music player sub-modal (Free, in front) */}
+            {activeEditSubModal === 'music' && (
+              <MusicPlayerModal
+                currentTrack={userProfile.musicTrack}
+                onSaveTrack={(track) => {
+                  setUserProfile((p) => ({ ...p, musicTrack: track }));
+                  if (!track) {
+                    setIsProfileMusicPlaying(false);
+                  }
+                }}
+                onClose={() => setActiveEditSubModal(null)}
+              />
+            )}
           </div>
         )}
 

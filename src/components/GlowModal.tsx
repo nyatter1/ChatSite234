@@ -36,7 +36,7 @@ export default function GlowModal({
     <div
       role="dialog"
       aria-modal="true"
-      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+      className="fixed inset-0 z-[70] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
     >
       <div className="w-full max-w-[420px] bg-[#141418] border border-[#24242e] rounded-3xl p-6 sm:p-7 shadow-2xl relative text-white animate-in zoom-in-95 duration-150 select-none">
         {/* Header (Screenshot 1) */}
