@@ -57,12 +57,14 @@ function UserAvatar({
   avatarUrl,
   className = 'w-10 h-10',
   showOnline = false,
-  pfpBorderClass
+  pfpBorderClass,
+  pfpBorderThickness
 }: {
   avatarUrl?: string | null;
   className?: string;
   showOnline?: boolean;
   pfpBorderClass?: string;
+  pfpBorderThickness?: number;
 }) {
   return (
     <div className={`relative shrink-0 ${className}`}>
@@ -70,6 +72,7 @@ function UserAvatar({
         className={`w-full h-full rounded-full overflow-hidden bg-[#24252e] flex items-center justify-center transition-all ${
           pfpBorderClass || 'border border-white/10'
         }`}
+        style={pfpBorderThickness !== undefined ? { borderWidth: `${pfpBorderThickness}px` } : undefined}
       >
         {avatarUrl ? (
           <img src={avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
@@ -108,8 +111,11 @@ export default function App() {
     bio: string;
     mood: string;
     glowColor: string | null;
+    glowThickness: number;
     profileBorderId: string | null;
+    profileBorderThickness: number;
     pfpBorderId: string | null;
+    pfpBorderThickness: number;
     musicTrack: MusicTrack | null;
   }>({
     avatarUrl: null,
@@ -122,8 +128,11 @@ export default function App() {
     bio: '',
     mood: '',
     glowColor: null,
+    glowThickness: 18,
     profileBorderId: 'pb-default',
+    profileBorderThickness: 2,
     pfpBorderId: 'pfp-default',
+    pfpBorderThickness: 2,
     musicTrack: null
   });
 
@@ -146,8 +155,11 @@ export default function App() {
   const [tempBio, setTempBio] = useState('');
   const [tempMood, setTempMood] = useState('');
   const [tempGlowColor, setTempGlowColor] = useState<string | null>(null);
+  const [tempGlowThickness, setTempGlowThickness] = useState(18);
   const [tempProfileBorderIndex, setTempProfileBorderIndex] = useState(0);
+  const [tempProfileBorderThickness, setTempProfileBorderThickness] = useState(2);
   const [tempPfpBorderIndex, setTempPfpBorderIndex] = useState(0);
+  const [tempPfpBorderThickness, setTempPfpBorderThickness] = useState(2);
   const [isProfileMusicPlaying, setIsProfileMusicPlaying] = useState(false);
   const profileAudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -365,12 +377,15 @@ export default function App() {
       setTempMood(userProfile.mood);
     } else if (type === 'glow') {
       setTempGlowColor(userProfile.glowColor);
+      setTempGlowThickness(userProfile.glowThickness || 18);
     } else if (type === 'profileBorder') {
       const idx = PROFILE_BORDERS.findIndex((b) => b.id === userProfile.profileBorderId);
       setTempProfileBorderIndex(idx >= 0 ? idx : 0);
+      setTempProfileBorderThickness(userProfile.profileBorderThickness || 2);
     } else if (type === 'pfpBorder') {
       const idx = PFP_BORDERS.findIndex((b) => b.id === userProfile.pfpBorderId);
       setTempPfpBorderIndex(idx >= 0 ? idx : 0);
+      setTempPfpBorderThickness(userProfile.pfpBorderThickness || 2);
     }
     setActiveEditSubModal(type);
   };
@@ -533,6 +548,11 @@ export default function App() {
                           ? getPfpBorder(userProfile.pfpBorderId).pfpBorderClass
                           : undefined
                       }
+                      pfpBorderThickness={
+                        msg.sender === currentUser.username
+                          ? userProfile.pfpBorderThickness
+                          : undefined
+                      }
                     />
 
                     <div className="flex-1 min-w-0">
@@ -670,7 +690,7 @@ export default function App() {
                     userProfile.glowColor
                       ? {
                           borderColor: userProfile.glowColor,
-                          boxShadow: `0 0 16px ${userProfile.glowColor}99, inset 0 0 6px ${userProfile.glowColor}33`
+                          boxShadow: `0 0 ${userProfile.glowThickness || 18}px ${userProfile.glowColor}99, inset 0 0 ${Math.max(3, Math.round((userProfile.glowThickness || 18) / 3))}px ${userProfile.glowColor}33`
                         }
                       : undefined
                   }
@@ -683,6 +703,7 @@ export default function App() {
                     className="w-10 h-10"
                     showOnline={true}
                     pfpBorderClass={getPfpBorder(userProfile.pfpBorderId).pfpBorderClass}
+                    pfpBorderThickness={userProfile.pfpBorderThickness}
                   />
                   <div className="flex-1 min-w-0">
                     <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors block">
@@ -725,6 +746,7 @@ export default function App() {
                   className={`w-20 h-20 rounded-full overflow-hidden bg-[#24252e] shadow-2xl relative shrink-0 z-10 transition-all ${
                     getPfpBorder(userProfile.pfpBorderId).pfpBorderClass || 'border-2 border-white'
                   }`}
+                  style={{ borderWidth: `${userProfile.pfpBorderThickness || 2}px` }}
                 >
                   {userProfile.avatarUrl ? (
                     <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
@@ -841,6 +863,11 @@ export default function App() {
                   ? (getProfileBorder(userProfile.profileBorderId).cardBorderClass || 'border border-[#252530]')
                   : 'border border-[#252530]'
               }`}
+              style={
+                profileViewMode === 'view' && userProfile.profileBorderThickness
+                  ? { borderWidth: `${userProfile.profileBorderThickness}px` }
+                  : undefined
+              }
             >
               {/* BANNER AREA */}
               <div className="h-36 sm:h-40 w-full relative bg-gradient-to-r from-[#1c1c24] via-[#242430] to-[#1c1c24] shrink-0 overflow-hidden">
@@ -918,6 +945,7 @@ export default function App() {
                   className={`w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden bg-[#1f1f26] relative shrink-0 shadow-2xl -mt-12 sm:-mt-14 transition-all ${
                     getPfpBorder(userProfile.pfpBorderId).pfpBorderClass || 'border-2 border-white/90'
                   }`}
+                  style={{ borderWidth: `${userProfile.pfpBorderThickness || 2}px` }}
                 >
                   {userProfile.avatarUrl ? (
                     <img
@@ -1565,33 +1593,37 @@ export default function App() {
             {activeEditSubModal === 'glow' && (
               <GlowModal
                 initialColor={userProfile.glowColor}
+                initialThickness={userProfile.glowThickness || 18}
                 username={currentUser.username}
                 avatarUrl={userProfile.avatarUrl}
                 pfpBorderClass={getPfpBorder(userProfile.pfpBorderId).pfpBorderClass}
-                onSave={(color) => {
-                  setUserProfile((p) => ({ ...p, glowColor: color }));
+                pfpBorderThickness={userProfile.pfpBorderThickness || 2}
+                onSave={(color, thick) => {
+                  setUserProfile((p) => ({ ...p, glowColor: color, glowThickness: thick }));
                   setActiveEditSubModal(null);
                 }}
                 onClose={() => setActiveEditSubModal(null)}
               />
             )}
 
-            {/* 6. Profile borders sub-modal (Zoomed out, in front) */}
+            {/* 6. Profile borders sub-modal (Clean Screenshot 3 UI, in front) */}
             {activeEditSubModal === 'profileBorder' && (
               <BorderModal
                 type="profileBorder"
                 borders={PROFILE_BORDERS}
                 currentIndex={tempProfileBorderIndex}
+                initialThickness={userProfile.profileBorderThickness || 2}
                 username={currentUser.username}
                 avatarUrl={userProfile.avatarUrl}
                 gender={userProfile.gender}
                 country={userProfile.country}
                 language={userProfile.language}
                 bio={userProfile.bio}
-                onSave={(idx) => {
+                onSave={(idx, thick) => {
                   setUserProfile((p) => ({
                     ...p,
-                    profileBorderId: PROFILE_BORDERS[idx].id
+                    profileBorderId: PROFILE_BORDERS[idx].id,
+                    profileBorderThickness: thick
                   }));
                   setActiveEditSubModal(null);
                 }}
@@ -1599,22 +1631,24 @@ export default function App() {
               />
             )}
 
-            {/* 7. Profile picture borders sub-modal (Zoomed out, in front) */}
+            {/* 7. Profile picture borders sub-modal (Clean Screenshot 3 UI, in front) */}
             {activeEditSubModal === 'pfpBorder' && (
               <BorderModal
                 type="pfpBorder"
                 borders={PFP_BORDERS}
                 currentIndex={tempPfpBorderIndex}
+                initialThickness={userProfile.pfpBorderThickness || 2}
                 username={currentUser.username}
                 avatarUrl={userProfile.avatarUrl}
                 gender={userProfile.gender}
                 country={userProfile.country}
                 language={userProfile.language}
                 bio={userProfile.bio}
-                onSave={(idx) => {
+                onSave={(idx, thick) => {
                   setUserProfile((p) => ({
                     ...p,
-                    pfpBorderId: PFP_BORDERS[idx].id
+                    pfpBorderId: PFP_BORDERS[idx].id,
+                    pfpBorderThickness: thick
                   }));
                   setActiveEditSubModal(null);
                 }}
