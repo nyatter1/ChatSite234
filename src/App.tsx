@@ -33,7 +33,8 @@ import {
   Globe,
   Languages,
   AlertCircle,
-  Loader2
+  Loader2,
+  Trash2
 } from 'lucide-react';
 import {
   PROFILE_BORDERS,
@@ -165,6 +166,30 @@ export default function App() {
     }
   });
 
+  // Default Profile Configuration
+  const initialProfile = useMemo(() => ({
+    avatarUrl: null,
+    avatarPublicId: null,
+    avatarDeleteToken: null,
+    bannerUrl: null,
+    bannerPublicId: null,
+    bannerDeleteToken: null,
+    age: '17',
+    gender: 'MALE',
+    relationship: 'Rather not say',
+    country: initialGeo.country,
+    language: initialGeo.language,
+    bio: '',
+    mood: '',
+    glowColor: null,
+    glowThickness: 18,
+    profileBorderId: 'pb-default',
+    profileBorderThickness: 2,
+    pfpBorderId: 'pfp-default',
+    pfpBorderThickness: 2,
+    musicTrack: null
+  }), [initialGeo]);
+
   // Profile Details State (Loaded from localStorage)
   const [userProfile, setUserProfile] = useState<{
     avatarUrl: string | null;
@@ -224,6 +249,11 @@ export default function App() {
   const [profileViewMode, setProfileViewMode] = useState<'edit' | 'view'>('edit');
   const [editOptionsTab, setEditOptionsTab] = useState<'account' | 'customisation'>('account');
   const [publicProfileTab, setPublicProfileTab] = useState<'info' | 'aboutme'>('info');
+
+  // Delete account confirmation modal & deletion guard
+  const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const isAccountDeletingRef = useRef(false);
 
   // Sub-modal state for Edit actions (info, username, bio, mood, glow, profileBorder, pfpBorder, music)
   const [activeEditSubModal, setActiveEditSubModal] = useState<
@@ -440,55 +470,177 @@ export default function App() {
     }
   }, []);
 
-  // Startup verification: Validate that saved account exists in database and load latest saved profile (pfp, banner, music, etc.)
-  useEffect(() => {
-    if (currentUser && currentUser.username) {
-      const dbKey = sanitizeDbKey(currentUser.username);
-      get(ref(rtdb, `users/${dbKey}`))
-        .then((snap) => {
-          if (snap.exists()) {
-            const val = snap.val();
-            // Restore latest saved profile data from database
-            setUserProfile((prev) => ({
-              ...prev,
-              avatarUrl: val.avatarUrl || null,
-              avatarPublicId: val.avatarPublicId || null,
-              avatarDeleteToken: val.avatarDeleteToken || null,
-              bannerUrl: val.bannerUrl || null,
-              bannerPublicId: val.bannerPublicId || null,
-              bannerDeleteToken: val.bannerDeleteToken || null,
-              age: val.age ? String(val.age) : prev.age,
-              gender: val.gender || prev.gender,
-              relationship: val.relationship || prev.relationship,
-              country: val.country || prev.country,
-              language: val.language || prev.language,
-              bio: val.bio !== undefined ? val.bio : prev.bio,
-              mood: val.mood !== undefined ? val.mood : prev.mood,
-              glowColor: val.glowColor !== undefined ? val.glowColor : prev.glowColor,
-              glowThickness: typeof val.glowThickness === 'number' ? val.glowThickness : prev.glowThickness,
-              profileBorderId: val.profileBorderId || prev.profileBorderId,
-              profileBorderThickness: typeof val.profileBorderThickness === 'number' ? val.profileBorderThickness : prev.profileBorderThickness,
-              pfpBorderId: val.pfpBorderId || prev.pfpBorderId,
-              pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : prev.pfpBorderThickness,
-              musicTrack: val.musicTrack || null
-            }));
-          } else {
-            // Fake or non-existent account: force logout to prevent fake login
-            console.warn('Saved user not found in database. Clearing session.');
-            localStorage.removeItem('chat_community_user');
-            localStorage.removeItem('chat_community_profile');
-            setCurrentUser(null);
+  // Permanently delete user account:
+  // - Deletes all chat messages sent by this user from Realtime Database
+  // - Deletes user node users/${dbKey} from Realtime Database
+  // - Deletes uploaded avatar and banner from Cloudinary
+  // - Clears all local storage and state, stops audio
+  // - Logs the user out completely
+  const handlePermanentAccountDeletion = async (
+    targetUsername: string,
+    profileData?: typeof userProfile
+  ) => {
+    if (isAccountDeletingRef.current) return;
+    isAccountDeletingRef.current = true;
+
+    try {
+      const trimmedUser = targetUsername.trim();
+      const usernameLower = trimmedUser.toLowerCase();
+      const dbKey = sanitizeDbKey(trimmedUser);
+
+      // 1. Immediately log out and reset local state
+      setCurrentUser(null);
+      setUserProfile(initialProfile);
+      setProfileModalOpen(false);
+      setActiveEditSubModal(null);
+      setShowProfileMenu(false);
+      setShowGuide(false);
+      setPlayerPopoverOpen(false);
+      setShowDeleteAccountModal(false);
+      setModalType(null);
+      setLoginError('This account was deleted from the database. All profile information and chat messages have been permanently removed.');
+
+      try {
+        localStorage.removeItem('chat_community_user');
+        localStorage.removeItem('chat_community_profile');
+        localStorage.removeItem('chat_community_messages');
+      } catch (_) {}
+
+      if (profileAudioRef.current) {
+        profileAudioRef.current.pause();
+        profileAudioRef.current = null;
+      }
+      setIsProfileMusicPlaying(false);
+
+      // Remove messages locally immediately
+      setMessages((prev) => prev.filter((m) => m.sender.toLowerCase() !== usernameLower));
+
+      // 2. Permanently delete all chat messages sent by this user from the Realtime Database
+      try {
+        const messagesRef = ref(rtdb, 'messages');
+        const msgsSnap = await get(messagesRef);
+        if (msgsSnap.exists()) {
+          const allMsgs = msgsSnap.val();
+          const deletePromises: Promise<any>[] = [];
+          for (const [key, msg] of Object.entries(allMsgs)) {
+            const sender = (msg as any)?.sender;
+            if (typeof sender === 'string' && sender.trim().toLowerCase() === usernameLower) {
+              deletePromises.push(remove(ref(rtdb, `messages/${key}`)));
+            }
           }
-        })
-        .catch((err) => {
-          console.warn('Initial account validation notice:', err);
-        });
+          if (deletePromises.length > 0) {
+            await Promise.all(deletePromises);
+            console.log(`[Teenverse] Permanently deleted ${deletePromises.length} chat messages for user ${trimmedUser}.`);
+          }
+        }
+      } catch (msgErr) {
+        console.warn('Error deleting user messages in RTDB:', msgErr);
+      }
+
+      // 3. Ensure user record in RTDB is completely wiped
+      try {
+        await remove(ref(rtdb, `users/${dbKey}`));
+      } catch (userErr) {
+        console.warn('Error removing user record in RTDB:', userErr);
+      }
+
+      // 4. Delete avatar & banner from Cloudinary
+      const pfpUrl = profileData?.avatarUrl || userProfile.avatarUrl;
+      const pfpPublicId = profileData?.avatarPublicId || userProfile.avatarPublicId;
+      const pfpToken = profileData?.avatarDeleteToken || userProfile.avatarDeleteToken;
+      if (pfpUrl || pfpPublicId) {
+        deleteFromCloudinary({
+          url: pfpUrl,
+          publicId: pfpPublicId,
+          deleteToken: pfpToken,
+          resourceType: 'image'
+        }).catch(() => {});
+      }
+
+      const bannerUrl = profileData?.bannerUrl || userProfile.bannerUrl;
+      const bannerPublicId = profileData?.bannerPublicId || userProfile.bannerPublicId;
+      const bannerToken = profileData?.bannerDeleteToken || userProfile.bannerDeleteToken;
+      if (bannerUrl || bannerPublicId) {
+        deleteFromCloudinary({
+          url: bannerUrl,
+          publicId: bannerPublicId,
+          deleteToken: bannerToken,
+          resourceType: 'image'
+        }).catch(() => {});
+      }
+    } finally {
+      setIsDeletingAccount(false);
+      setTimeout(() => {
+        isAccountDeletingRef.current = false;
+      }, 1200);
     }
-  }, []);
+  };
+
+  // Live account listener & deletion handler:
+  // If the user was deleted in the Realtime Database (e.g. from Firebase console or external deletion):
+  // 1. Immediately detects !snap.exists()
+  // 2. Logs them out immediately
+  // 3. Permanently deletes all their messages in main chat, their profile, Cloudinary media, and local cache
+  useEffect(() => {
+    if (!currentUser || !currentUser.username) return;
+    if (isAccountDeletingRef.current) return;
+
+    const dbKey = sanitizeDbKey(currentUser.username);
+    const userRef = ref(rtdb, `users/${dbKey}`);
+
+    const unsubscribe = onValue(
+      userRef,
+      (snap) => {
+        if (isAccountDeletingRef.current) return;
+
+        // If the user was deleted in the Realtime Database:
+        if (!snap.exists()) {
+          console.warn(`[Teenverse] User "${currentUser.username}" was deleted in Realtime Database. Triggering permanent account deletion & cleanup...`);
+          handlePermanentAccountDeletion(currentUser.username, userProfile);
+          return;
+        }
+
+        // Account exists: restore / sync remote profile attributes
+        const val = snap.val();
+        if (val) {
+          setUserProfile((prev) => ({
+            ...prev,
+            avatarUrl: val.avatarUrl !== undefined ? val.avatarUrl : prev.avatarUrl,
+            avatarPublicId: val.avatarPublicId !== undefined ? val.avatarPublicId : prev.avatarPublicId,
+            avatarDeleteToken: val.avatarDeleteToken !== undefined ? val.avatarDeleteToken : prev.avatarDeleteToken,
+            bannerUrl: val.bannerUrl !== undefined ? val.bannerUrl : prev.bannerUrl,
+            bannerPublicId: val.bannerPublicId !== undefined ? val.bannerPublicId : prev.bannerPublicId,
+            bannerDeleteToken: val.bannerDeleteToken !== undefined ? val.bannerDeleteToken : prev.bannerDeleteToken,
+            age: val.age ? String(val.age) : prev.age,
+            gender: val.gender || prev.gender,
+            relationship: val.relationship || prev.relationship,
+            country: val.country || prev.country,
+            language: val.language || prev.language,
+            bio: val.bio !== undefined ? val.bio : prev.bio,
+            mood: val.mood !== undefined ? val.mood : prev.mood,
+            glowColor: val.glowColor !== undefined ? val.glowColor : prev.glowColor,
+            glowThickness: typeof val.glowThickness === 'number' ? val.glowThickness : prev.glowThickness,
+            profileBorderId: val.profileBorderId || prev.profileBorderId,
+            profileBorderThickness: typeof val.profileBorderThickness === 'number' ? val.profileBorderThickness : prev.profileBorderThickness,
+            pfpBorderId: val.pfpBorderId || prev.pfpBorderId,
+            pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : prev.pfpBorderThickness,
+            musicTrack: val.musicTrack || null
+          }));
+        }
+      },
+      (err) => {
+        console.warn('Realtime Database account listener notice:', err);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [currentUser?.username]);
 
   // Presence detection: Set user online when connected and offline on disconnect
   useEffect(() => {
-    if (!currentUser || !currentUser.username) return;
+    if (!currentUser || !currentUser.username || isAccountDeletingRef.current) return;
     try {
       const sanitizedUsername = sanitizeDbKey(currentUser.username);
       const connectedRef = ref(rtdb, '.info/connected');
@@ -496,6 +648,7 @@ export default function App() {
       const userLastSeenRef = ref(rtdb, `users/${sanitizedUsername}/lastSeen`);
 
       const unsubscribe = onValue(connectedRef, (snap) => {
+        if (isAccountDeletingRef.current) return;
         if (snap.val() === true) {
           onDisconnect(userOnlineRef).set(false);
           onDisconnect(userLastSeenRef).set(serverTimestamp());
@@ -512,7 +665,7 @@ export default function App() {
 
   // Sync current user profile changes to Realtime Database using update (preserving credentials)
   useEffect(() => {
-    if (currentUser && currentUser.username) {
+    if (currentUser && currentUser.username && !isAccountDeletingRef.current) {
       try {
         const sanitizedUsername = sanitizeDbKey(currentUser.username);
         const userRef = ref(rtdb, `users/${sanitizedUsername}`);
@@ -1972,6 +2125,18 @@ export default function App() {
                             Edit mood
                           </span>
                         </button>
+
+                        {/* 5. Delete account */}
+                        <button
+                          type="button"
+                          onClick={() => setShowDeleteAccountModal(true)}
+                          className="w-full flex items-center gap-3.5 px-3 py-3 hover:bg-rose-500/10 active:bg-rose-500/20 transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
+                        >
+                          <Trash2 className="w-5 h-5 text-rose-400 group-hover:text-rose-300 transition-colors shrink-0" />
+                          <span className="text-sm sm:text-base font-extrabold text-rose-400 group-hover:text-rose-300 transition-colors">
+                            Delete account
+                          </span>
+                        </button>
                       </div>
                     )}
 
@@ -2799,6 +2964,68 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* DELETE ACCOUNT CONFIRMATION MODAL */}
+        {showDeleteAccountModal && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-[4px] flex items-center justify-center p-4 animate-in fade-in duration-150"
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !isDeletingAccount) {
+                setShowDeleteAccountModal(false);
+              }
+            }}
+          >
+            <div className="w-full max-w-[420px] bg-[#141418] border border-rose-500/30 rounded-3xl p-6 sm:p-7 shadow-2xl relative text-white animate-in zoom-in-95 duration-150">
+              <div className="w-12 h-12 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-400 flex items-center justify-center mx-auto mb-4">
+                <Trash2 className="w-6 h-6" />
+              </div>
+
+              <h3 className="text-xl font-bold text-center text-white mb-2">
+                Permanently Delete Account?
+              </h3>
+
+              <p className="text-xs sm:text-sm text-zinc-300 text-center leading-relaxed mb-6 font-normal">
+                This will permanently delete your account, your profile, your avatar, banner, and <span className="text-rose-400 font-semibold">all messages you sent in the chat</span>. You will be logged out immediately. This action cannot be undone.
+              </p>
+
+              <div className="space-y-2.5">
+                <button
+                  type="button"
+                  disabled={isDeletingAccount}
+                  onClick={async () => {
+                    if (!currentUser) return;
+                    setIsDeletingAccount(true);
+                    await handlePermanentAccountDeletion(currentUser.username, userProfile);
+                  }}
+                  className="w-full py-3 rounded-xl font-extrabold text-sm bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-rose-900/30 disabled:opacity-50"
+                >
+                  {isDeletingAccount ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Deleting account and messages...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>Permanently Delete Everything</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isDeletingAccount}
+                  onClick={() => setShowDeleteAccountModal(false)}
+                  className="w-full py-2.5 rounded-xl font-bold text-xs sm:text-sm bg-[#1c1c24] hover:bg-[#252530] text-zinc-300 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -2809,6 +3036,24 @@ export default function App() {
   return (
     <div className="min-h-screen w-full bg-[#270e44] text-white flex flex-col items-center justify-center p-4 relative select-none font-sans overflow-x-hidden">
       <main className="w-full max-w-2xl mx-auto flex flex-col items-center justify-center text-center py-12 z-10">
+        {loginError && (
+          <div className="w-full max-w-md mx-auto mb-6 bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs sm:text-sm px-4 py-3 rounded-2xl flex items-start gap-3 animate-in fade-in z-20 text-left">
+            <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="font-semibold text-rose-300">Account Notice</p>
+              <p className="leading-relaxed mt-0.5">{loginError}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLoginError(null)}
+              aria-label="Dismiss notice"
+              className="text-rose-400 hover:text-white p-0.5 rounded cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight text-white mb-4">
           Welcome To The Chat
         </h1>
