@@ -1,6 +1,6 @@
 {
-  "name": "Chat Community",
-  "description": "Connect with friends and join the chat community.",
+  "name": "Teenverse",
+  "description": "Connect with friends and join the chat community on Teenverse.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
