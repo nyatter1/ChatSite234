@@ -43,6 +43,19 @@ import GlowModal from './components/GlowModal';
 import BorderModal from './components/BorderModal';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
 import { detectUserCountry, getInstantUserCountry } from './utils/countryDetect';
+import { uploadToCloudinary } from './lib/cloudinary';
+import {
+  db,
+  collection,
+  addDoc,
+  doc,
+  setDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  limit,
+  serverTimestamp
+} from './lib/firebase';
 
 interface ChatMessage {
   id: string;
@@ -50,6 +63,8 @@ interface ChatMessage {
   text: string;
   timestamp: string;
   avatarUrl?: string | null;
+  pfpBorderId?: string | null;
+  pfpBorderThickness?: number;
 }
 
 // Reusable Avatar component supporting custom uploaded avatar or default silhouette
@@ -261,6 +276,68 @@ export default function App() {
     } catch (_) {}
   }, [messages]);
 
+  // Real-time Firestore messages listener
+  useEffect(() => {
+    try {
+      const messagesRef = collection(db, 'messages');
+      const q = query(messagesRef, orderBy('createdAt', 'asc'), limit(150));
+      const unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          if (!snapshot.empty) {
+            const liveMsgs: ChatMessage[] = snapshot.docs.map((docSnap) => {
+              const data = docSnap.data();
+              let ts = 'Just now';
+              if (data.createdAt?.toDate) {
+                ts = data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              } else if (data.timestamp) {
+                ts = data.timestamp;
+              }
+              return {
+                id: docSnap.id,
+                sender: data.sender || 'Anonymous',
+                text: data.text || '',
+                timestamp: ts,
+                avatarUrl: data.avatarUrl || null,
+                pfpBorderId: data.pfpBorderId || null,
+                pfpBorderThickness: data.pfpBorderThickness || 2
+              };
+            });
+            setMessages(liveMsgs);
+          }
+        },
+        (err) => {
+          console.warn('Firestore real-time messages listener notice:', err.message);
+        }
+      );
+      return () => unsubscribe();
+    } catch (err) {
+      console.warn('Firestore initialization notice:', err);
+    }
+  }, []);
+
+  // Sync current user profile to Firestore
+  useEffect(() => {
+    if (currentUser && currentUser.username) {
+      try {
+        const userDocRef = doc(db, 'users', currentUser.username.toLowerCase());
+        setDoc(
+          userDocRef,
+          {
+            username: currentUser.username,
+            ...userProfile,
+            updatedAt: serverTimestamp()
+          },
+          { merge: true }
+        ).catch((err) => {
+          console.warn('Firestore user profile sync notice:', err.message);
+        });
+      } catch (err) {
+        console.warn('Firestore user doc error:', err);
+      }
+    }
+  }, [currentUser, userProfile]);
+
   // Welcome Guide State
   const [showGuide, setShowGuide] = useState(false);
   const [guideStep, setGuideStep] = useState<1 | 2>(1);
@@ -358,43 +435,72 @@ export default function App() {
     setShowGuide(true);
   };
 
-  // Send message in chat
-  const handleSendMessage = (e?: React.FormEvent) => {
+  // Send message in chat (Saved to Firestore for live real-time synchronization)
+  const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!inputText.trim() || !currentUser) return;
 
-    const newMessage: ChatMessage = {
-      id: Date.now().toString(),
+    const textToSend = inputText.trim();
+    setInputText('');
+
+    const newMsgData = {
       sender: currentUser.username,
-      text: inputText.trim(),
-      timestamp: 'Just now',
-      avatarUrl: userProfile.avatarUrl
+      text: textToSend,
+      avatarUrl: userProfile.avatarUrl,
+      pfpBorderId: userProfile.pfpBorderId,
+      pfpBorderThickness: userProfile.pfpBorderThickness || 2,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      createdAt: serverTimestamp()
     };
 
-    setMessages((prev) => [...prev, newMessage]);
-    setInputText('');
-  };
-
-  // Avatar and Banner file handlers
-  const handlePfpUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        setUserProfile((prev) => ({ ...prev, avatarUrl: reader.result as string }));
+    try {
+      await addDoc(collection(db, 'messages'), newMsgData);
+    } catch (err) {
+      console.warn('Firestore addDoc fallback:', err);
+      // Fallback local append if offline
+      const fallbackMsg: ChatMessage = {
+        id: Date.now().toString(),
+        sender: currentUser.username,
+        text: textToSend,
+        timestamp: 'Just now',
+        avatarUrl: userProfile.avatarUrl,
+        pfpBorderId: userProfile.pfpBorderId,
+        pfpBorderThickness: userProfile.pfpBorderThickness
       };
-      reader.readAsDataURL(file);
+      setMessages((prev) => [...prev, fallbackMsg]);
     }
   };
 
-  const handleBannerUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Avatar and Banner file handlers (Direct to Cloudinary preset "cloudd", no chat alerts)
+  const handlePfpUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        setUserProfile((prev) => ({ ...prev, bannerUrl: reader.result as string }));
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+
+    // Instant local preview
+    const localPreview = URL.createObjectURL(file);
+    setUserProfile((prev) => ({ ...prev, avatarUrl: localPreview }));
+
+    try {
+      const secureUrl = await uploadToCloudinary(file, 'image');
+      setUserProfile((prev) => ({ ...prev, avatarUrl: secureUrl }));
+    } catch (err) {
+      console.warn('Cloudinary avatar upload notice:', err);
+    }
+  };
+
+  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Instant local preview
+    const localPreview = URL.createObjectURL(file);
+    setUserProfile((prev) => ({ ...prev, bannerUrl: localPreview }));
+
+    try {
+      const secureUrl = await uploadToCloudinary(file, 'image');
+      setUserProfile((prev) => ({ ...prev, bannerUrl: secureUrl }));
+    } catch (err) {
+      console.warn('Cloudinary banner upload notice:', err);
     }
   };
 
@@ -597,12 +703,16 @@ export default function App() {
                       avatarUrl={msg.avatarUrl || userProfile.avatarUrl}
                       className="w-10 h-10 mt-0.5"
                       pfpBorderClass={
-                        msg.sender === currentUser.username
+                        msg.pfpBorderId
+                          ? getPfpBorder(msg.pfpBorderId).pfpBorderClass
+                          : msg.sender === currentUser.username
                           ? getPfpBorder(userProfile.pfpBorderId).pfpBorderClass
                           : undefined
                       }
                       pfpBorderThickness={
-                        msg.sender === currentUser.username
+                        msg.pfpBorderThickness !== undefined
+                          ? msg.pfpBorderThickness
+                          : msg.sender === currentUser.username
                           ? userProfile.pfpBorderThickness
                           : undefined
                       }

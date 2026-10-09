@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
-import { X, UploadCloud, Play, Pause, Trash2, Music } from 'lucide-react';
+import { X, UploadCloud, Play, Pause, Trash2, Music, Loader2 } from 'lucide-react';
+import { uploadToCloudinary } from '../lib/cloudinary';
 
 export interface MusicTrack {
   name: string;
@@ -20,6 +21,7 @@ export default function MusicPlayerModal({
 }: MusicPlayerModalProps) {
   const [track, setTrack] = useState<MusicTrack | null>(currentTrack);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -27,7 +29,7 @@ export default function MusicPlayerModal({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -39,18 +41,34 @@ export default function MusicPlayerModal({
       return;
     }
 
-    const objectUrl = URL.createObjectURL(file);
+    setIsUploading(true);
     const sizeInMB = (file.size / (1024 * 1024)).toFixed(1) + 'MB';
 
-    const newTrack: MusicTrack = {
-      name: file.name,
-      url: objectUrl,
-      size: sizeInMB
-    };
-
-    setTrack(newTrack);
-    onSaveTrack(newTrack);
-    setIsPlaying(false);
+    try {
+      // Upload to Cloudinary unsigned preset
+      const uploadedUrl = await uploadToCloudinary(file, 'auto');
+      const newTrack: MusicTrack = {
+        name: file.name,
+        url: uploadedUrl,
+        size: sizeInMB
+      };
+      setTrack(newTrack);
+      onSaveTrack(newTrack);
+      setIsPlaying(false);
+    } catch (err) {
+      console.warn('Cloudinary upload fallback to local URL:', err);
+      const fallbackUrl = URL.createObjectURL(file);
+      const fallbackTrack: MusicTrack = {
+        name: file.name,
+        url: fallbackUrl,
+        size: sizeInMB
+      };
+      setTrack(fallbackTrack);
+      onSaveTrack(fallbackTrack);
+      setIsPlaying(false);
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const togglePlay = () => {
@@ -154,11 +172,21 @@ export default function MusicPlayerModal({
         <div className="my-2 flex flex-col items-center">
           <button
             type="button"
+            disabled={isUploading}
             onClick={() => fileInputRef.current?.click()}
-            className="w-full bg-[#00c2ff] hover:bg-[#00aee6] active:bg-[#0096cc] text-white font-black text-base sm:text-lg py-4 px-6 rounded-2xl flex items-center justify-center gap-3 transition-all cursor-pointer shadow-lg shadow-cyan-500/25 transform hover:-translate-y-0.5 active:translate-y-0"
+            className="w-full bg-[#00c2ff] hover:bg-[#00aee6] active:bg-[#0096cc] disabled:opacity-70 text-white font-black text-base sm:text-lg py-4 px-6 rounded-2xl flex items-center justify-center gap-3 transition-all cursor-pointer shadow-lg shadow-cyan-500/25 transform hover:-translate-y-0.5 active:translate-y-0"
           >
-            <UploadCloud className="w-6 h-6 stroke-[2.5]" />
-            <span>Upload Track</span>
+            {isUploading ? (
+              <>
+                <Loader2 className="w-6 h-6 animate-spin" />
+                <span>Uploading...</span>
+              </>
+            ) : (
+              <>
+                <UploadCloud className="w-6 h-6 stroke-[2.5]" />
+                <span>Upload Track</span>
+              </>
+            )}
           </button>
 
           {/* Subtext: MP3 / M4A on left, Max 10MB (Screenshot 4) */}
