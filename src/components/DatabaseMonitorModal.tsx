@@ -77,6 +77,11 @@ export default function DatabaseMonitorModal({
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editMsgText, setEditMsgText] = useState('');
 
+  // PM Inspector state (User -> User's PM List -> Conversation Messages)
+  const [selectedPmUserKey, setSelectedPmUserKey] = useState<string | null>(null);
+  const [selectedPmPeerKey, setSelectedPmPeerKey] = useState<string | null>(null);
+  const [pmUserSearch, setPmUserSearch] = useState('');
+
   // Raw path explorer state
   const [rawPathInput, setRawPathInput] = useState('messages');
   const [rawJsonText, setRawJsonText] = useState('');
@@ -548,6 +553,31 @@ export default function DatabaseMonitorModal({
     }
   };
 
+  // 12b. Delete a specific PM thread for a user
+  const handleDeleteUserPmThread = async (uKey: string, peerKey: string, peerName: string) => {
+    try {
+      await remove(ref(rtdb, `users/${uKey}/pms/${peerKey}`));
+      if (selectedPmPeerKey === peerKey) {
+        setSelectedPmPeerKey(null);
+      }
+      await fetchDatabaseSnapshot();
+      showNotice(`Deleted PM conversation with @${peerName} for ${uKey}.`);
+    } catch (err: any) {
+      showNotice(err?.message || 'Failed to delete PM thread.', 'error');
+    }
+  };
+
+  // 12c. Delete a single message inside a user's PM thread
+  const handleDeleteSinglePmMessage = async (uKey: string, peerKey: string, msgId: string) => {
+    try {
+      await remove(ref(rtdb, `users/${uKey}/pms/${peerKey}/messages/${msgId}`));
+      await fetchDatabaseSnapshot();
+      showNotice(`Deleted PM message ${msgId}.`);
+    } catch (err: any) {
+      showNotice(err?.message || 'Failed to delete PM message.', 'error');
+    }
+  };
+
   // 13. Delete a single Story or News post or Group
   const handleDeletePath = async (dbPath: string, label: string) => {
     try {
@@ -734,7 +764,7 @@ export default function DatabaseMonitorModal({
               }`}
             >
               <Mail className="w-3.5 h-3.5" />
-              <span>PMs & Groups ({metrics.totalPmMessagesCount + metrics.totalGroupMessagesCount}/1000)</span>
+              <span>PMs ({metrics.totalPmMessagesCount})</span>
             </button>
             <button
               type="button"
@@ -1121,11 +1151,16 @@ export default function DatabaseMonitorModal({
                             <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
-                                onClick={() => handleClearUserSubnode(key, 'pms')}
-                                title="Click to clear user's PMs"
-                                className="px-1.5 py-0.5 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 text-[10px] font-bold cursor-pointer"
+                                onClick={() => {
+                                  setSelectedPmUserKey(key);
+                                  setSelectedPmPeerKey(null);
+                                  setActiveTab('pms');
+                                }}
+                                title="Click to view this user's PMs"
+                                className="px-2 py-0.5 rounded bg-cyan-500/15 hover:bg-cyan-500/30 border border-cyan-500/30 text-cyan-300 text-[10px] font-bold cursor-pointer flex items-center gap-1"
                               >
-                                {pmCount} PMs
+                                <Mail className="w-3 h-3" />
+                                <span>{pmCount} PMs</span>
                               </button>
                               <button
                                 type="button"
@@ -1309,120 +1344,485 @@ export default function DatabaseMonitorModal({
             </div>
           )}
 
-          {/* TAB 4: PMs & GROUP CHATS TABLE */}
-          {activeTab === 'pms' && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-              {/* User PM Boxes */}
-              <div className="bg-[#15151c] border border-[#252532] rounded-2xl overflow-hidden">
-                <div className="px-4 py-3 border-b border-[#252532] flex items-center justify-between">
-                  <span className="text-xs font-extrabold uppercase tracking-wider text-zinc-300">
-                    User PM Mailboxes ({metrics.totalPmMessagesCount} / 1,000 Auto-Purge)
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleClearAllPmsEverywhere}
-                    className="px-3 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer"
-                  >
-                    Purge All PMs
-                  </button>
-                </div>
-                <div className="overflow-x-auto max-h-[55vh]">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="bg-[#1b1b24] text-zinc-400 border-b border-[#262634] uppercase text-[10px] font-black">
-                        <th className="py-2 px-3">User</th>
-                        <th className="py-2 px-3">Total PM Msgs</th>
-                        <th className="py-2 px-3">Mailbox Size</th>
-                        <th className="py-2 px-3 text-right">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#22222e]">
-                      {metrics.userEntries.map((u) => (
-                        <tr key={u.key} className="hover:bg-white/[0.02]">
-                          <td className="py-2 px-3 font-bold text-white">{u.data.username || u.key}</td>
-                          <td className="py-2 px-3 text-cyan-300 font-bold">{u.pmCount} msgs</td>
-                          <td className="py-2 px-3 font-mono text-zinc-400">{formatBytes(u.pmBytes)}</td>
-                          <td className="py-2 px-3 text-right">
-                            <button
-                              type="button"
-                              onClick={() => handleClearUserSubnode(u.key, 'pms')}
-                              className="px-2.5 py-1 rounded bg-red-500/15 hover:bg-red-500/30 text-red-300 text-[11px] font-bold cursor-pointer"
-                            >
-                              Clear PMs
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+          {/* TAB 4: PMs INSPECTOR (Click User -> User's PM List -> Conversation Messages) & GROUP CHATS */}
+          {activeTab === 'pms' && (() => {
+            const pmFilteredUsers = metrics.userEntries
+              .filter((u) => {
+                if (!pmUserSearch.trim()) return true;
+                const q = pmUserSearch.toLowerCase();
+                return (
+                  u.key.toLowerCase().includes(q) ||
+                  (u.data.username || '').toLowerCase().includes(q)
+                );
+              })
+              .sort((a, b) => b.pmCount - a.pmCount || (a.data.username || a.key).localeCompare(b.data.username || b.key));
 
-              {/* Group Chats Table */}
-              <div className="bg-[#15151c] border border-[#252532] rounded-2xl overflow-hidden">
-                <div className="px-4 py-3 border-b border-[#252532] flex items-center justify-between">
-                  <span className="text-xs font-extrabold uppercase tracking-wider text-zinc-300">
-                    Messages Group Chats ({metrics.totalGroupMessagesCount} / 1,000 Msgs)
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleClearAllGroupMessages}
-                    className="px-3 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer"
-                  >
-                    Clear All Group Msgs
-                  </button>
-                </div>
-                <div className="overflow-x-auto max-h-[55vh]">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="bg-[#1b1b24] text-zinc-400 border-b border-[#262634] uppercase text-[10px] font-black">
-                        <th className="py-2 px-3">Group Name</th>
-                        <th className="py-2 px-3">Members</th>
-                        <th className="py-2 px-3">Messages</th>
-                        <th className="py-2 px-3 text-right">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#22222e]">
-                      {metrics.groupsEntries.length === 0 ? (
-                        <tr>
-                          <td colSpan={4} className="py-8 text-center text-zinc-500">
-                            No group chats created yet.
-                          </td>
-                        </tr>
-                      ) : (
-                        metrics.groupsEntries.map(([gId, g]: [string, any]) => {
-                          const mCount = g?.messages ? Object.keys(g.messages).length : 0;
-                          const memCount = g?.members ? Object.keys(g.members).length : 0;
-                          return (
-                            <tr key={gId} className="hover:bg-white/[0.02]">
-                              <td className="py-2 px-3 font-bold text-white">{g?.name || gId}</td>
-                              <td className="py-2 px-3 text-zinc-400">{memCount} members</td>
-                              <td className="py-2 px-3 text-emerald-400 font-bold">{mCount} msgs</td>
-                              <td className="py-2 px-3 text-right">
+            const activeUserEntry = selectedPmUserKey
+              ? metrics.userEntries.find((u) => u.key === selectedPmUserKey) || null
+              : null;
+
+            const activeUserPmsObj =
+              activeUserEntry?.data?.pms && typeof activeUserEntry.data.pms === 'object'
+                ? activeUserEntry.data.pms
+                : {};
+
+            const userPmThreads: {
+              peerKey: string;
+              peerUsername: string;
+              peerAvatarUrl: string | null;
+              unread: boolean;
+              updatedAt: number;
+              messages: {
+                id: string;
+                sender: string;
+                text: string;
+                timestamp: string;
+                createdAt: number;
+                mediaUrl: string | null;
+                mediaType: string | null;
+              }[];
+            }[] = Object.entries(activeUserPmsObj).map(([peerKey, threadVal]: [string, any]) => {
+              const peerUserRecord = rawUsers?.[peerKey];
+              const peerUsername =
+                threadVal?.peerUsername || peerUserRecord?.username || peerKey;
+              const peerAvatarUrl =
+                threadVal?.peerAvatarUrl || peerUserRecord?.avatarUrl || null;
+              const rawMsgs =
+                threadVal?.messages && typeof threadVal.messages === 'object'
+                  ? Object.entries(threadVal.messages)
+                  : [];
+              const parsedMsgs = rawMsgs
+                .map(([mId, mVal]: [string, any]) => ({
+                  id: mId,
+                  sender: mVal?.sender || 'Unknown',
+                  text: typeof mVal?.text === 'string' ? mVal.text : '',
+                  timestamp:
+                    mVal?.timestamp ||
+                    (typeof mVal?.createdAt === 'number'
+                      ? new Date(mVal.createdAt).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })
+                      : ''),
+                  createdAt: typeof mVal?.createdAt === 'number' ? mVal.createdAt : 0,
+                  mediaUrl: typeof mVal?.mediaUrl === 'string' ? mVal.mediaUrl : null,
+                  mediaType: typeof mVal?.mediaType === 'string' ? mVal.mediaType : null
+                }))
+                .sort((a, b) => a.createdAt - b.createdAt);
+
+              const lastMsgTime =
+                parsedMsgs.length > 0 ? parsedMsgs[parsedMsgs.length - 1].createdAt : 0;
+
+              return {
+                peerKey,
+                peerUsername,
+                peerAvatarUrl,
+                unread: threadVal?.unread === true,
+                updatedAt:
+                  typeof threadVal?.updatedAt === 'number'
+                    ? threadVal.updatedAt
+                    : lastMsgTime,
+                messages: parsedMsgs
+              };
+            });
+
+            userPmThreads.sort((a, b) => b.updatedAt - a.updatedAt);
+
+            const selectedThread = selectedPmPeerKey
+              ? userPmThreads.find((t) => t.peerKey === selectedPmPeerKey) || null
+              : null;
+
+            return (
+              <div className="space-y-5">
+                {/* 3-Column Interactive User PM Inspector */}
+                <div className="bg-[#15151c] border border-[#252532] rounded-2xl overflow-hidden">
+                  <div className="px-4 py-3 border-b border-[#252532] flex flex-wrap items-center justify-between gap-2 bg-[#181822]">
+                    <div className="flex items-center gap-2">
+                      <Mail className="w-4 h-4 text-cyan-400" />
+                      <span className="text-xs font-extrabold uppercase tracking-wider text-white">
+                        Private Messages (PM) Inspector — Click a User → Click a PM Conversation → Read Messages
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleClearAllPmsEverywhere}
+                      className="px-3 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer"
+                    >
+                      Purge All PMs ({metrics.totalPmMessagesCount})
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-12 h-[54vh] divide-y lg:divide-y-0 lg:divide-x divide-[#252532]">
+                    {/* COLUMN 1: USERS LIST */}
+                    <div className="lg:col-span-3 flex flex-col h-full bg-[#13131a] overflow-hidden">
+                      <div className="p-2.5 border-b border-[#232330] space-y-2 shrink-0">
+                        <div className="text-[11px] font-black uppercase tracking-wider text-zinc-400 px-1">
+                          1. Select User ({pmFilteredUsers.length})
+                        </div>
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            value={pmUserSearch}
+                            onChange={(e) => setPmUserSearch(e.target.value)}
+                            placeholder="Search user..."
+                            className="w-full bg-[#1b1b24] border border-[#2c2c3a] rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto divide-y divide-[#1e1e28]">
+                        {pmFilteredUsers.length === 0 ? (
+                          <div className="p-6 text-center text-xs text-zinc-500">
+                            No matching users found.
+                          </div>
+                        ) : (
+                          pmFilteredUsers.map((u) => {
+                            const isSelected = selectedPmUserKey === u.key;
+                            const uName = u.data.username || u.key;
+                            const threadCount =
+                              u.data.pms && typeof u.data.pms === 'object'
+                                ? Object.keys(u.data.pms).length
+                                : 0;
+
+                            return (
+                              <div
+                                key={u.key}
+                                onClick={() => {
+                                  setSelectedPmUserKey(u.key);
+                                  setSelectedPmPeerKey(null);
+                                }}
+                                className={`px-3 py-2.5 flex items-center justify-between gap-2 cursor-pointer transition-colors ${
+                                  isSelected
+                                    ? 'bg-cyan-500/15 border-l-2 border-l-cyan-400'
+                                    : 'hover:bg-white/[0.04]'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  {u.data.avatarUrl ? (
+                                    <img
+                                      src={u.data.avatarUrl}
+                                      alt={uName}
+                                      className="w-8 h-8 rounded-full object-cover shrink-0 border border-white/10"
+                                    />
+                                  ) : (
+                                    <div className="w-8 h-8 rounded-full bg-zinc-800 border border-white/10 flex items-center justify-center text-xs font-bold text-zinc-300 shrink-0">
+                                      {uName.charAt(0).toUpperCase()}
+                                    </div>
+                                  )}
+                                  <div className="min-w-0">
+                                    <div className="text-xs font-bold text-white truncate">
+                                      {uName}
+                                    </div>
+                                    <div className="text-[10px] text-zinc-400">
+                                      {threadCount} {threadCount === 1 ? 'chat' : 'chats'} • {u.pmCount} msgs
+                                    </div>
+                                  </div>
+                                </div>
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold shrink-0 ${
+                                    u.pmCount > 0
+                                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                                      : 'bg-zinc-800 text-zinc-500'
+                                  }`}
+                                >
+                                  {u.pmCount}
+                                </span>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+
+                    {/* COLUMN 2: SELECTED USER'S PM LIST */}
+                    <div className="lg:col-span-4 flex flex-col h-full bg-[#14141c] overflow-hidden">
+                      <div className="p-2.5 border-b border-[#232330] flex items-center justify-between shrink-0 min-h-[45px]">
+                        <span className="text-[11px] font-black uppercase tracking-wider text-zinc-400 px-1 truncate">
+                          {activeUserEntry
+                            ? `2. @${activeUserEntry.data.username || activeUserEntry.key}'s PM List (${userPmThreads.length})`
+                            : '2. Select a user to see their PM list'}
+                        </span>
+                        {activeUserEntry && userPmThreads.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleClearUserSubnode(activeUserEntry.key, 'pms')}
+                            className="px-2 py-0.5 rounded bg-red-500/15 hover:bg-red-500/30 text-red-300 text-[10px] font-bold cursor-pointer shrink-0"
+                          >
+                            Clear All
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto divide-y divide-[#1e1e28]">
+                        {!activeUserEntry ? (
+                          <div className="h-full flex flex-col items-center justify-center p-6 text-center text-zinc-500 text-xs">
+                            <Users className="w-7 h-7 mb-2 text-zinc-600" />
+                            <span>Click any user on the left to view their PM conversations.</span>
+                          </div>
+                        ) : userPmThreads.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center p-6 text-center text-zinc-500 text-xs">
+                            <Mail className="w-7 h-7 mb-2 text-zinc-600" />
+                            <span>
+                              @{activeUserEntry.data.username || activeUserEntry.key} has no PM conversations.
+                            </span>
+                          </div>
+                        ) : (
+                          userPmThreads.map((thread) => {
+                            const isThreadSelected = selectedPmPeerKey === thread.peerKey;
+                            const lastMsg =
+                              thread.messages.length > 0
+                                ? thread.messages[thread.messages.length - 1]
+                                : null;
+
+                            return (
+                              <div
+                                key={thread.peerKey}
+                                onClick={() => setSelectedPmPeerKey(thread.peerKey)}
+                                className={`px-3.5 py-2.5 flex items-center justify-between gap-2.5 cursor-pointer transition-colors ${
+                                  isThreadSelected
+                                    ? 'bg-red-500/15 border-l-2 border-l-red-500'
+                                    : 'hover:bg-white/[0.04]'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                  {thread.peerAvatarUrl ? (
+                                    <img
+                                      src={thread.peerAvatarUrl}
+                                      alt={thread.peerUsername}
+                                      className="w-9 h-9 rounded-full object-cover shrink-0 border border-white/10"
+                                    />
+                                  ) : (
+                                    <div className="w-9 h-9 rounded-full bg-zinc-800 border border-white/10 flex items-center justify-center text-xs font-bold text-zinc-300 shrink-0">
+                                      {thread.peerUsername.charAt(0).toUpperCase()}
+                                    </div>
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-xs font-extrabold text-white truncate">
+                                        @{thread.peerUsername}
+                                      </span>
+                                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-white/10 text-zinc-300 font-bold">
+                                        {thread.messages.length} msgs
+                                      </span>
+                                    </div>
+                                    <div className="text-[11px] text-zinc-400 truncate mt-0.5">
+                                      {lastMsg
+                                        ? `${lastMsg.sender}: ${
+                                            lastMsg.text || (lastMsg.mediaUrl ? '[Media]' : '')
+                                          }`
+                                        : 'No messages'}
+                                    </div>
+                                  </div>
+                                </div>
+
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    handleDeletePath(
-                                      `users/__system_messenger__/groups/${gId}`,
-                                      `group "${g?.name || gId}"`
-                                    )
-                                  }
-                                  className="p-1.5 rounded bg-red-500/15 hover:bg-red-500/30 text-red-400 cursor-pointer"
-                                  title="Delete group chat"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteUserPmThread(
+                                      activeUserEntry.key,
+                                      thread.peerKey,
+                                      thread.peerUsername
+                                    );
+                                  }}
+                                  title="Delete this PM conversation"
+                                  className="p-1.5 rounded bg-red-500/10 hover:bg-red-500/25 text-red-400 cursor-pointer shrink-0"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+
+                    {/* COLUMN 3: SELECTED PM CONVERSATION MESSAGES */}
+                    <div className="lg:col-span-5 flex flex-col h-full bg-[#101016] overflow-hidden">
+                      <div className="p-2.5 border-b border-[#232330] flex items-center justify-between shrink-0 min-h-[45px]">
+                        <span className="text-[11px] font-black uppercase tracking-wider text-zinc-300 px-1 truncate">
+                          {activeUserEntry && selectedThread
+                            ? `3. PMs: @${activeUserEntry.data.username || activeUserEntry.key} ↔ @${selectedThread.peerUsername} (${selectedThread.messages.length})`
+                            : '3. Conversation Messages'}
+                        </span>
+                        {activeUserEntry && selectedThread && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleDeleteUserPmThread(
+                                activeUserEntry.key,
+                                selectedThread.peerKey,
+                                selectedThread.peerUsername
+                              )
+                            }
+                            className="px-2 py-0.5 rounded bg-red-500/15 hover:bg-red-500/30 text-red-300 text-[10px] font-bold cursor-pointer shrink-0"
+                          >
+                            Delete Thread
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5">
+                        {!activeUserEntry || !selectedThread ? (
+                          <div className="h-full flex flex-col items-center justify-center p-6 text-center text-zinc-500 text-xs">
+                            <MessageSquare className="w-7 h-7 mb-2 text-zinc-600" />
+                            <span>
+                              {activeUserEntry
+                                ? 'Click a PM conversation in the middle column to view all messages with that person.'
+                                : 'Select a user and then click one of their PM conversations to read the messages.'}
+                            </span>
+                          </div>
+                        ) : selectedThread.messages.length === 0 ? (
+                          <div className="h-full flex items-center justify-center text-xs text-zinc-500">
+                            No messages in this conversation.
+                          </div>
+                        ) : (
+                          selectedThread.messages.map((m) => {
+                            const activeUsername =
+                              activeUserEntry.data.username || activeUserEntry.key;
+                            const isFromSelectedUser =
+                              m.sender.toLowerCase() === activeUsername.toLowerCase();
+
+                            return (
+                              <div
+                                key={m.id}
+                                className={`p-3 rounded-xl border text-xs flex items-start justify-between gap-2 ${
+                                  isFromSelectedUser
+                                    ? 'bg-cyan-500/10 border-cyan-500/30'
+                                    : 'bg-[#1a1a24] border-[#2a2a38]'
+                                }`}
+                              >
+                                <div className="min-w-0 flex-1 space-y-1">
+                                  <div className="flex items-center gap-2">
+                                    <span
+                                      className={`font-extrabold ${
+                                        isFromSelectedUser ? 'text-cyan-300' : 'text-purple-300'
+                                      }`}
+                                    >
+                                      @{m.sender}
+                                    </span>
+                                    <span className="text-[10px] text-zinc-500">
+                                      {m.timestamp}
+                                    </span>
+                                  </div>
+
+                                  {m.text && (
+                                    <div className="text-zinc-100 break-words leading-relaxed">
+                                      {m.text}
+                                    </div>
+                                  )}
+
+                                  {m.mediaUrl && (
+                                    <div className="pt-1">
+                                      {m.mediaType === 'video' ? (
+                                        <video
+                                          src={m.mediaUrl}
+                                          controls
+                                          className="max-h-40 rounded-lg border border-white/10"
+                                        />
+                                      ) : m.mediaType === 'audio' ? (
+                                        <audio src={m.mediaUrl} controls className="w-full max-w-xs" />
+                                      ) : (
+                                        <img
+                                          src={m.mediaUrl}
+                                          alt="PM media"
+                                          className="max-h-40 rounded-lg object-contain border border-white/10"
+                                        />
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleDeleteSinglePmMessage(
+                                      activeUserEntry.key,
+                                      selectedThread.peerKey,
+                                      m.id
+                                    )
+                                  }
+                                  title="Delete this PM message"
+                                  className="p-1 rounded hover:bg-red-500/20 text-zinc-500 hover:text-red-400 transition-colors cursor-pointer shrink-0"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Group Chats Table */}
+                <div className="bg-[#15151c] border border-[#252532] rounded-2xl overflow-hidden">
+                  <div className="px-4 py-3 border-b border-[#252532] flex items-center justify-between">
+                    <span className="text-xs font-extrabold uppercase tracking-wider text-zinc-300">
+                      Messages Group Chats ({metrics.totalGroupMessagesCount} / 1,000 Msgs)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleClearAllGroupMessages}
+                      className="px-3 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer"
+                    >
+                      Clear All Group Msgs
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto max-h-[38vh]">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="bg-[#1b1b24] text-zinc-400 border-b border-[#262634] uppercase text-[10px] font-black">
+                          <th className="py-2 px-3">Group Name</th>
+                          <th className="py-2 px-3">Members</th>
+                          <th className="py-2 px-3">Messages</th>
+                          <th className="py-2 px-3 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#22222e]">
+                        {metrics.groupsEntries.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="py-8 text-center text-zinc-500">
+                              No group chats created yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          metrics.groupsEntries.map(([gId, g]: [string, any]) => {
+                            const mCount = g?.messages ? Object.keys(g.messages).length : 0;
+                            const memCount = g?.members ? Object.keys(g.members).length : 0;
+                            return (
+                              <tr key={gId} className="hover:bg-white/[0.02]">
+                                <td className="py-2 px-3 font-bold text-white">{g?.name || gId}</td>
+                                <td className="py-2 px-3 text-zinc-400">{memCount} members</td>
+                                <td className="py-2 px-3 text-emerald-400 font-bold">{mCount} msgs</td>
+                                <td className="py-2 px-3 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleDeletePath(
+                                        `users/__system_messenger__/groups/${gId}`,
+                                        `group "${g?.name || gId}"`
+                                      )
+                                    }
+                                    className="p-1.5 rounded bg-red-500/15 hover:bg-red-500/30 text-red-400 cursor-pointer"
+                                    title="Delete group chat"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* TAB 5: STORIES & NEWS TABLE */}
           {activeTab === 'stories_news' && (
