@@ -103,6 +103,9 @@ interface ChatMessage {
   pfpBorderThickness?: number;
   rank?: string | null;
   replyTo?: MessageReply | null;
+  mediaUrl?: string | null;
+  mediaType?: 'image' | 'audio' | 'video' | null;
+  mediaName?: string | null;
 }
 
 interface AppNotification {
@@ -635,6 +638,11 @@ export default function App() {
   });
   const [inputText, setInputText] = useState('');
   const [replyingTo, setReplyingTo] = useState<MessageReply | null>(null);
+  const [chatMediaUrl, setChatMediaUrl] = useState<string | null>(null);
+  const [chatMediaType, setChatMediaType] = useState<'image' | 'audio' | 'video' | null>(null);
+  const [chatMediaName, setChatMediaName] = useState<string | null>(null);
+  const [isUploadingChatMedia, setIsUploadingChatMedia] = useState(false);
+  const chatMediaInputRef = useRef<HTMLInputElement>(null);
   const [isListeningVoice, setIsListeningVoice] = useState(false);
   const recognitionRef = useRef<any>(null);
 
@@ -753,7 +761,7 @@ export default function App() {
             const liveMsgs: ChatMessage[] = [];
             snapshot.forEach((childSnap) => {
               const data = childSnap.val();
-              if (!data || typeof data.text !== 'string') return;
+              if (!data || (typeof data.text !== 'string' && typeof data.mediaUrl !== 'string')) return;
               let ts = 'Just now';
               const createdNum = typeof data.createdAt === 'number' ? data.createdAt : undefined;
               if (createdNum) {
@@ -761,18 +769,30 @@ export default function App() {
               } else if (data.timestamp) {
                 ts = data.timestamp;
               }
+              const cleanMediaUrl = sanitizeMediaUrl(data.mediaUrl);
+              const resolvedMediaType: 'image' | 'audio' | 'video' | null =
+                data.mediaType === 'video'
+                  ? 'video'
+                  : data.mediaType === 'audio'
+                  ? 'audio'
+                  : cleanMediaUrl
+                  ? 'image'
+                  : null;
               liveMsgs.push({
                 id: childSnap.key || Date.now().toString(),
                 sender: data.sender || 'Anonymous',
                 senderKey: data.senderKey || sanitizeDbKey(data.sender || 'Anonymous'),
-                text: data.text,
+                text: typeof data.text === 'string' ? data.text : '',
                 timestamp: ts,
                 createdAt: createdNum,
                 avatarUrl: sanitizeMediaUrl(data.avatarUrl),
                 pfpBorderId: data.pfpBorderId || null,
                 pfpBorderThickness: typeof data.pfpBorderThickness === 'number' ? data.pfpBorderThickness : 2,
                 rank: data.rank || null,
-                replyTo: data.replyTo || null
+                replyTo: data.replyTo || null,
+                mediaUrl: cleanMediaUrl,
+                mediaType: resolvedMediaType,
+                mediaName: data.mediaName || null
               });
             });
 
@@ -1869,22 +1889,86 @@ export default function App() {
     }
   };
 
+  // Upload image, MP3/audio, or video attachment for chat message
+  const handleChatMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+
+    const lowerName = file.name.toLowerCase();
+    const isAudio =
+      file.type.startsWith('audio/') ||
+      lowerName.endsWith('.mp3') ||
+      lowerName.endsWith('.wav') ||
+      lowerName.endsWith('.ogg') ||
+      lowerName.endsWith('.m4a');
+    const isVideo =
+      !isAudio &&
+      (file.type.startsWith('video/') ||
+        lowerName.endsWith('.mp4') ||
+        lowerName.endsWith('.webm') ||
+        lowerName.endsWith('.mov'));
+    const isGif = file.type === 'image/gif' || lowerName.endsWith('.gif');
+    const detectedType: 'image' | 'audio' | 'video' = isAudio
+      ? 'audio'
+      : isVideo
+      ? 'video'
+      : 'image';
+
+    setIsUploadingChatMedia(true);
+    try {
+      let uploadFile = file;
+      if (detectedType === 'image' && !isGif && file.type.startsWith('image/')) {
+        try {
+          const comp = await compressBanner(file);
+          uploadFile = comp.file;
+        } catch (_) {}
+      }
+
+      // Cloudinary uses 'video' resourceType for both audio (MP3) and video files
+      const cloudinaryResourceType = detectedType === 'image' ? 'image' : 'video';
+      try {
+        const res = await uploadToCloudinary(uploadFile, cloudinaryResourceType, 'chat_media');
+        setChatMediaUrl(res.secure_url || res.url);
+        setChatMediaType(detectedType);
+        setChatMediaName(file.name);
+      } catch (cloudErr) {
+        console.warn('Cloudinary chat media upload fallback to Data URL:', cloudErr);
+        const dataUrl = await fileToDataUrl(uploadFile);
+        setChatMediaUrl(dataUrl);
+        setChatMediaType(detectedType);
+        setChatMediaName(file.name);
+      }
+    } catch (err) {
+      console.warn('Error uploading chat media:', err);
+    } finally {
+      setIsUploadingChatMedia(false);
+    }
+  };
+
   // Send message in chat (Saved to Realtime Database for live real-time synchronization)
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!inputText.trim() || !currentUser) return;
+    if ((!inputText.trim() && !chatMediaUrl) || !currentUser || isUploadingChatMedia) return;
     if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
 
     const textToSend = inputText.trim();
     const currentReply = replyingTo;
+    const mediaUrlToSend = sanitizeMediaUrl(chatMediaUrl);
+    const mediaTypeToSend = mediaUrlToSend ? chatMediaType : null;
+    const mediaNameToSend = mediaUrlToSend ? chatMediaName : null;
+
     setInputText('');
     setReplyingTo(null);
+    setChatMediaUrl(null);
+    setChatMediaType(null);
+    setChatMediaName(null);
 
     const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
     const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
 
     // Handle /clear command: Owners and above (priority >= 90) can clear all chat messages
-    if (textToSend.toLowerCase() === '/clear') {
+    if (textToSend.toLowerCase() === '/clear' && !mediaUrlToSend) {
       if ((activeSenderRank?.priority ?? 0) >= 90) {
         try {
           const messagesRef = ref(rtdb, 'messages');
@@ -1909,6 +1993,9 @@ export default function App() {
       pfpBorderThickness: userProfile.pfpBorderThickness || 2,
       rank: activeSenderRank?.id || null,
       replyTo: currentReply || null,
+      mediaUrl: mediaUrlToSend || null,
+      mediaType: mediaTypeToSend || null,
+      mediaName: mediaNameToSend || null,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       createdAt: serverTimestamp()
     };
@@ -1929,7 +2016,10 @@ export default function App() {
         pfpBorderId: userProfile.pfpBorderId,
         pfpBorderThickness: userProfile.pfpBorderThickness,
         rank: activeSenderRank?.id || null,
-        replyTo: currentReply || null
+        replyTo: currentReply || null,
+        mediaUrl: mediaUrlToSend || null,
+        mediaType: mediaTypeToSend || null,
+        mediaName: mediaNameToSend || null
       };
       setMessages((prev) => [...prev, fallbackMsg]);
     }
@@ -3785,13 +3875,49 @@ export default function App() {
                         {msg.replyTo && (
                           <div className="mt-1 mb-1 pl-2.5 py-1 border-l-2 border-cyan-500/60 bg-white/[0.03] rounded-r-lg text-xs text-zinc-400 truncate">
                             <span className="font-bold text-cyan-400 mr-1.5">@{msg.replyTo.sender}:</span>
-                            <span className="text-zinc-300">{msg.replyTo.text}</span>
+                            <span className="text-zinc-300">{msg.replyTo.text || 'Attachment'}</span>
                           </div>
                         )}
 
-                        <p className="text-white font-medium text-sm sm:text-base mt-0.5 break-words leading-relaxed select-text">
-                          {renderMessageTextWithMentions(msg.text, currentUser?.username)}
-                        </p>
+                        {msg.text && (
+                          <p className="text-white font-medium text-sm sm:text-base mt-0.5 break-words leading-relaxed select-text">
+                            {renderMessageTextWithMentions(msg.text, currentUser?.username)}
+                          </p>
+                        )}
+
+                        {/* Uploaded Chat Media (Image, MP3/Audio, or Video) */}
+                        {msg.mediaUrl && (
+                          <div className="mt-2">
+                            {msg.mediaType === 'video' ? (
+                              <video
+                                src={msg.mediaUrl}
+                                controls
+                                playsInline
+                                className="max-w-full sm:max-w-md max-h-80 rounded-2xl border border-[#262632] bg-black/40 object-contain"
+                              />
+                            ) : msg.mediaType === 'audio' ? (
+                              <div className="max-w-xs sm:max-w-sm bg-[#181820] border border-[#282834] rounded-2xl p-3 space-y-2">
+                                <div className="flex items-center gap-2 text-xs font-bold text-cyan-400 truncate">
+                                  <Music className="w-4 h-4 shrink-0" />
+                                  <span className="truncate text-white">
+                                    {msg.mediaName || 'Audio track (.mp3)'}
+                                  </span>
+                                </div>
+                                <audio
+                                  src={msg.mediaUrl}
+                                  controls
+                                  className="w-full h-9"
+                                />
+                              </div>
+                            ) : (
+                              <img
+                                src={msg.mediaUrl}
+                                alt={msg.mediaName || 'Uploaded image'}
+                                className="max-w-full sm:max-w-sm max-h-80 rounded-2xl border border-[#262632] bg-black/20 object-contain"
+                              />
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -3844,6 +3970,69 @@ export default function App() {
               </div>
             )}
 
+            {/* PENDING CHAT MEDIA ATTACHMENT PREVIEW BAR */}
+            {(chatMediaUrl || isUploadingChatMedia) && (
+              <div className="mx-3 sm:mx-4 mb-1.5 bg-[#181822] border border-[#2a2a38] rounded-xl px-3.5 py-2.5 flex items-center justify-between gap-3 animate-in fade-in duration-100">
+                {isUploadingChatMedia ? (
+                  <div className="flex items-center gap-2.5 text-xs text-cyan-300 font-bold">
+                    <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+                    <span>Uploading attachment...</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    {chatMediaType === 'video' ? (
+                      <video
+                        src={chatMediaUrl!}
+                        className="w-14 h-14 rounded-lg object-cover bg-black border border-white/10 shrink-0"
+                      />
+                    ) : chatMediaType === 'audio' ? (
+                      <div className="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
+                        <Music className="w-5 h-5" />
+                      </div>
+                    ) : (
+                      <img
+                        src={chatMediaUrl!}
+                        alt="Preview"
+                        className="w-12 h-12 rounded-lg object-cover bg-black border border-white/10 shrink-0"
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-extrabold text-white truncate">
+                        {chatMediaName || (chatMediaType === 'audio' ? 'Audio (.mp3)' : chatMediaType === 'video' ? 'Video' : 'Image')}
+                      </p>
+                      <p className="text-[11px] text-cyan-400 font-medium capitalize">
+                        Ready to send {chatMediaType}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {!isUploadingChatMedia && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setChatMediaUrl(null);
+                      setChatMediaType(null);
+                      setChatMediaName(null);
+                    }}
+                    title="Remove attachment"
+                    className="text-zinc-400 hover:text-rose-400 p-1 rounded-lg hover:bg-white/5 transition-colors cursor-pointer shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Hidden File Input for Chat Media (Images, MP3/Audio, Videos) */}
+            <input
+              type="file"
+              ref={chatMediaInputRef}
+              accept="image/*,video/*,audio/*,.mp3,.wav,.ogg,.m4a,.mp4,.webm,.mov,.gif"
+              className="hidden"
+              onChange={handleChatMediaUpload}
+            />
+
             {/* CHAT INPUT BAR */}
             <div className="px-3 sm:px-4 py-2 bg-[#111114]">
               {userProfile.mutedUntil && userProfile.mutedUntil > nowMs ? (
@@ -3857,6 +4046,21 @@ export default function App() {
                   onSubmit={handleSendMessage}
                   className="bg-[#18181e] border border-[#24242d] rounded-2xl px-3.5 py-2 flex items-center gap-2 focus-within:border-cyan-500/60 transition-colors shadow-lg"
                 >
+                  <button
+                    type="button"
+                    disabled={isUploadingChatMedia}
+                    onClick={() => chatMediaInputRef.current?.click()}
+                    aria-label="Upload image, MP3, or video"
+                    title="Upload image, MP3, or video"
+                    className="p-1.5 rounded-lg text-zinc-400 hover:text-cyan-300 hover:bg-white/5 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    {isUploadingChatMedia ? (
+                      <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
+                    ) : (
+                      <Plus className="w-5 h-5" />
+                    )}
+                  </button>
+
                   <input
                     ref={chatInputRef}
                     type="text"
@@ -3882,10 +4086,10 @@ export default function App() {
 
                   <button
                     type="submit"
-                    disabled={!inputText.trim()}
+                    disabled={(!inputText.trim() && !chatMediaUrl) || isUploadingChatMedia}
                     aria-label="Send message"
                     className={`p-1.5 rounded-full transition-all cursor-pointer ${
-                      inputText.trim()
+                      (inputText.trim() || chatMediaUrl) && !isUploadingChatMedia
                         ? 'text-white hover:text-cyan-300 hover:bg-cyan-500/10'
                         : 'text-zinc-500'
                     }`}
