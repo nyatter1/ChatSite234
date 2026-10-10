@@ -45,7 +45,8 @@ import {
   Plus,
   Maximize2,
   Minimize2,
-  Minus
+  Minus,
+  Award
 } from 'lucide-react';
 import {
   PROFILE_BORDERS,
@@ -58,12 +59,13 @@ import {
   getUserRank,
   isStaffRank,
   ASSIGNABLE_RANKS,
+  CUSTOM_RANK_ICONS,
   SYSTEM_BOT_USERNAME,
   SYSTEM_BOT_AVATAR
 } from './ranks';
 import GlowModal from './components/GlowModal';
 
-const appLogo = '/logo.png';
+const appLogo = '/logo.png?v=transparent';
 const usernameSoundUrl = '/username.mp3';
 const newNewsSoundUrl = '/new_news.mp3';
 const newMessagesSoundUrl = '/new_messages.mp3';
@@ -459,6 +461,8 @@ interface UserProfileData {
   username: string;
   email?: string;
   rank?: string | null;
+  customRankIcon?: string | null;
+  customRankName?: string | null;
   avatarUrl?: string | null;
   avatarPublicId?: string | null;
   avatarDeleteToken?: string | null;
@@ -499,6 +503,8 @@ interface UserProfileData {
 
 interface UserProfileState {
   rank?: string | null;
+  customRankIcon?: string | null;
+  customRankName?: string | null;
   avatarUrl: string | null;
   avatarPublicId?: string | null;
   avatarDeleteToken?: string | null;
@@ -560,7 +566,9 @@ export default function App() {
     profileBorderThickness: 2,
     pfpBorderId: 'pfp-default',
     pfpBorderThickness: 2,
-    musicTrack: null
+    musicTrack: null,
+    customRankIcon: null,
+    customRankName: null
   }), [initialGeo]);
 
   // Profile Details State (Loaded from localStorage)
@@ -708,6 +716,11 @@ export default function App() {
   const [chatMediaName, setChatMediaName] = useState<string | null>(null);
   const [isUploadingChatMedia, setIsUploadingChatMedia] = useState(false);
   const chatMediaInputRef = useRef<HTMLInputElement>(null);
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
+  const [customRankModalOpen, setCustomRankModalOpen] = useState(false);
+  const [customRankIconIndex, setCustomRankIconIndex] = useState(0);
+  const [customRankNameInput, setCustomRankNameInput] = useState('');
   const [isListeningVoice, setIsListeningVoice] = useState(false);
   const recognitionRef = useRef<any>(null);
 
@@ -1061,6 +1074,8 @@ export default function App() {
                 username: uName,
                 email: val.email || undefined,
                 rank: val.rank || null,
+                customRankIcon: val.customRankIcon || null,
+                customRankName: val.customRankName || null,
                 avatarUrl: sanitizeMediaUrl(val.avatarUrl),
                 avatarPublicId: val.avatarPublicId || null,
                 avatarDeleteToken: val.avatarDeleteToken || null,
@@ -1806,6 +1821,8 @@ export default function App() {
             pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : prev.pfpBorderThickness,
             musicTrack: val.musicTrack || null,
             rank: val.rank !== undefined ? val.rank : prev.rank,
+            customRankIcon: val.customRankIcon || null,
+            customRankName: val.customRankName || null,
             mutedUntil: typeof val.mutedUntil === 'number' ? val.mutedUntil : null,
             muteDuration: val.muteDuration || null,
             muteReason: val.muteReason || null,
@@ -1949,6 +1966,9 @@ export default function App() {
       }
       if (hamburgerMenuRef.current && !hamburgerMenuRef.current.contains(e.target as Node)) {
         setShowHamburgerMenu(false);
+      }
+      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
+        setShowPlusMenu(false);
       }
       if (
         playerPopoverRef.current &&
@@ -2218,6 +2238,8 @@ export default function App() {
       const resolvedRankObj = getUserRank(matchedUser.username, matchedUser.email, matchedUser.rank);
       const loadedProfile: UserProfileState = {
         rank: resolvedRankObj?.id || matchedUser.rank || null,
+        customRankIcon: matchedUser.customRankIcon || null,
+        customRankName: matchedUser.customRankName || null,
         avatarUrl: sanitizeMediaUrl(matchedUser.avatarUrl),
         avatarPublicId: matchedUser.avatarPublicId || null,
         avatarDeleteToken: matchedUser.avatarDeleteToken || null,
@@ -3721,7 +3743,13 @@ export default function App() {
   // VIEW 1: CHAT UI (After Sign up / Login)
   // ==========================================
   if (currentUser) {
-    const currentUserRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    const currentUserRank = getUserRank(
+      currentUser.username,
+      currentUser.email,
+      userProfile.rank,
+      userProfile.customRankIcon,
+      userProfile.customRankName
+    );
     const onlineUsersList = allUsersList.filter((u) => u.isOnline === true);
     const offlineUsersList = allUsersList.filter((u) => u.isOnline !== true);
 
@@ -3734,7 +3762,9 @@ export default function App() {
       const sidebarUserRank = getUserRank(
         userItem.username,
         isMe ? currentUser?.email : userItem.email,
-        isMe ? userProfile.rank : userItem.rank
+        isMe ? userProfile.rank : userItem.rank,
+        isMe ? userProfile.customRankIcon : userItem.customRankIcon,
+        isMe ? userProfile.customRankName : userItem.customRankName
       );
       const activeGlowColor = isMe ? userProfile.glowColor : userItem.glowColor;
       const activeGlowThickness = (isMe ? userProfile.glowThickness : userItem.glowThickness) || 18;
@@ -3907,9 +3937,9 @@ export default function App() {
             </div>
 
             <img
-              src={appLogo || '/logo.png'}
+              src="/logo.png?v=transparent"
               alt="Logo"
-              className="h-9 sm:h-11 w-auto object-contain select-none pointer-events-none shrink-0"
+              className="h-9 sm:h-11 w-auto object-contain bg-transparent select-none pointer-events-none shrink-0"
             />
           </div>
 
@@ -4443,7 +4473,9 @@ export default function App() {
                     const authorRankObj = getUserRank(
                       post.author,
                       authorUser?.email,
-                      authorUser?.rank ?? post.authorRank
+                      authorUser?.rank ?? post.authorRank,
+                      authorUser?.customRankIcon,
+                      authorUser?.customRankName
                     );
 
                     const myKey = sanitizeDbKey(currentUser.username);
@@ -4611,7 +4643,13 @@ export default function App() {
                                   const cUser = allUsersList.find(
                                     (u) => u.username.toLowerCase() === c.author.toLowerCase()
                                   );
-                                  const cRank = getUserRank(c.author, cUser?.email, cUser?.rank ?? c.authorRank);
+                                  const cRank = getUserRank(
+                                    c.author,
+                                    cUser?.email,
+                                    cUser?.rank ?? c.authorRank,
+                                    cUser?.customRankIcon,
+                                    cUser?.customRankName
+                                  );
                                   const canDeleteComment =
                                     c.author.toLowerCase() === currentUser.username.toLowerCase() ||
                                     isDevOrAbove;
@@ -4773,7 +4811,9 @@ export default function App() {
                   const senderRank = getUserRank(
                     displaySenderName,
                     isSenderMe ? currentUser.email : senderFromList?.email,
-                    isSenderMe ? userProfile.rank : (senderFromList?.rank ?? msg.rank)
+                    isSenderMe ? userProfile.rank : (senderFromList?.rank ?? msg.rank),
+                    isSenderMe ? userProfile.customRankIcon : senderFromList?.customRankIcon,
+                    isSenderMe ? userProfile.customRankName : senderFromList?.customRankName
                   );
                   const isMsgMenuOpen = activeMsgMenuId === msg.id;
 
@@ -5083,20 +5123,58 @@ export default function App() {
                   onSubmit={handleSendMessage}
                   className="bg-[#18181e] border border-[#24242d] rounded-2xl px-3.5 py-2 flex items-center gap-2 focus-within:border-cyan-500/60 transition-colors shadow-lg"
                 >
-                  <button
-                    type="button"
-                    disabled={isUploadingChatMedia}
-                    onClick={() => chatMediaInputRef.current?.click()}
-                    aria-label="Upload image, MP3, or video"
-                    title="Upload image, MP3, or video"
-                    className="p-1.5 rounded-lg text-zinc-400 hover:text-cyan-300 hover:bg-white/5 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
-                  >
-                    {isUploadingChatMedia ? (
-                      <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
-                    ) : (
-                      <Plus className="w-5 h-5" />
+                  <div className="relative shrink-0" ref={plusMenuRef}>
+                    {showPlusMenu && (
+                      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2.5 bg-[#1b1b24] border border-[#2c2c3a] rounded-2xl p-1.5 flex flex-col items-center gap-1.5 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-100">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowPlusMenu(false);
+                            chatMediaInputRef.current?.click();
+                          }}
+                          aria-label="Upload image"
+                          title="Upload image"
+                          className="w-10 h-10 rounded-xl bg-[#23232f] hover:bg-cyan-500/20 text-zinc-200 hover:text-cyan-300 flex items-center justify-center transition-colors cursor-pointer"
+                        >
+                          <ImageIcon className="w-5 h-5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowPlusMenu(false);
+                            const currentIcon = userProfile.customRankIcon || currentUserRank?.icon || CUSTOM_RANK_ICONS[0].icon;
+                            const foundIdx = CUSTOM_RANK_ICONS.findIndex((item) => item.icon === currentIcon);
+                            setCustomRankIconIndex(foundIdx >= 0 ? foundIdx : 0);
+                            setCustomRankNameInput(userProfile.customRankName || '');
+                            setCustomRankModalOpen(true);
+                          }}
+                          aria-label="Custom rank"
+                          title="Custom rank"
+                          className="w-10 h-10 rounded-xl bg-[#23232f] hover:bg-amber-500/20 text-zinc-200 hover:text-amber-300 flex items-center justify-center transition-colors cursor-pointer"
+                        >
+                          <Award className="w-5 h-5" />
+                        </button>
+                      </div>
                     )}
-                  </button>
+                    <button
+                      type="button"
+                      disabled={isUploadingChatMedia}
+                      onClick={() => setShowPlusMenu((prev) => !prev)}
+                      aria-label="Plus options"
+                      title="Options"
+                      className={`p-1.5 rounded-lg transition-colors cursor-pointer disabled:opacity-50 shrink-0 ${
+                        showPlusMenu
+                          ? 'text-cyan-300 bg-white/10'
+                          : 'text-zinc-400 hover:text-cyan-300 hover:bg-white/5'
+                      }`}
+                    >
+                      {isUploadingChatMedia ? (
+                        <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
+                      ) : (
+                        <Plus className="w-5 h-5" />
+                      )}
+                    </button>
+                  </div>
 
                   <input
                     ref={chatInputRef}
@@ -5233,7 +5311,9 @@ export default function App() {
             const popoverRank = getUserRank(
               activePopoverUser.username,
               isSelectedUserMe ? currentUser?.email : activePopoverUser.email,
-              isSelectedUserMe ? userProfile.rank : activePopoverUser.rank
+              isSelectedUserMe ? userProfile.rank : activePopoverUser.rank,
+              isSelectedUserMe ? userProfile.customRankIcon : activePopoverUser.customRankIcon,
+              isSelectedUserMe ? userProfile.customRankName : activePopoverUser.customRankName
             );
             const canMainDevActOnTarget = Boolean(
               !isSelectedUserMe &&
@@ -5966,7 +6046,9 @@ export default function App() {
                       const modalRank = getUserRank(
                         usernameToShow,
                         isViewingSelf ? currentUser?.email : activeModalUser.email,
-                        isViewingSelf ? userProfile.rank : activeModalUser.rank
+                        isViewingSelf ? userProfile.rank : activeModalUser.rank,
+                        isViewingSelf ? userProfile.customRankIcon : activeModalUser.customRankIcon,
+                        isViewingSelf ? userProfile.customRankName : activeModalUser.customRankName
                       );
                       return modalRank ? (
                         <div className="flex items-center gap-1.5 mb-0.5">
@@ -7462,7 +7544,9 @@ export default function App() {
                     const senderRankObj = getUserRank(
                       pm.sender,
                       senderUser?.email,
-                      senderUser?.rank
+                      senderUser?.rank,
+                      isMeSender ? userProfile.customRankIcon : (senderUser as UserProfileData | undefined)?.customRankIcon,
+                      isMeSender ? userProfile.customRankName : (senderUser as UserProfileData | undefined)?.customRankName
                     );
 
                     return (
@@ -7717,6 +7801,134 @@ export default function App() {
           </div>
         )}
 
+        {/* CUSTOM RANK MODAL (Centered: Custom Rank Name on top, < RANK ICON > in middle, [Buy - Free] below) */}
+        {customRankModalOpen && (() => {
+          const activeCustomIconObj =
+            CUSTOM_RANK_ICONS[customRankIconIndex] || CUSTOM_RANK_ICONS[0];
+          const isCurrentlyEquipped =
+            userProfile.customRankIcon === activeCustomIconObj.icon &&
+            (userProfile.customRankName || '') === customRankNameInput.trim();
+
+          return (
+            <div
+              role="dialog"
+              aria-modal="true"
+              className="fixed inset-0 z-[85] bg-black/80 backdrop-blur-[2px] flex items-center justify-center p-4 animate-in fade-in duration-150"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) {
+                  setCustomRankModalOpen(false);
+                }
+              }}
+            >
+              <div className="w-full max-w-[380px] bg-[#141418] border border-[#262632] rounded-3xl p-6 shadow-2xl relative text-white animate-in zoom-in-95 duration-150 flex flex-col items-center">
+                <button
+                  type="button"
+                  onClick={() => setCustomRankModalOpen(false)}
+                  aria-label="Close custom rank modal"
+                  className="absolute top-4 right-4 text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+
+                <div className="flex items-center gap-2 mb-4">
+                  <Award className="w-5 h-5 text-amber-400" />
+                  <h2 className="text-base sm:text-lg font-black text-white tracking-wide">
+                    Custom Rank
+                  </h2>
+                </div>
+
+                {/* Top Area: Enter Custom Rank Name */}
+                <div className="w-full mb-6">
+                  <label className="block text-xs font-extrabold text-zinc-400 uppercase tracking-wider mb-1.5 text-center">
+                    Custom Rank Name
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={28}
+                    value={customRankNameInput}
+                    onChange={(e) => setCustomRankNameInput(e.target.value)}
+                    placeholder={currentUserRank?.name || 'Enter custom rank name...'}
+                    className="w-full bg-[#1b1b22] border border-[#2c2c38] rounded-xl px-3.5 py-2.5 text-sm font-bold text-white text-center placeholder-zinc-500 focus:outline-none focus:border-cyan-500/60"
+                  />
+                </div>
+
+                {/* Middle Area: < RANK ICON > */}
+                <div className="flex items-center justify-center gap-6 my-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCustomRankIconIndex((prev) =>
+                        prev <= 0 ? CUSTOM_RANK_ICONS.length - 1 : prev - 1
+                      )
+                    }
+                    aria-label="Previous rank icon"
+                    className="w-10 h-10 rounded-xl bg-[#1d1d26] hover:bg-[#272733] border border-[#2c2c38] flex items-center justify-center text-white transition-colors cursor-pointer active:scale-95"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+
+                  <div className="w-24 h-24 rounded-2xl bg-[#1b1b23] border border-[#2d2d3a] flex items-center justify-center p-3 shadow-inner">
+                    <img
+                      src={activeCustomIconObj.icon}
+                      alt={activeCustomIconObj.label}
+                      className="w-14 h-14 object-contain select-none"
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCustomRankIconIndex((prev) =>
+                        prev >= CUSTOM_RANK_ICONS.length - 1 ? 0 : prev + 1
+                      )
+                    }
+                    aria-label="Next rank icon"
+                    className="w-10 h-10 rounded-xl bg-[#1d1d26] hover:bg-[#272733] border border-[#2c2c38] flex items-center justify-center text-white transition-colors cursor-pointer active:scale-95"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Bottom Button: [Buy - Free] */}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const trimmedCustomName = customRankNameInput.trim();
+                    const updates: Partial<UserProfileState> = {
+                      customRankIcon: activeCustomIconObj.icon,
+                      customRankName: trimmedCustomName || null
+                    };
+                    setUserProfile((prev) => ({ ...prev, ...updates }));
+                    await saveProfileToRtdb(updates);
+                    setCustomRankModalOpen(false);
+                  }}
+                  className="mt-5 w-full py-3 rounded-2xl font-black text-sm tracking-wide bg-gradient-to-r from-[#00add8] to-[#00d95f] hover:opacity-95 active:scale-[0.99] text-black shadow-lg transition-all cursor-pointer"
+                >
+                  {isCurrentlyEquipped ? 'Equipped (Buy - Free)' : 'Buy - Free'}
+                </button>
+
+                {/* Reset Custom Rank Button */}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const updates: Partial<UserProfileState> = {
+                      customRankIcon: null,
+                      customRankName: null
+                    };
+                    setUserProfile((prev) => ({ ...prev, ...updates }));
+                    setCustomRankNameInput('');
+                    await saveProfileToRtdb(updates);
+                    setCustomRankModalOpen(false);
+                  }}
+                  className="mt-2.5 w-full py-2.5 rounded-2xl font-extrabold text-xs tracking-wide bg-[#1e1e26] hover:bg-rose-500/15 text-zinc-300 hover:text-rose-400 border border-[#2c2c38] hover:border-rose-500/40 transition-all cursor-pointer"
+                >
+                  Reset Custom Rank
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* RED FLAG DATABASE MONITOR & ADMIN CONSOLE MODAL (ONLY FOR NULL / MAIN DEV) */}
         {isMainDeveloper && (
           <DatabaseMonitorModal
@@ -7754,9 +7966,9 @@ export default function App() {
         )}
 
         <img
-          src={appLogo || '/logo.png'}
+          src="/logo.png?v=transparent"
           alt="Logo"
-          className="h-24 sm:h-28 md:h-32 w-auto object-contain mx-auto mb-5 drop-shadow-[0_8px_24px_rgba(0,0,0,0.45)] select-none pointer-events-none"
+          className="h-24 sm:h-28 md:h-32 w-auto object-contain bg-transparent mx-auto mb-5 drop-shadow-[0_8px_24px_rgba(0,0,0,0.45)] select-none pointer-events-none"
         />
 
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight text-white mb-4">

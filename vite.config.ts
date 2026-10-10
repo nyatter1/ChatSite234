@@ -19,8 +19,10 @@ function syncRootAssetsToPublic() {
         try {
           const stat = fs.statSync(srcPath);
           if (stat.isFile() && stat.size > 0) {
-            fs.copyFileSync(srcPath, destPublic);
-            if (/\.(gif|svg)$/i.test(file)) {
+            if (!fs.existsSync(destPublic)) {
+              fs.copyFileSync(srcPath, destPublic);
+            }
+            if (/\.(gif|svg)$/i.test(file) && !fs.existsSync(path.join(ranksDir, file))) {
               fs.copyFileSync(srcPath, path.join(ranksDir, file));
             }
           }

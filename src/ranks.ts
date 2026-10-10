@@ -128,15 +128,24 @@ export const ASSIGNABLE_RANKS: { id: string; name: string; priority: number }[] 
   { id: 'developer', name: 'Developer', priority: 90 }
 ];
 
-/**
- * Resolves a user's rank.
- * - Exclusively grants "Main Developer" (rank_icon_71f046c1326aabfd.gif) to user "Null" (null@gmail.com).
- *   No other user can ever obtain this rank.
- * - Grants "Bot" (bot.svg, priority 35 below Moderator) to the "System" bot.
- * - Grants "Developer" (developer.gif) to username "org" by default unless overridden in RTDB.
- * - Maps allowed ranks from Realtime Database in full hierarchy order.
- */
-export function getUserRank(
+export const CUSTOM_RANK_ICONS: { id: string; label: string; icon: string }[] = [
+  { id: 'rank_08c22e', label: 'Rank 1', icon: `${GITHUB_RANKS_BASE}/rank_icon_08c22e88f38fd6e3.gif` },
+  { id: 'rank_2e9bd0', label: 'Rank 2', icon: `${GITHUB_RANKS_BASE}/rank_icon_2e9bd0b23b0e1ff2.gif` },
+  { id: 'rank_34e0b5', label: 'Rank 3', icon: `${GITHUB_RANKS_BASE}/rank_icon_34e0b53619071d93.gif` },
+  { id: 'rank_4e47e2', label: 'Rank 4', icon: `${GITHUB_RANKS_BASE}/rank_icon_4e47e2e17209cdcb.gif` },
+  { id: 'rank_58d1f4', label: 'Rank 5', icon: `${GITHUB_RANKS_BASE}/rank_icon_58d1f43657a13aaa.gif` },
+  { id: 'rank_5ffb36', label: 'Rank 6', icon: `${GITHUB_RANKS_BASE}/rank_icon_5ffb36cf4833092f.gif` },
+  { id: 'rank_66f1f1', label: 'Rank 7', icon: `${GITHUB_RANKS_BASE}/rank_icon_66f1f189f1a8deeb.gif` },
+  { id: 'rank_7e77b6', label: 'Rank 8', icon: `${GITHUB_RANKS_BASE}/rank_icon_7e77b633d0d0fc90.gif` },
+  { id: 'rank_81016e', label: 'Rank 9', icon: `${GITHUB_RANKS_BASE}/rank_icon_81016e7085be8b65.gif` },
+  { id: 'rank_a7c98b', label: 'Rank 10', icon: `${GITHUB_RANKS_BASE}/rank_icon_a7c98b93b63a44a5.gif` },
+  { id: 'rank_b2f843', label: 'Rank 11', icon: `${GITHUB_RANKS_BASE}/rank_icon_b2f8436ef0affb9d.gif` },
+  { id: 'rank_bcd99b', label: 'Rank 12', icon: `${GITHUB_RANKS_BASE}/rank_icon_bcd99bbd6b71e15c.gif` },
+  { id: 'rank_cd401d', label: 'Rank 13', icon: `${GITHUB_RANKS_BASE}/rank_icon_cd401dbf47af0de0.gif` },
+  { id: 'rank_d96422', label: 'Rank 14', icon: `${GITHUB_RANKS_BASE}/rank_icon_d964224aade86578.gif` }
+];
+
+function resolveBaseRank(
   username?: string | null,
   email?: string | null,
   dbRank?: string | null
@@ -237,6 +246,40 @@ export function getUserRank(
   }
 
   return null;
+}
+
+/**
+ * Resolves a user's rank while applying optional custom rank icon and custom rank name overrides.
+ * The underlying hierarchy priority and staff status always remain tied to the base rank.
+ */
+export function getUserRank(
+  username?: string | null,
+  email?: string | null,
+  dbRank?: string | null,
+  customRankIcon?: string | null,
+  customRankName?: string | null
+): RankDefinition | null {
+  const cleanUser = (username || '').trim().toLowerCase();
+  if (cleanUser === 'system') {
+    return RANKS.bot;
+  }
+
+  const baseRank = resolveBaseRank(username, email, dbRank);
+  const cleanCustomIcon =
+    typeof customRankIcon === 'string' && customRankIcon.trim() ? customRankIcon.trim() : null;
+  const cleanCustomName =
+    typeof customRankName === 'string' && customRankName.trim() ? customRankName.trim() : null;
+
+  if (!baseRank && !cleanCustomIcon && !cleanCustomName) {
+    return null;
+  }
+
+  return {
+    id: baseRank ? baseRank.id : 'custom',
+    priority: baseRank ? baseRank.priority : 0,
+    icon: cleanCustomIcon || baseRank?.icon || '/prem.gif',
+    name: cleanCustomName || baseRank?.name || 'Member'
+  };
 }
 
 /**
