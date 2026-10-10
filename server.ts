@@ -28,7 +28,7 @@ async function startServer() {
       const { prompt, botName = 'System', senderName = 'User' } = req.body || {};
       const userPrompt = String(prompt || 'Hello!').trim() || 'Hello!';
 
-      const systemPrompt = `You are ${botName}, an official automated system assistant. Respond in a strictly formal, polite, and professional tone in 1 to 2 concise sentences. Never use roleplay, actions in asterisks (*...*), slang, or emotes. Do not prefix your message with "${senderName}" or "@${senderName}" because the system automatically prepends their username tag.`;
+      const systemPrompt = `You are ${botName}, an official, intelligent automated AI assistant. Answer any question, math problem, or topic accurately, directly, and formally in 1 to 2 concise sentences. Never use roleplay, actions in asterisks (*...*), slang, or emotes. Do not prefix your message with "${senderName}" or "@${senderName}" because the system automatically prepends their username tag.`;
 
       const messages = [
         {
@@ -42,9 +42,10 @@ async function startServer() {
       ];
 
       const modelsToTry = [
+        'deepseek/deepseek-v4-flash-0731free:free',
+        'deepseek-v4-flash-0731free',
         'qwen/qwen3.7-flash:free',
-        'auto:free',
-        'deepseek/deepseek-v4-flash-0731free:free'
+        'auto:free'
       ];
 
       for (const model of modelsToTry) {
@@ -100,7 +101,7 @@ async function startServer() {
 
       return res.json({
         success: true,
-        reply: 'Hello. How may I assist you today?'
+        reply: 'I am currently processing requests. Please repeat your inquiry momentarily.'
       });
     } catch (err: any) {
       console.warn('Bot chat endpoint error:', err);

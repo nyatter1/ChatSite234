@@ -35,7 +35,14 @@ import {
   AlertCircle,
   Loader2,
   Trash2,
-  Reply
+  Reply,
+  ThumbsUp,
+  ThumbsDown,
+  Newspaper,
+  Shield,
+  Scale,
+  Image as ImageIcon,
+  Plus
 } from 'lucide-react';
 import {
   PROFILE_BORDERS,
@@ -44,6 +51,7 @@ import {
   getPfpBorder
 } from './borders';
 import {
+  RANKS,
   getUserRank,
   isStaffRank,
   ASSIGNABLE_RANKS,
@@ -107,6 +115,34 @@ interface AppNotification {
   text: string;
   createdAt: number;
   read?: boolean;
+}
+
+interface NewsComment {
+  id: string;
+  author: string;
+  authorAvatar?: string | null;
+  authorRank?: string | null;
+  text: string;
+  createdAt: number;
+}
+
+interface NewsPost {
+  id: string;
+  author: string;
+  authorAvatar?: string | null;
+  authorRank?: string | null;
+  authorPfpBorderId?: string | null;
+  authorPfpBorderThickness?: number;
+  title: string;
+  description: string;
+  mediaUrl?: string | null;
+  mediaType?: 'image' | 'video' | null;
+  createdAt: number;
+  likes: Record<string, boolean>;
+  dislikes: Record<string, boolean>;
+  loves: Record<string, boolean>;
+  laughs: Record<string, boolean>;
+  comments: NewsComment[];
 }
 
 const MUTE_DURATIONS: { id: string; label: string; ms: number }[] = [
@@ -184,11 +220,11 @@ async function generateAiBotReply(
     // Fall through to direct BazaarLink call if server route is unavailable
   }
 
-  // 2. Direct BazaarLink API call fallback
+  // 2. Direct BazaarLink API call fallback (DeepSeek V4 Flash 0731 Free primary)
   const messages = [
     {
       role: 'system',
-      content: `You are ${botName}, an official automated system assistant. Respond in a strictly formal, polite, and professional tone in 1 to 2 concise sentences. Never use roleplay, actions in asterisks (*...*), slang, or emotes. Do not prefix your message with "${senderName}" or "@${senderName}" because the system automatically prepends their username tag.`
+      content: `You are ${botName}, an official, intelligent automated AI assistant. Answer any question, math problem, or topic accurately, directly, and formally in 1 to 2 concise sentences. Never use roleplay, actions in asterisks (*...*), slang, or emotes. Do not prefix your message with "${senderName}" or "@${senderName}" because the system automatically prepends their username tag.`
     },
     {
       role: 'user',
@@ -197,30 +233,39 @@ async function generateAiBotReply(
   ];
 
   const modelsToTry = [
+    'deepseek/deepseek-v4-flash-0731free:free',
     'qwen/qwen3.7-flash:free',
-    'auto:free',
-    'deepseek/deepseek-v4-flash-0731free:free'
+    'auto:free'
   ];
 
   for (const model of modelsToTry) {
-    try {
-      const response = await fetch(BAZAARLINK_API_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${BAZAARLINK_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model,
-          messages
-        })
-      });
-      const data = await response.json();
-      const content = data?.choices?.[0]?.message?.content?.trim();
-      if (response.ok && content) {
-        return content;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await fetch(BAZAARLINK_API_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${BAZAARLINK_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model,
+            messages
+          })
+        });
+        const data = await response.json();
+        const content = data?.choices?.[0]?.message?.content?.trim();
+        if (response.ok && content) {
+          return content;
+        }
+        if (response.status === 429 && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 900));
+          continue;
+        }
+        break;
+      } catch (_) {
+        break;
       }
-    } catch (_) {}
+    }
   }
 
   return 'Hello. How may I assist you today?';
@@ -382,6 +427,7 @@ interface UserProfileData {
   muteDuration?: string | null;
   muteReason?: string | null;
   muteNotificationId?: string | null;
+  likes?: Record<string, boolean>;
   isOnline?: boolean;
   lastSeen?: any;
   updatedAt?: any;
@@ -413,6 +459,7 @@ interface UserProfileState {
   muteDuration?: string | null;
   muteReason?: string | null;
   muteNotificationId?: string | null;
+  likes?: Record<string, boolean>;
 }
 
 export default function App() {
@@ -606,6 +653,29 @@ export default function App() {
   const [popoverPos, setPopoverPos] = useState<{ top: number; right: number }>({ top: 80, right: 330 });
   const [selectedUser, setSelectedUser] = useState<UserProfileData | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<UserProfileData[]>([]);
+  const [systemBotLikes, setSystemBotLikes] = useState<Record<string, boolean>>({});
+
+  // Top-left Hamburger Menu, News Drawer (pinned left), Staff Modal, and Rules Modal state
+  const [showHamburgerMenu, setShowHamburgerMenu] = useState(false);
+  const [newsDrawerOpen, setNewsDrawerOpen] = useState(false);
+  const [newsComposerOpen, setNewsComposerOpen] = useState(false);
+  const [newsTitle, setNewsTitle] = useState('');
+  const [newsDescription, setNewsDescription] = useState('');
+  const [newsMediaUrl, setNewsMediaUrl] = useState<string | null>(null);
+  const [newsMediaType, setNewsMediaType] = useState<'image' | 'video' | null>(null);
+  const [isUploadingNewsMedia, setIsUploadingNewsMedia] = useState(false);
+  const [isSendingNews, setIsSendingNews] = useState(false);
+  const [newsPosts, setNewsPosts] = useState<NewsPost[]>([]);
+  const [expandedNewsComments, setExpandedNewsComments] = useState<Record<string, boolean>>({});
+  const [newsCommentInputs, setNewsCommentInputs] = useState<Record<string, string>>({});
+  const newsMediaInputRef = useRef<HTMLInputElement>(null);
+  const hamburgerMenuRef = useRef<HTMLDivElement>(null);
+
+  const [staffModalOpen, setStaffModalOpen] = useState(false);
+  const [expandedStaffCategory, setExpandedStaffCategory] = useState<string | null>(null);
+
+  const [rulesModalOpen, setRulesModalOpen] = useState(false);
+  const [activeRulesTab, setActiveRulesTab] = useState<'user' | 'staff'>('user');
 
   // Targeted helper to persist profile updates cleanly to Realtime Database & localStorage
   // Prevents infinite onValue <-> useEffect loops and never writes temporary blob: URLs
@@ -786,6 +856,7 @@ export default function App() {
               const val = childSnap.val();
               const key = childSnap.key;
               if (!val || typeof val !== 'object') return;
+              if (key === '__system_news__' || key === '__system_bot__') return;
 
               // Check if this node is a valid registered user (must have username string)
               if (typeof val.username !== 'string' || !val.username.trim()) {
@@ -797,6 +868,7 @@ export default function App() {
               }
 
               const uName = val.username.trim();
+              const rawLikes = val.likes && typeof val.likes === 'object' ? val.likes : {};
               list.push({
                 username: uName,
                 email: val.email || undefined,
@@ -825,6 +897,7 @@ export default function App() {
                 muteDuration: val.muteDuration || null,
                 muteReason: val.muteReason || null,
                 muteNotificationId: val.muteNotificationId || null,
+                likes: rawLikes,
                 isOnline: val.isOnline === true,
                 lastSeen: val.lastSeen || null,
                 updatedAt: val.updatedAt || null
@@ -909,6 +982,88 @@ export default function App() {
     );
     return () => unsubscribe();
   }, [currentUser?.username]);
+
+  // Real-time listener for Community News posts & System bot likes
+  useEffect(() => {
+    try {
+      const newsRef = ref(rtdb, 'users/__system_news__/posts');
+      const unsubNews = onValue(
+        newsRef,
+        (snapshot) => {
+          if (snapshot.exists()) {
+            const items: NewsPost[] = [];
+            snapshot.forEach((childSnap) => {
+              const val = childSnap.val();
+              if (!val || typeof val !== 'object') return;
+              const rawComments: NewsComment[] = [];
+              if (val.comments && typeof val.comments === 'object') {
+                for (const [cId, cVal] of Object.entries(val.comments)) {
+                  const c = cVal as any;
+                  if (c && typeof c.text === 'string') {
+                    rawComments.push({
+                      id: cId,
+                      author: c.author || 'Anonymous',
+                      authorAvatar: sanitizeMediaUrl(c.authorAvatar),
+                      authorRank: c.authorRank || null,
+                      text: c.text,
+                      createdAt: typeof c.createdAt === 'number' ? c.createdAt : Date.now()
+                    });
+                  }
+                }
+              }
+              rawComments.sort((a, b) => a.createdAt - b.createdAt);
+
+              items.push({
+                id: childSnap.key || String(Date.now()),
+                author: val.author || 'Developer',
+                authorAvatar: sanitizeMediaUrl(val.authorAvatar),
+                authorRank: val.authorRank || null,
+                authorPfpBorderId: val.authorPfpBorderId || 'pfp-default',
+                authorPfpBorderThickness: typeof val.authorPfpBorderThickness === 'number' ? val.authorPfpBorderThickness : 2,
+                title: val.title || '',
+                description: val.description || '',
+                mediaUrl: sanitizeMediaUrl(val.mediaUrl),
+                mediaType: val.mediaType === 'video' ? 'video' : val.mediaUrl ? 'image' : null,
+                createdAt: typeof val.createdAt === 'number' ? val.createdAt : Date.now(),
+                likes: val.likes && typeof val.likes === 'object' ? val.likes : {},
+                dislikes: val.dislikes && typeof val.dislikes === 'object' ? val.dislikes : {},
+                loves: val.loves && typeof val.loves === 'object' ? val.loves : {},
+                laughs: val.laughs && typeof val.laughs === 'object' ? val.laughs : {},
+                comments: rawComments
+              });
+            });
+            items.sort((a, b) => b.createdAt - a.createdAt);
+            setNewsPosts(items);
+          } else {
+            setNewsPosts([]);
+          }
+        },
+        (err) => {
+          console.warn('Realtime Database news listener notice:', err.message);
+        }
+      );
+
+      const sysBotLikesRef = ref(rtdb, 'users/__system_bot__/likes');
+      const unsubSysLikes = onValue(
+        sysBotLikesRef,
+        (snapshot) => {
+          if (snapshot.exists() && typeof snapshot.val() === 'object') {
+            setSystemBotLikes(snapshot.val());
+          } else {
+            setSystemBotLikes({});
+          }
+        },
+        () => {}
+      );
+
+      return () => {
+        unsubNews();
+        unsubSysLikes();
+      };
+    } catch (err) {
+      console.warn('News listener init notice:', err);
+    }
+  }, []);
 
   // Permanently delete user account:
   // - Cancels onDisconnect hooks so no ghost node is recreated
@@ -1167,7 +1322,8 @@ export default function App() {
             mutedUntil: typeof val.mutedUntil === 'number' ? val.mutedUntil : null,
             muteDuration: val.muteDuration || null,
             muteReason: val.muteReason || null,
-            muteNotificationId: val.muteNotificationId || null
+            muteNotificationId: val.muteNotificationId || null,
+            likes: val.likes && typeof val.likes === 'object' ? val.likes : {}
           };
 
           if (JSON.stringify(prev) === JSON.stringify(nextState)) {
@@ -1196,10 +1352,12 @@ export default function App() {
       }
     });
     if (currentUser && currentUser.username) {
+      const existingMe = map.get(currentUser.username.toLowerCase());
       map.set(currentUser.username.toLowerCase(), {
         username: currentUser.username,
         email: currentUser.email,
         ...userProfile,
+        likes: userProfile.likes || existingMe?.likes || {},
         isOnline: true
       });
     }
@@ -1216,6 +1374,7 @@ export default function App() {
       pfpBorderThickness: 2,
       profileBorderId: 'pb-default',
       profileBorderThickness: 2,
+      likes: systemBotLikes,
       isOnline: true
     });
 
@@ -1297,6 +1456,9 @@ export default function App() {
       }
       if (notificationsMenuRef.current && !notificationsMenuRef.current.contains(e.target as Node)) {
         setShowNotificationsMenu(false);
+      }
+      if (hamburgerMenuRef.current && !hamburgerMenuRef.current.contains(e.target as Node)) {
+        setShowHamburgerMenu(false);
       }
       if (
         playerPopoverRef.current &&
@@ -1718,23 +1880,26 @@ export default function App() {
     setInputText('');
     setReplyingTo(null);
 
-    // Handle /clear command: instantly deletes all messages from Realtime Database and local cache
+    const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
+    const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+
+    // Handle /clear command: Owners and above (priority >= 90) can clear all chat messages
     if (textToSend.toLowerCase() === '/clear') {
-      try {
-        const messagesRef = ref(rtdb, 'messages');
-        await remove(messagesRef);
-        localStorage.removeItem('chat_community_messages');
-        setMessages([]);
-      } catch (err) {
-        console.warn('Error clearing messages in RTDB:', err);
-        localStorage.removeItem('chat_community_messages');
-        setMessages([]);
+      if ((activeSenderRank?.priority ?? 0) >= 90) {
+        try {
+          const messagesRef = ref(rtdb, 'messages');
+          await remove(messagesRef);
+          localStorage.removeItem('chat_community_messages');
+          setMessages([]);
+        } catch (err) {
+          console.warn('Error clearing messages in RTDB:', err);
+          localStorage.removeItem('chat_community_messages');
+          setMessages([]);
+        }
       }
       return;
     }
 
-    const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
-    const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
     const newMsgData = {
       sender: currentUser.username,
       senderKey: sanitizeDbKey(currentUser.username),
@@ -1769,7 +1934,7 @@ export default function App() {
       setMessages((prev) => [...prev, fallbackMsg]);
     }
 
-    // Check if the message tags a bot (e.g. "System Hello!" - no @ required, just the bot's username)
+    // Check if the message tags a bot (e.g. "System Hello!" or "whats 1+1 System" - no @ required, just the bot's username)
     const botCandidates = allUsersList.filter(
       (u) =>
         u.username.toLowerCase() === SYSTEM_BOT_USERNAME.toLowerCase() ||
@@ -1793,9 +1958,9 @@ export default function App() {
       const targetBot = mentionedBot;
       const senderUsername = currentUser.username;
       const escapedBot = targetBot.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const leadingBotRegex = new RegExp(`^\\s*@?${escapedBot}(?:[\\s,:!.-]+|$)`, 'i');
-      const strippedPrompt = textToSend.replace(leadingBotRegex, '').trim();
-      const promptForAi = strippedPrompt || textToSend;
+      const stripBotAnywhereRegex = new RegExp(`(^|\\s)@?${escapedBot}(?:[\\s,:!.-]+|$)`, 'gi');
+      const strippedPrompt = textToSend.replace(stripBotAnywhereRegex, ' ').replace(/\s{2,}/g, ' ').trim();
+      const promptForAi = strippedPrompt || 'Say hello in one sentence';
 
       (async () => {
         try {
@@ -1863,13 +2028,208 @@ export default function App() {
     }
   };
 
-  // Delete a specific chat message (own message) from Realtime Database
+  // Delete a specific chat message (own message or Owner and above) from Realtime Database
   const handleDeleteMessage = async (msgId: string) => {
+    setMessages((prev) => prev.filter((m) => m.id !== msgId));
     try {
       await remove(ref(rtdb, `messages/${msgId}`));
     } catch (err) {
       console.warn('Error deleting message:', err);
-      setMessages((prev) => prev.filter((m) => m.id !== msgId));
+    }
+  };
+
+  // Toggle profile like on any user's profile and save to Firebase Realtime Database
+  const handleToggleProfileLike = async (targetUsername: string) => {
+    if (!currentUser?.username || !targetUsername) return;
+    const myKey = sanitizeDbKey(currentUser.username);
+    const isSystemTarget = targetUsername.trim().toLowerCase() === 'system';
+    const targetKey = isSystemTarget ? '__system_bot__' : sanitizeDbKey(targetUsername);
+
+    const targetUserObj = allUsersList.find(
+      (u) => u.username.toLowerCase() === targetUsername.trim().toLowerCase()
+    );
+    const currentLikes = isSystemTarget
+      ? systemBotLikes
+      : (targetUserObj?.likes || {});
+    const alreadyLiked = Boolean(currentLikes[myKey]);
+    const nextLikes = { ...currentLikes };
+    if (alreadyLiked) {
+      delete nextLikes[myKey];
+    } else {
+      nextLikes[myKey] = true;
+    }
+
+    // Optimistic update
+    if (isSystemTarget) {
+      setSystemBotLikes(nextLikes);
+    } else if (targetUsername.trim().toLowerCase() === currentUser.username.toLowerCase()) {
+      setUserProfile((prev) => ({ ...prev, likes: nextLikes }));
+    } else {
+      setRegisteredUsers((prev) =>
+        prev.map((u) =>
+          u.username.toLowerCase() === targetUsername.trim().toLowerCase()
+            ? { ...u, likes: nextLikes }
+            : u
+        )
+      );
+    }
+
+    try {
+      const likeRef = ref(rtdb, `users/${targetKey}/likes/${myKey}`);
+      if (alreadyLiked) {
+        await remove(likeRef);
+      } else {
+        await set(likeRef, true);
+      }
+    } catch (err) {
+      console.warn('Error toggling profile like in RTDB:', err);
+    }
+  };
+
+  // Upload image, GIF, or video for Community News post
+  const handleNewsMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+
+    const isVideo = file.type.startsWith('video/');
+    const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+    setIsUploadingNewsMedia(true);
+
+    try {
+      let uploadFile = file;
+      if (!isVideo && !isGif && file.type.startsWith('image/')) {
+        try {
+          const comp = await compressBanner(file);
+          uploadFile = comp.file;
+        } catch (_) {}
+      }
+
+      const resourceType = isVideo ? 'video' : 'image';
+      try {
+        const res = await uploadToCloudinary(uploadFile, resourceType, 'news');
+        setNewsMediaUrl(res.secure_url || res.url);
+        setNewsMediaType(isVideo ? 'video' : 'image');
+      } catch (cloudErr) {
+        console.warn('Cloudinary news upload fallback to data URL:', cloudErr);
+        const dataUrl = await fileToDataUrl(uploadFile);
+        setNewsMediaUrl(dataUrl);
+        setNewsMediaType(isVideo ? 'video' : 'image');
+      }
+    } catch (err) {
+      console.warn('Error uploading news media:', err);
+    } finally {
+      setIsUploadingNewsMedia(false);
+    }
+  };
+
+  // Publish a new Community News post (Developers and above: priority >= 80)
+  const handleCreateNewsPost = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!currentUser || isSendingNews) return;
+    const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    if ((myRank?.priority ?? 0) < 80) return;
+    if (!newsTitle.trim() && !newsDescription.trim() && !newsMediaUrl) return;
+
+    setIsSendingNews(true);
+    try {
+      const postsRef = ref(rtdb, 'users/__system_news__/posts');
+      await push(postsRef, {
+        author: currentUser.username,
+        authorAvatar: sanitizeMediaUrl(userProfile.avatarUrl) || null,
+        authorRank: myRank?.id || 'developer',
+        authorPfpBorderId: userProfile.pfpBorderId || 'pfp-default',
+        authorPfpBorderThickness: userProfile.pfpBorderThickness || 2,
+        title: newsTitle.trim(),
+        description: newsDescription.trim(),
+        mediaUrl: sanitizeMediaUrl(newsMediaUrl) || null,
+        mediaType: newsMediaType || null,
+        createdAt: Date.now()
+      });
+      setNewsTitle('');
+      setNewsDescription('');
+      setNewsMediaUrl(null);
+      setNewsMediaType(null);
+      setNewsComposerOpen(false);
+    } catch (err) {
+      console.warn('Error creating news post in RTDB:', err);
+    } finally {
+      setIsSendingNews(false);
+    }
+  };
+
+  // Delete a Community News post (Developers and above: priority >= 80)
+  const handleDeleteNewsPost = async (postId: string) => {
+    if (!currentUser) return;
+    const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    if ((myRank?.priority ?? 0) < 80) return;
+
+    setNewsPosts((prev) => prev.filter((p) => p.id !== postId));
+    try {
+      await remove(ref(rtdb, `users/__system_news__/posts/${postId}`));
+    } catch (err) {
+      console.warn('Error deleting news post:', err);
+    }
+  };
+
+  // Toggle reaction (likes, dislikes, loves, laughs) on a Community News post
+  const handleToggleNewsReaction = async (
+    postId: string,
+    reactionField: 'likes' | 'dislikes' | 'loves' | 'laughs'
+  ) => {
+    if (!currentUser?.username) return;
+    const myKey = sanitizeDbKey(currentUser.username);
+    const targetPost = newsPosts.find((p) => p.id === postId);
+    if (!targetPost) return;
+
+    const currentMap = targetPost[reactionField] || {};
+    const alreadyReacted = Boolean(currentMap[myKey]);
+
+    try {
+      const reactRef = ref(rtdb, `users/__system_news__/posts/${postId}/${reactionField}/${myKey}`);
+      if (alreadyReacted) {
+        await remove(reactRef);
+      } else {
+        await set(reactRef, true);
+      }
+    } catch (err) {
+      console.warn('Error toggling news reaction:', err);
+    }
+  };
+
+  // Add a comment to a Community News post
+  const handleAddNewsComment = async (postId: string) => {
+    if (!currentUser?.username) return;
+    const commentText = (newsCommentInputs[postId] || '').trim();
+    if (!commentText) return;
+
+    const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    setNewsCommentInputs((prev) => ({ ...prev, [postId]: '' }));
+
+    try {
+      await push(ref(rtdb, `users/__system_news__/posts/${postId}/comments`), {
+        author: currentUser.username,
+        authorAvatar: sanitizeMediaUrl(userProfile.avatarUrl) || null,
+        authorRank: myRank?.id || null,
+        text: commentText,
+        createdAt: Date.now()
+      });
+    } catch (err) {
+      console.warn('Error adding news comment:', err);
+    }
+  };
+
+  // Delete a comment on a Community News post (comment author or Developers and above)
+  const handleDeleteNewsComment = async (postId: string, commentId: string, commentAuthor: string) => {
+    if (!currentUser?.username) return;
+    const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    const isAuthor = commentAuthor.toLowerCase() === currentUser.username.toLowerCase();
+    if (!isAuthor && (myRank?.priority ?? 0) < 80) return;
+
+    try {
+      await remove(ref(rtdb, `users/__system_news__/posts/${postId}/comments/${commentId}`));
+    } catch (err) {
+      console.warn('Error deleting news comment:', err);
     }
   };
 
@@ -2529,12 +2889,73 @@ export default function App() {
     };
 
     const isCurrentUserStaff = isStaffRank(currentUserRank);
+    const isDevOrAbove = (currentUserRank?.priority ?? 0) >= 80;
+    const isOwnerOrAbove = (currentUserRank?.priority ?? 0) >= 90;
     const hasUnreadNotifications = notifications.some((n) => !n.read);
 
     return (
       <div className="h-[100dvh] w-screen bg-[#111114] text-white flex flex-col font-sans overflow-hidden select-none relative">
         {/* TOP NAVBAR */}
-        <header className="h-14 bg-[#141418] border-b border-[#202026] flex items-center justify-end gap-3 px-4 z-50 relative shrink-0">
+        <header className="h-14 bg-[#141418] border-b border-[#202026] flex items-center justify-between px-4 z-50 relative shrink-0">
+          {/* Top-Left Hamburger Icon (no "Menu" text) */}
+          <div className="relative" ref={hamburgerMenuRef}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowProfileMenu(false);
+                setShowNotificationsMenu(false);
+                setShowHamburgerMenu((prev) => !prev);
+              }}
+              aria-label="Open menu"
+              className="text-white hover:text-zinc-300 p-2 rounded-xl hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-center"
+            >
+              <Menu className="w-6 h-6 text-white" />
+            </button>
+
+            {showHamburgerMenu && (
+              <div className="absolute left-0 top-full mt-2 w-48 bg-[#15151b] border border-[#262630] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100 py-1.5 px-1.5 space-y-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowHamburgerMenu(false);
+                    setNewsDrawerOpen(true);
+                  }}
+                  className="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm font-extrabold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                >
+                  <Newspaper className="w-4 h-4 text-[#00b4d8]" />
+                  <span>News</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowHamburgerMenu(false);
+                    setStaffModalOpen(true);
+                  }}
+                  className="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm font-extrabold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                >
+                  <Shield className="w-4 h-4 text-[#00b4d8]" />
+                  <span>Staff</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowHamburgerMenu(false);
+                    setRulesModalOpen(true);
+                  }}
+                  className="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm font-extrabold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                >
+                  <Scale className="w-4 h-4 text-[#00b4d8]" />
+                  <span>Rules</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Top-Right Controls */}
+          <div className="flex items-center gap-3">
           {/* Flag icon: only visible if current user is Staff */}
           {isCurrentUserStaff && (
             <button
@@ -2782,10 +3203,407 @@ export default function App() {
               </div>
             )}
           </div>
+          </div>
         </header>
 
-        {/* MAIN BODY: Chat Area + Right Sidebar */}
+        {/* MAIN BODY: Left-Pinned News Drawer + Chat Area + Right Sidebar */}
         <div className="flex-1 flex overflow-hidden relative">
+          {/* LEFT-PINNED COMMUNITY NEWS DRAWER */}
+          {newsDrawerOpen && (
+            <aside className="w-full sm:w-[360px] md:w-[390px] bg-[#141418] border-r border-[#22222a] flex flex-col h-full shrink-0 z-30 animate-in slide-in-from-left duration-150">
+              {/* News Drawer Header */}
+              <div className="px-4 py-3.5 border-b border-[#22222c] flex items-center justify-between shrink-0 bg-[#16161c]">
+                <div className="flex items-center gap-2.5">
+                  <Newspaper className="w-5 h-5 text-white" />
+                  <h2 className="text-base font-black text-white tracking-wide">
+                    Community News
+                  </h2>
+                </div>
+                <div className="flex items-center gap-2">
+                  {isDevOrAbove && (
+                    <button
+                      type="button"
+                      onClick={() => setNewsComposerOpen((prev) => !prev)}
+                      className="bg-[#00add8] hover:bg-[#0099bf] text-white font-extrabold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors cursor-pointer shadow-sm"
+                    >
+                      <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                      <span>New</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setNewsDrawerOpen(false)}
+                    aria-label="Close news"
+                    className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Hidden file input for News Media (image, video, GIF) */}
+              <input
+                type="file"
+                ref={newsMediaInputRef}
+                accept="image/*,video/*,.gif"
+                className="hidden"
+                onChange={handleNewsMediaUpload}
+              />
+
+              {/* Developer & Above New Post Composer Underneath Header */}
+              {isDevOrAbove && newsComposerOpen && (
+                <form
+                  onSubmit={handleCreateNewsPost}
+                  className="p-3.5 border-b border-[#252530] bg-[#181820] space-y-2.5 shrink-0 animate-in fade-in duration-150"
+                >
+                  <input
+                    type="text"
+                    value={newsTitle}
+                    onChange={(e) => setNewsTitle(e.target.value)}
+                    placeholder="Title"
+                    className="w-full bg-[#121216] border border-[#2a2a35] rounded-xl px-3.5 py-2 text-sm font-bold text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+                  />
+                  <textarea
+                    rows={3}
+                    value={newsDescription}
+                    onChange={(e) => setNewsDescription(e.target.value)}
+                    placeholder="Description"
+                    className="w-full bg-[#121216] border border-[#2a2a35] rounded-xl px-3.5 py-2 text-xs sm:text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500 resize-none"
+                  />
+
+                  {newsMediaUrl && (
+                    <div className="relative rounded-xl overflow-hidden border border-[#2a2a35] bg-black/40 max-h-44 flex items-center justify-center">
+                      {newsMediaType === 'video' ? (
+                        <video src={newsMediaUrl} controls className="max-h-44 w-full object-contain" />
+                      ) : (
+                        <img src={newsMediaUrl} alt="Upload preview" className="max-h-44 w-full object-contain" />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewsMediaUrl(null);
+                          setNewsMediaType(null);
+                        }}
+                        className="absolute top-2 right-2 bg-black/75 hover:bg-rose-600 text-white p-1 rounded-full transition-colors cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={isUploadingNewsMedia}
+                      onClick={() => newsMediaInputRef.current?.click()}
+                      className="bg-[#23232e] hover:bg-[#2c2c3a] text-zinc-200 font-bold text-xs px-3 py-2 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {isUploadingNewsMedia ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                          <span>Uploading...</span>
+                        </>
+                      ) : (
+                        <>
+                          <ImageIcon className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Upload Image / Video / GIF</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="submit"
+                      disabled={isSendingNews || isUploadingNewsMedia}
+                      className="bg-[#00add8] hover:bg-[#0099bf] disabled:opacity-50 text-white font-extrabold text-xs px-4 py-2 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-md"
+                    >
+                      {isSendingNews ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <SendHorizontal className="w-3.5 h-3.5" />
+                      )}
+                      <span>Send</span>
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* News Feed List */}
+              <div className="flex-1 overflow-y-auto p-3.5 space-y-4 divide-y divide-[#22222c]">
+                {newsPosts.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-zinc-500 font-medium">
+                    No community news posted yet.
+                  </div>
+                ) : (
+                  newsPosts.map((post) => {
+                    const authorUser = allUsersList.find(
+                      (u) => u.username.toLowerCase() === post.author.toLowerCase()
+                    );
+                    const authorAvatar = authorUser?.avatarUrl ?? post.authorAvatar ?? null;
+                    const authorOnline = authorUser?.isOnline ?? false;
+                    const authorBorderId = authorUser?.pfpBorderId ?? post.authorPfpBorderId ?? 'pfp-default';
+                    const authorBorderThickness = authorUser?.pfpBorderThickness ?? post.authorPfpBorderThickness ?? 2;
+                    const authorRankObj = getUserRank(
+                      post.author,
+                      authorUser?.email,
+                      authorUser?.rank ?? post.authorRank
+                    );
+
+                    const myKey = sanitizeDbKey(currentUser.username);
+                    const likeCount = Object.keys(post.likes || {}).length;
+                    const dislikeCount = Object.keys(post.dislikes || {}).length;
+                    const loveCount = Object.keys(post.loves || {}).length;
+                    const laughCount = Object.keys(post.laughs || {}).length;
+
+                    const hasLiked = Boolean(post.likes?.[myKey]);
+                    const hasDisliked = Boolean(post.dislikes?.[myKey]);
+                    const hasLoved = Boolean(post.loves?.[myKey]);
+                    const hasLaughed = Boolean(post.laughs?.[myKey]);
+                    const isCommentsOpen = Boolean(expandedNewsComments[post.id]);
+
+                    return (
+                      <div key={post.id} className="pt-3.5 first:pt-0 space-y-2.5">
+                        {/* Post Author Row */}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <UserAvatar
+                              avatarUrl={authorAvatar}
+                              className="w-10 h-10"
+                              showOnline={true}
+                              isOnline={authorOnline}
+                              pfpBorderClass={getPfpBorder(authorBorderId).pfpBorderClass}
+                              pfpBorderThickness={authorBorderThickness}
+                            />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-black text-white text-sm truncate">
+                                  {authorUser?.username || post.author}
+                                </span>
+                                {authorRankObj && (
+                                  <img
+                                    src={authorRankObj.icon}
+                                    alt={authorRankObj.name}
+                                    className="w-4 h-4 object-contain shrink-0"
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-[11px] text-zinc-400">
+                              {formatNotificationDate(post.createdAt)}
+                            </span>
+                            {isDevOrAbove && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteNewsPost(post.id)}
+                                title="Delete news post"
+                                className="text-zinc-500 hover:text-rose-400 p-1 rounded-lg hover:bg-rose-500/10 transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Title & Description */}
+                        {post.title && (
+                          <h3 className="text-sm sm:text-base font-black text-white leading-snug break-words">
+                            {post.title}
+                          </h3>
+                        )}
+                        {post.description && (
+                          <p className="text-xs sm:text-sm text-zinc-200 whitespace-pre-line leading-relaxed break-words select-text">
+                            {post.description}
+                          </p>
+                        )}
+
+                        {/* Uploaded Media (Image, GIF, or Video) */}
+                        {post.mediaUrl && (
+                          <div className="rounded-xl overflow-hidden border border-[#262632] bg-black/30">
+                            {post.mediaType === 'video' ? (
+                              <video
+                                src={post.mediaUrl}
+                                controls
+                                className="w-full max-h-72 object-contain"
+                              />
+                            ) : (
+                              <img
+                                src={post.mediaUrl}
+                                alt={post.title || 'News attachment'}
+                                className="w-full max-h-80 object-cover"
+                              />
+                            )}
+                          </div>
+                        )}
+
+                        {/* Reactions & Comments Toggle Bar (Matching Screenshot 2) */}
+                        <div className="pt-1 flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleNewsReaction(post.id, 'likes')}
+                              className={`flex items-center gap-1 text-xs font-bold transition-transform active:scale-95 cursor-pointer ${
+                                hasLiked ? 'text-amber-300' : 'text-zinc-300 hover:text-white'
+                              }`}
+                            >
+                              <span className="text-base leading-none">👍</span>
+                              <span>{likeCount}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleToggleNewsReaction(post.id, 'dislikes')}
+                              className={`flex items-center gap-1 text-xs font-bold transition-transform active:scale-95 cursor-pointer ${
+                                hasDisliked ? 'text-amber-300' : 'text-zinc-300 hover:text-white'
+                              }`}
+                            >
+                              <span className="text-base leading-none">👎</span>
+                              <span>{dislikeCount}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleToggleNewsReaction(post.id, 'loves')}
+                              className={`flex items-center gap-1 text-xs font-bold transition-transform active:scale-95 cursor-pointer ${
+                                hasLoved ? 'text-rose-400' : 'text-zinc-300 hover:text-white'
+                              }`}
+                            >
+                              <span className="text-base leading-none">❤️</span>
+                              <span>{loveCount}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleToggleNewsReaction(post.id, 'laughs')}
+                              className={`flex items-center gap-1 text-xs font-bold transition-transform active:scale-95 cursor-pointer ${
+                                hasLaughed ? 'text-amber-300' : 'text-zinc-300 hover:text-white'
+                              }`}
+                            >
+                              <span className="text-base leading-none">😂</span>
+                              <span>{laughCount}</span>
+                            </button>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedNewsComments((prev) => ({
+                                ...prev,
+                                [post.id]: !prev[post.id]
+                              }))
+                            }
+                            className="flex items-center gap-1.5 text-xs font-extrabold text-zinc-200 hover:text-white transition-colors cursor-pointer"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5 fill-current" />
+                            <span>Comments ({post.comments.length})</span>
+                          </button>
+                        </div>
+
+                        {/* Comments Section */}
+                        {isCommentsOpen && (
+                          <div className="mt-2 pt-2.5 border-t border-[#23232e] space-y-2.5 animate-in fade-in duration-100">
+                            {post.comments.length === 0 ? (
+                              <p className="text-[11px] text-zinc-500 text-center py-1">
+                                No comments yet. Be the first to comment!
+                              </p>
+                            ) : (
+                              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                                {post.comments.map((c) => {
+                                  const cUser = allUsersList.find(
+                                    (u) => u.username.toLowerCase() === c.author.toLowerCase()
+                                  );
+                                  const cRank = getUserRank(c.author, cUser?.email, cUser?.rank ?? c.authorRank);
+                                  const canDeleteComment =
+                                    c.author.toLowerCase() === currentUser.username.toLowerCase() ||
+                                    isDevOrAbove;
+                                  return (
+                                    <div
+                                      key={c.id}
+                                      className="bg-[#181820] border border-[#24242f] rounded-xl p-2.5 flex items-start gap-2"
+                                    >
+                                      <UserAvatar
+                                        avatarUrl={cUser?.avatarUrl ?? c.authorAvatar}
+                                        className="w-7 h-7 mt-0.5"
+                                      />
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center justify-between gap-1">
+                                          <div className="flex items-center gap-1 min-w-0">
+                                            {cRank && (
+                                              <img
+                                                src={cRank.icon}
+                                                alt={cRank.name}
+                                                className="w-3.5 h-3.5 object-contain shrink-0"
+                                              />
+                                            )}
+                                            <span className="text-xs font-extrabold text-white truncate">
+                                              {cUser?.username || c.author}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-1 shrink-0">
+                                            <span className="text-[10px] text-zinc-500">
+                                              {formatNotificationDate(c.createdAt)}
+                                            </span>
+                                            {canDeleteComment && (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleDeleteNewsComment(post.id, c.id, c.author)}
+                                                className="text-zinc-500 hover:text-rose-400 p-0.5 cursor-pointer"
+                                                title="Delete comment"
+                                              >
+                                                <Trash2 className="w-3 h-3" />
+                                              </button>
+                                            )}
+                                          </div>
+                                        </div>
+                                        <p className="text-xs text-zinc-200 mt-0.5 break-words">
+                                          {c.text}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {/* Add Comment Input */}
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                value={newsCommentInputs[post.id] || ''}
+                                onChange={(e) =>
+                                  setNewsCommentInputs((prev) => ({
+                                    ...prev,
+                                    [post.id]: e.target.value
+                                  }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleAddNewsComment(post.id);
+                                  }
+                                }}
+                                placeholder="Write a comment..."
+                                className="flex-1 bg-[#111116] border border-[#282834] rounded-xl px-3 py-1.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-cyan-500"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleAddNewsComment(post.id)}
+                                className="bg-[#00add8] hover:bg-[#0099bf] text-white p-1.5 rounded-xl transition-colors cursor-pointer shrink-0"
+                              >
+                                <SendHorizontal className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </aside>
+          )}
+
           {/* CHAT AREA */}
           <section className="flex-1 flex flex-col bg-[#111114] overflow-hidden relative">
             {/* MESSAGES LIST */}
@@ -2937,7 +3755,7 @@ export default function App() {
                                     </div>
                                   </button>
 
-                                  {isSenderMe && (
+                                  {(isSenderMe || isOwnerOrAbove) && (
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -3728,6 +4546,35 @@ export default function App() {
                       <Loader2 className="w-6 h-6 text-cyan-400 animate-spin" />
                     </div>
                   )}
+
+                  {/* TOP-LEFT LIKE BUTTON WITH COUNTER (Screenshot 1) */}
+                  {(() => {
+                    const targetLikesMap =
+                      usernameToShow.toLowerCase() === 'system'
+                        ? systemBotLikes
+                        : isViewingSelf
+                        ? (userProfile.likes || activeModalUser.likes || {})
+                        : (activeModalUser.likes || {});
+                    const totalLikesCount = Object.keys(targetLikesMap).length;
+                    const myLikeKey = currentUser ? sanitizeDbKey(currentUser.username) : '';
+                    const isLikedByMe = Boolean(myLikeKey && targetLikesMap[myLikeKey]);
+
+                    return (
+                      <div className="absolute top-3 left-3 z-20">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleProfileLike(usernameToShow)}
+                          title={isLikedByMe ? 'Unlike profile' : 'Like profile'}
+                          className="bg-[#ff1744] hover:bg-[#f0133d] active:scale-95 text-white font-black text-xs sm:text-sm px-3.5 py-1.5 rounded-full flex items-center gap-1.5 shadow-lg transition-all cursor-pointer"
+                        >
+                          <ThumbsUp
+                            className={`w-4 h-4 ${isLikedByMe ? 'fill-white text-white' : 'text-white'}`}
+                          />
+                          <span>{totalLikesCount}</span>
+                        </button>
+                      </div>
+                    );
+                  })()}
 
                   {/* BANNER CONTROLS (Top Right) */}
                   <div className="absolute top-3 right-3 flex items-center gap-2 z-20">
@@ -4964,6 +5811,274 @@ export default function App() {
                 >
                   Cancel
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ==================================================== */}
+        {/* STAFF CATEGORIES MODAL (Centered)                    */}
+        {/* ==================================================== */}
+        {staffModalOpen && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-[2px] flex items-center justify-center p-4 animate-in fade-in duration-150"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setStaffModalOpen(false);
+              }
+            }}
+          >
+            <div className="w-full max-w-[440px] max-h-[85vh] bg-[#141418] border border-[#262630] rounded-3xl shadow-2xl overflow-hidden flex flex-col text-white animate-in zoom-in-95 duration-150">
+              <div className="px-5 py-4 border-b border-[#23232d] flex items-center justify-between bg-[#17171d]">
+                <div className="flex items-center gap-2.5">
+                  <Shield className="w-5 h-5 text-[#00add8]" />
+                  <h2 className="text-base sm:text-lg font-black text-white tracking-wide">
+                    Staff Team
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setStaffModalOpen(false)}
+                  aria-label="Close staff modal"
+                  className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-4 overflow-y-auto space-y-2.5 flex-1">
+                {(['main_developer', 'owner', 'developer', 'admin', 'moderator', 'helper'] as const).map(
+                  (rankKey) => {
+                    const rankDef = RANKS[rankKey];
+                    if (!rankDef) return null;
+                    const staffMembers = allUsersList.filter((u) => {
+                      const isMe =
+                        currentUser && u.username.toLowerCase() === currentUser.username.toLowerCase();
+                      const r = getUserRank(
+                        u.username,
+                        isMe ? currentUser?.email : u.email,
+                        isMe ? userProfile.rank : u.rank
+                      );
+                      return r?.id === rankKey;
+                    });
+                    const isExpanded = expandedStaffCategory === rankKey;
+
+                    return (
+                      <div
+                        key={rankKey}
+                        className="bg-[#191920] border border-[#262632] rounded-2xl overflow-hidden transition-all"
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedStaffCategory((prev) => (prev === rankKey ? null : rankKey))
+                          }
+                          className="w-full px-4 py-3.5 flex items-center justify-between hover:bg-white/[0.03] transition-colors cursor-pointer text-left"
+                        >
+                          <div className="flex items-center gap-3">
+                            <img
+                              src={rankDef.icon}
+                              alt={rankDef.name}
+                              className="w-5 h-5 object-contain shrink-0"
+                            />
+                            <span className="font-extrabold text-sm sm:text-base text-white">
+                              {rankDef.name}
+                            </span>
+                            <span className="text-xs font-bold bg-[#252530] text-zinc-300 px-2 py-0.5 rounded-full">
+                              {staffMembers.length}
+                            </span>
+                          </div>
+                          <ChevronDown
+                            className={`w-4 h-4 text-zinc-400 transition-transform duration-150 ${
+                              isExpanded ? 'rotate-180 text-white' : ''
+                            }`}
+                          />
+                        </button>
+
+                        {isExpanded && (
+                          <div className="border-t border-[#252532] bg-[#131318] divide-y divide-[#1f1f29]">
+                            {staffMembers.length === 0 ? (
+                              <div className="px-4 py-4 text-center text-xs text-zinc-500 font-medium">
+                                No users currently hold the {rankDef.name} rank.
+                              </div>
+                            ) : (
+                              staffMembers.map((member) => (
+                                <div
+                                  key={member.username}
+                                  onClick={() => {
+                                    setStaffModalOpen(false);
+                                    setSelectedUser(member);
+                                    if (
+                                      member.username.toLowerCase() !==
+                                      currentUser.username.toLowerCase()
+                                    ) {
+                                      recordProfileVisitNotification(member.username);
+                                    }
+                                    setPublicProfileTab('info');
+                                    setProfileViewMode('view');
+                                    setProfileModalOpen(true);
+                                  }}
+                                  className="px-4 py-2.5 flex items-center justify-between hover:bg-white/[0.04] transition-colors cursor-pointer"
+                                >
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <UserAvatar
+                                      avatarUrl={member.avatarUrl}
+                                      className="w-9 h-9"
+                                      showOnline={true}
+                                      isOnline={member.isOnline === true}
+                                      pfpBorderClass={getPfpBorder(member.pfpBorderId).pfpBorderClass}
+                                      pfpBorderThickness={member.pfpBorderThickness}
+                                    />
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-black text-white truncate">
+                                        {member.username}
+                                      </p>
+                                      {member.mood && (
+                                        <p className="text-xs text-zinc-400 truncate">{member.mood}</p>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <img
+                                    src={rankDef.icon}
+                                    alt={rankDef.name}
+                                    className="w-4 h-4 object-contain shrink-0"
+                                  />
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ==================================================== */}
+        {/* RULES MODAL (User Rules & Staff Rules in the middle) */}
+        {/* ==================================================== */}
+        {rulesModalOpen && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-[2px] flex items-center justify-center p-4 animate-in fade-in duration-150"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setRulesModalOpen(false);
+              }
+            }}
+          >
+            <div className="w-full max-w-[460px] max-h-[85vh] bg-[#141418] border border-[#262630] rounded-3xl shadow-2xl overflow-hidden flex flex-col text-white animate-in zoom-in-95 duration-150">
+              <div className="px-5 py-4 border-b border-[#23232d] flex items-center justify-between bg-[#17171d]">
+                <div className="flex items-center gap-2.5">
+                  <Scale className="w-5 h-5 text-[#00add8]" />
+                  <h2 className="text-base sm:text-lg font-black text-white tracking-wide">
+                    Community Rules
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRulesModalOpen(false)}
+                  aria-label="Close rules modal"
+                  className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Tabs: User Rules & Staff Rules */}
+              <div className="px-5 pt-3.5 flex items-center gap-2 border-b border-[#23232d] pb-3 bg-[#15151a]">
+                <button
+                  type="button"
+                  onClick={() => setActiveRulesTab('user')}
+                  className={`flex-1 py-2 rounded-xl font-extrabold text-xs sm:text-sm transition-colors cursor-pointer ${
+                    activeRulesTab === 'user'
+                      ? 'bg-[#00add8] text-white shadow-md'
+                      : 'bg-[#1e1e26] text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  User Rules
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveRulesTab('staff')}
+                  className={`flex-1 py-2 rounded-xl font-extrabold text-xs sm:text-sm transition-colors cursor-pointer ${
+                    activeRulesTab === 'staff'
+                      ? 'bg-[#00add8] text-white shadow-md'
+                      : 'bg-[#1e1e26] text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  Staff Rules
+                </button>
+              </div>
+
+              <div className="p-5 overflow-y-auto space-y-3 text-xs sm:text-sm text-zinc-200 flex-1">
+                {activeRulesTab === 'user' ? (
+                  <div className="space-y-2.5">
+                    <div className="bg-[#191921] border border-[#262632] rounded-2xl p-3.5">
+                      <p className="font-black text-white mb-1">1. Respect All Members</p>
+                      <p className="text-zinc-400 text-xs leading-relaxed">
+                        Treat everyone with respect. Harassment, bullying, hate speech, or discrimination will result in an immediate mute or ban.
+                      </p>
+                    </div>
+                    <div className="bg-[#191921] border border-[#262632] rounded-2xl p-3.5">
+                      <p className="font-black text-white mb-1">2. No Spamming or Flooding</p>
+                      <p className="text-zinc-400 text-xs leading-relaxed">
+                        Avoid sending repeated messages, excessive caps, or flooding the chat room.
+                      </p>
+                    </div>
+                    <div className="bg-[#191921] border border-[#262632] rounded-2xl p-3.5">
+                      <p className="font-black text-white mb-1">3. Keep Content Appropriate</p>
+                      <p className="text-zinc-400 text-xs leading-relaxed">
+                        Do not share NSFW, explicit, or illegal content in profiles, banners, avatars, or chat messages.
+                      </p>
+                    </div>
+                    <div className="bg-[#191921] border border-[#262632] rounded-2xl p-3.5">
+                      <p className="font-black text-white mb-1">4. Privacy & Safety</p>
+                      <p className="text-zinc-400 text-xs leading-relaxed">
+                        Never share private personal information (doxxing, passwords, addresses, or phone numbers) of yourself or others.
+                      </p>
+                    </div>
+                    <div className="bg-[#191921] border border-[#262632] rounded-2xl p-3.5">
+                      <p className="font-black text-white mb-1">5. No Advertising</p>
+                      <p className="text-zinc-400 text-xs leading-relaxed">
+                        External advertising, self-promotion links, or scam links are not permitted in the chat.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    <div className="bg-[#191921] border border-[#262632] rounded-2xl p-3.5">
+                      <p className="font-black text-white mb-1">1. Fair & Unbiased Moderation</p>
+                      <p className="text-zinc-400 text-xs leading-relaxed">
+                        Staff must enforce rules fairly and objectively for all users regardless of personal friendships.
+                      </p>
+                    </div>
+                    <div className="bg-[#191921] border border-[#262632] rounded-2xl p-3.5">
+                      <p className="font-black text-white mb-1">2. No Abuse of Staff Powers</p>
+                      <p className="text-zinc-400 text-xs leading-relaxed">
+                        Muting, deleting messages, clearing chat, or managing ranks without a valid moderation reason will result in demotion.
+                      </p>
+                    </div>
+                    <div className="bg-[#191921] border border-[#262632] rounded-2xl p-3.5">
+                      <p className="font-black text-white mb-1">3. Lead by Example</p>
+                      <p className="text-zinc-400 text-xs leading-relaxed">
+                        Staff members represent the community and must follow all User Rules while remaining helpful and professional.
+                      </p>
+                    </div>
+                    <div className="bg-[#191921] border border-[#262632] rounded-2xl p-3.5">
+                      <p className="font-black text-white mb-1">4. Confidentiality</p>
+                      <p className="text-zinc-400 text-xs leading-relaxed">
+                        Keep internal staff discussions, reports, and moderation logs strictly confidential.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
