@@ -6648,10 +6648,10 @@ export default function App() {
               </div>
 
               <div className="p-4 overflow-y-auto space-y-2.5 flex-1">
-                {(['main_developer', 'owner', 'developer', 'admin', 'moderator', 'helper'] as const).map(
-                  (rankKey) => {
-                    const rankDef = RANKS[rankKey];
-                    if (!rankDef) return null;
+                {Object.values(RANKS)
+                  .sort((a, b) => b.priority - a.priority)
+                  .map((rankDef) => {
+                    const rankKey = rankDef.id;
                     const staffMembers = allUsersList.filter((u) => {
                       const isMe =
                         currentUser && u.username.toLowerCase() === currentUser.username.toLowerCase();
