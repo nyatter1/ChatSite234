@@ -1914,23 +1914,13 @@ export default function App() {
             });
             setPlayerPopoverOpen(true);
           }}
-          style={
-            userItem.glowColor
-              ? {
-                  borderColor: userItem.glowColor,
-                  boxShadow: `0 0 ${userItem.glowThickness || 18}px ${userItem.glowColor}99, inset 0 0 ${Math.max(3, Math.round((userItem.glowThickness || 18) / 3))}px ${userItem.glowColor}33`
-                }
-              : undefined
-          }
-          className={`bg-[#18181f] border ${
-            userItem.glowColor ? '' : 'border-[#2b2b38] hover:border-cyan-500/40'
-          } rounded-xl p-2.5 flex items-center gap-3 transition-all cursor-pointer group ${
-            isOfflineCard ? 'opacity-65 hover:opacity-100' : ''
+          className={`px-3.5 py-2 flex items-center gap-3 hover:bg-black/35 transition-colors cursor-pointer group ${
+            isOfflineCard ? 'opacity-75 hover:opacity-100' : ''
           }`}
         >
           <UserAvatar
             avatarUrl={isMe ? userProfile.avatarUrl : userItem.avatarUrl}
-            className="w-10 h-10"
+            className="w-9 h-9"
             showOnline={true}
             isOnline={isOnline}
             pfpBorderClass={getPfpBorder(isMe ? userProfile.pfpBorderId : userItem.pfpBorderId).pfpBorderClass}
@@ -1938,7 +1928,7 @@ export default function App() {
           />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5">
-              <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors">
+              <span className="font-bold text-white text-sm truncate">
                 {userItem.username}
               </span>
             </div>
@@ -2503,23 +2493,29 @@ export default function App() {
               </div>
 
               {/* USER LIST: Online & Offline sections */}
-              <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
-                <div className="px-1 pb-1 flex items-center gap-2">
-                  <span className="font-extrabold text-white text-sm">Online</span>
-                  <span className="bg-[#00a8e8] text-white text-xs font-extrabold px-2 py-0.5 rounded-full leading-none">
-                    {onlineUsersList.length}
-                  </span>
+              <div className="flex-1 overflow-y-auto">
+                <div className="py-2">
+                  <div className="px-3.5 py-2 flex items-center gap-2">
+                    <span className="font-extrabold text-white text-sm">Online</span>
+                    <span className="bg-[#00a8e8] text-white text-xs font-extrabold px-2 py-0.5 rounded-full leading-none">
+                      {onlineUsersList.length}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col">
+                    {onlineUsersList.map((userItem) => renderSidebarUserCard(userItem, false))}
+                  </div>
                 </div>
 
-                {onlineUsersList.map((userItem) => renderSidebarUserCard(userItem, false))}
-
                 {offlineUsersList.length > 0 && (
-                  <>
-                    <div className="px-1 pt-3 pb-1 flex items-center gap-2">
+                  <div className="bg-black/25 py-2 border-t border-[#1c1c22]">
+                    <div className="px-3.5 py-2 flex items-center gap-2">
                       <span className="font-extrabold text-white text-sm">Offline</span>
                     </div>
-                    {offlineUsersList.map((userItem) => renderSidebarUserCard(userItem, true))}
-                  </>
+                    <div className="flex flex-col">
+                      {offlineUsersList.map((userItem) => renderSidebarUserCard(userItem, true))}
+                    </div>
+                  </div>
                 )}
               </div>
             </aside>
