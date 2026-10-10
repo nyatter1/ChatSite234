@@ -379,10 +379,10 @@ export const PFP_BORDERS: BorderItem[] = [
   // 1-40 Normal PFP Borders
   {
     id: 'pfp-default',
-    name: '1. Classic White Ring',
+    name: '1. No Border',
     isAnimated: false,
     category: 'normal',
-    pfpBorderClass: 'border-2 border-white/90'
+    pfpBorderClass: ''
   },
   {
     id: 'pfp-cyber-cyan',

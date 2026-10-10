@@ -128,11 +128,11 @@ export default function BorderModal({
               <div
                 className={`w-14 h-14 rounded-xl overflow-hidden bg-[#22222b] shrink-0 shadow-md transition-all ${
                   !isProfileBorder
-                    ? (currentBorder.pfpBorderClass || 'border-2 border-white')
-                    : 'border border-white/20'
+                    ? (currentBorder.pfpBorderClass || '')
+                    : ''
                 }`}
                 style={
-                  !isProfileBorder
+                  !isProfileBorder && currentBorder.pfpBorderClass
                     ? { borderWidth: `${thickness}px` }
                     : undefined
                 }

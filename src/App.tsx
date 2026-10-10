@@ -43,7 +43,13 @@ import {
   getProfileBorder,
   getPfpBorder
 } from './borders';
-import { getUserRank } from './ranks';
+import {
+  getUserRank,
+  isStaffRank,
+  ASSIGNABLE_RANKS,
+  SYSTEM_BOT_USERNAME,
+  SYSTEM_BOT_AVATAR
+} from './ranks';
 import GlowModal from './components/GlowModal';
 import BorderModal from './components/BorderModal';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
@@ -91,6 +97,27 @@ interface ChatMessage {
   replyTo?: MessageReply | null;
 }
 
+interface AppNotification {
+  id: string;
+  type: 'profile_visit' | 'rank_change';
+  fromUsername: string;
+  fromAvatarUrl?: string | null;
+  fromPfpBorderId?: string | null;
+  fromPfpBorderThickness?: number;
+  text: string;
+  createdAt: number;
+  read?: boolean;
+}
+
+function formatNotificationDate(ts?: number): string {
+  const d = ts ? new Date(ts) : new Date();
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const mins = String(d.getMinutes()).padStart(2, '0');
+  return `${day}/${month} ${hours}:${mins}`;
+}
+
 // Convert File/Blob to Data URL as fallback if cloud storage is unreachable
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -128,9 +155,9 @@ function UserAvatar({
     <div className={`relative shrink-0 ${className}`}>
       <div
         className={`w-full h-full rounded-full overflow-hidden bg-[#24252e] flex items-center justify-center transition-all ${
-          pfpBorderClass || 'border border-white/10'
+          pfpBorderClass || ''
         }`}
-        style={pfpBorderThickness !== undefined ? { borderWidth: `${pfpBorderThickness}px` } : undefined}
+        style={pfpBorderClass && pfpBorderThickness !== undefined ? { borderWidth: `${pfpBorderThickness}px` } : undefined}
       >
         {avatarUrl ? (
           <img src={avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
@@ -278,6 +305,15 @@ export default function App() {
   const isAccountDeletingRef = useRef(false);
   const isRenamingRef = useRef(false);
   const isSessionVerifiedRef = useRef(false);
+  const initialRankSnapshotRef = useRef<{
+    loaded: boolean;
+    rank: string | null;
+    rankUpdatedAt: number | null;
+  }>({ loaded: false, rank: null, rankUpdatedAt: null });
+
+  // Action & Change Rank Modals (Main Developer moderation tools)
+  const [actionModalOpen, setActionModalOpen] = useState(false);
+  const [changeRankModalOpen, setChangeRankModalOpen] = useState(false);
 
   // Sub-modal state for Edit actions (info, username, bio, mood, glow, profileBorder, pfpBorder, music)
   const [activeEditSubModal, setActiveEditSubModal] = useState<
@@ -375,6 +411,8 @@ export default function App() {
   const [activeMsgMenuId, setActiveMsgMenuId] = useState<string | null>(null);
   const [showTopic, setShowTopic] = useState(true);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showNotificationsMenu, setShowNotificationsMenu] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [playerPopoverOpen, setPlayerPopoverOpen] = useState(false);
   const [popoverPos, setPopoverPos] = useState<{ top: number; right: number }>({ top: 80, right: 330 });
   const [selectedUser, setSelectedUser] = useState<UserProfileData | null>(null);
@@ -565,6 +603,47 @@ export default function App() {
     }
   }, []);
 
+  // Real-time listener for current user's notifications in Firebase Realtime Database
+  useEffect(() => {
+    if (!currentUser?.username) {
+      setNotifications([]);
+      return;
+    }
+    const myKey = sanitizeDbKey(currentUser.username);
+    const notifRef = query(ref(rtdb, `notifications/${myKey}`), limitToLast(50));
+    const unsubscribe = onValue(
+      notifRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const items: AppNotification[] = [];
+          snapshot.forEach((childSnap) => {
+            const val = childSnap.val();
+            if (!val || typeof val !== 'object') return;
+            items.push({
+              id: childSnap.key || String(Date.now()),
+              type: val.type === 'rank_change' ? 'rank_change' : 'profile_visit',
+              fromUsername: val.fromUsername || 'System',
+              fromAvatarUrl: sanitizeMediaUrl(val.fromAvatarUrl),
+              fromPfpBorderId: val.fromPfpBorderId || null,
+              fromPfpBorderThickness: typeof val.fromPfpBorderThickness === 'number' ? val.fromPfpBorderThickness : 2,
+              text: val.text || '',
+              createdAt: typeof val.createdAt === 'number' ? val.createdAt : Date.now(),
+              read: val.read === true
+            });
+          });
+          items.sort((a, b) => b.createdAt - a.createdAt);
+          setNotifications(items);
+        } else {
+          setNotifications([]);
+        }
+      },
+      (err) => {
+        console.warn('Realtime Database notifications listener notice:', err.message);
+      }
+    );
+    return () => unsubscribe();
+  }, [currentUser?.username]);
+
   // Permanently delete user account:
   // - Cancels onDisconnect hooks so no ghost node is recreated
   // - Deletes all chat messages sent by this user from Realtime Database
@@ -725,6 +804,8 @@ export default function App() {
       });
     };
 
+    initialRankSnapshotRef.current = { loaded: false, rank: null, rankUpdatedAt: null };
+
     const unsubscribeUser = onValue(
       userRef,
       (snap) => {
@@ -740,6 +821,38 @@ export default function App() {
         const val = snap.val();
         isSessionVerifiedRef.current = true;
         setupPresence();
+
+        // Detect live rank changes on the currently logged-in user and trigger a full browser reload (like Ctrl + R)
+        const incomingRank = val.rank !== undefined ? (val.rank || null) : null;
+        const incomingRankUpdatedAt = typeof val.rankUpdatedAt === 'number' ? val.rankUpdatedAt : null;
+
+        if (!initialRankSnapshotRef.current.loaded) {
+          initialRankSnapshotRef.current = {
+            loaded: true,
+            rank: incomingRank,
+            rankUpdatedAt: incomingRankUpdatedAt
+          };
+        } else if (
+          incomingRank !== initialRankSnapshotRef.current.rank ||
+          (incomingRankUpdatedAt !== null &&
+            incomingRankUpdatedAt !== initialRankSnapshotRef.current.rankUpdatedAt)
+        ) {
+          initialRankSnapshotRef.current = {
+            loaded: true,
+            rank: incomingRank,
+            rankUpdatedAt: incomingRankUpdatedAt
+          };
+          try {
+            const savedProf = localStorage.getItem('chat_community_profile');
+            const parsedProf = savedProf ? JSON.parse(savedProf) : {};
+            localStorage.setItem(
+              'chat_community_profile',
+              JSON.stringify({ ...parsedProf, rank: incomingRank })
+            );
+          } catch (_) {}
+          window.location.reload();
+          return;
+        }
 
         // Sync remote profile changes into local state only if values actually changed
         setUserProfile((prev) => {
@@ -790,11 +903,11 @@ export default function App() {
     };
   }, [currentUser?.username, handlePermanentAccountDeletion]);
 
-  // Combined full users list (Always keeps current user at top, then online users, then alphabetical)
+  // Combined full users list (Always includes System bot, ordered by online status then Rank hierarchy priority descending)
   const allUsersList = useMemo(() => {
     const map = new Map<string, UserProfileData>();
     registeredUsers.forEach((u) => {
-      if (u.username) {
+      if (u.username && u.username.toLowerCase() !== 'system') {
         map.set(u.username.toLowerCase(), u);
       }
     });
@@ -806,14 +919,48 @@ export default function App() {
         isOnline: true
       });
     }
+    // Always online System bot (below Moderator in hierarchy: priority 35)
+    map.set('system', {
+      username: SYSTEM_BOT_USERNAME,
+      rank: 'bot',
+      avatarUrl: SYSTEM_BOT_AVATAR,
+      age: '999',
+      gender: 'Bot',
+      bio: '',
+      mood: '',
+      pfpBorderId: 'pfp-default',
+      pfpBorderThickness: 2,
+      profileBorderId: 'pb-default',
+      profileBorderThickness: 2,
+      isOnline: true
+    });
+
     const list = Array.from(map.values());
     return list.sort((a, b) => {
-      const aIsMe = currentUser && a.username.toLowerCase() === currentUser.username.toLowerCase();
-      const bIsMe = currentUser && b.username.toLowerCase() === currentUser.username.toLowerCase();
-      if (aIsMe) return -1;
-      if (bIsMe) return 1;
       if (a.isOnline && !b.isOnline) return -1;
       if (!a.isOnline && b.isOnline) return 1;
+
+      const aIsMe = currentUser && a.username.toLowerCase() === currentUser.username.toLowerCase();
+      const bIsMe = currentUser && b.username.toLowerCase() === currentUser.username.toLowerCase();
+      const rankA = getUserRank(
+        a.username,
+        aIsMe ? currentUser?.email : a.email,
+        aIsMe ? userProfile.rank : a.rank
+      );
+      const rankB = getUserRank(
+        b.username,
+        bIsMe ? currentUser?.email : b.email,
+        bIsMe ? userProfile.rank : b.rank
+      );
+      const priorityA = rankA?.priority ?? 0;
+      const priorityB = rankB?.priority ?? 0;
+
+      if (priorityA !== priorityB) {
+        return priorityB - priorityA;
+      }
+
+      if (aIsMe) return -1;
+      if (bIsMe) return 1;
       return a.username.localeCompare(b.username);
     });
   }, [registeredUsers, currentUser, userProfile]);
@@ -842,6 +989,7 @@ export default function App() {
   const monthRef = useRef<HTMLDivElement>(null);
   const yearRef = useRef<HTMLDivElement>(null);
   const profileMenuRef = useRef<HTMLDivElement>(null);
+  const notificationsMenuRef = useRef<HTMLDivElement>(null);
   const playerCardRef = useRef<HTMLDivElement>(null);
   const playerPopoverRef = useRef<HTMLDivElement>(null);
 
@@ -862,6 +1010,9 @@ export default function App() {
       }
       if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
         setShowProfileMenu(false);
+      }
+      if (notificationsMenuRef.current && !notificationsMenuRef.current.contains(e.target as Node)) {
+        setShowNotificationsMenu(false);
       }
       if (
         playerPopoverRef.current &&
@@ -929,9 +1080,13 @@ export default function App() {
       return;
     }
 
-    // Reserve username "Null" strictly for null@gmail.com
+    // Reserve username "Null" strictly for null@gmail.com and "System" for the system bot
     if (trimmedUser.toLowerCase() === 'null' && trimmedEmail.toLowerCase() !== 'null@gmail.com') {
       setRegError('The username Null is reserved.');
+      return;
+    }
+    if (trimmedUser.toLowerCase() === 'system') {
+      setRegError('The username System is reserved.');
       return;
     }
 
@@ -1340,6 +1495,115 @@ export default function App() {
     }
   };
 
+  // Record a "Is stalking you!" notification when viewing another user's profile
+  const recordProfileVisitNotification = useCallback(
+    async (targetUsername?: string | null) => {
+      if (!currentUser?.username || !targetUsername) return;
+      const cleanTarget = targetUsername.trim();
+      if (
+        !cleanTarget ||
+        cleanTarget.toLowerCase() === currentUser.username.toLowerCase() ||
+        cleanTarget.toLowerCase() === 'system' ||
+        cleanTarget.toLowerCase() === 'guest'
+      ) {
+        return;
+      }
+
+      const targetKey = sanitizeDbKey(cleanTarget);
+      try {
+        await push(ref(rtdb, `notifications/${targetKey}`), {
+          type: 'profile_visit',
+          fromUsername: currentUser.username,
+          fromAvatarUrl: sanitizeMediaUrl(userProfile.avatarUrl) || null,
+          fromPfpBorderId: userProfile.pfpBorderId || 'pfp-default',
+          fromPfpBorderThickness: userProfile.pfpBorderThickness || 2,
+          text: 'Is stalking you!',
+          createdAt: Date.now(),
+          read: false
+        });
+      } catch (err) {
+        console.warn('Error pushing profile visit notification:', err);
+      }
+    },
+    [currentUser?.username, userProfile.avatarUrl, userProfile.pfpBorderId, userProfile.pfpBorderThickness]
+  );
+
+  // Mark all unread notifications for the current user as read in RTDB
+  const markAllNotificationsAsRead = useCallback(async () => {
+    if (!currentUser?.username) return;
+    const unread = notifications.filter((n) => !n.read);
+    if (unread.length === 0) return;
+
+    const myKey = sanitizeDbKey(currentUser.username);
+    const updatesMap: Record<string, boolean> = {};
+    unread.forEach((n) => {
+      updatesMap[`${n.id}/read`] = true;
+    });
+    try {
+      await update(ref(rtdb, `notifications/${myKey}`), updatesMap);
+    } catch (err) {
+      console.warn('Error marking notifications read:', err);
+    }
+  }, [currentUser?.username, notifications]);
+
+  // Change another user's rank in Realtime Database (Main Developer only)
+  const handleChangeTargetUserRank = async (targetUsername: string, newRankId: string) => {
+    if (!currentUser || !targetUsername) return;
+    if (targetUsername.toLowerCase() === 'system') return;
+    const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    if (!myRank || myRank.id !== 'main_developer') return;
+
+    // Close the dropdown menu modal immediately upon selecting a rank
+    setChangeRankModalOpen(false);
+    setActionModalOpen(false);
+
+    const targetKey = sanitizeDbKey(targetUsername);
+    const dbRankVal = !newRankId || newRankId === 'none' ? 'none' : newRankId;
+    const newRankDisplayName =
+      ASSIGNABLE_RANKS.find((r) => r.id === dbRankVal)?.name || 'User';
+
+    try {
+      // 1. Send System rank-change notification first so it's in RTDB when the target's tab reloads
+      await push(ref(rtdb, `notifications/${targetKey}`), {
+        type: 'rank_change',
+        fromUsername: SYSTEM_BOT_USERNAME,
+        fromAvatarUrl: SYSTEM_BOT_AVATAR,
+        text: `Your rank has been changed to ${newRankDisplayName}`,
+        createdAt: Date.now(),
+        read: false
+      });
+
+      // 2. Update user's rank & trigger live reload on their tab
+      await update(ref(rtdb, `users/${targetKey}`), {
+        rank: dbRankVal,
+        rankUpdatedAt: Date.now(),
+        updatedAt: serverTimestamp()
+      });
+
+      // Also update rank on existing messages sent by this user so chat updates immediately for everyone
+      const msgsRef = ref(rtdb, 'messages');
+      const msgsSnap = await get(msgsRef);
+      if (msgsSnap.exists()) {
+        const allMsgs = msgsSnap.val();
+        const msgUpdates: Record<string, any> = {};
+        for (const [mKey, mVal] of Object.entries(allMsgs)) {
+          const m = mVal as any;
+          if (
+            (m?.sender && m.sender.toLowerCase() === targetUsername.toLowerCase()) ||
+            m?.senderKey === targetKey
+          ) {
+            msgUpdates[`${mKey}/rank`] = dbRankVal === 'none' ? null : dbRankVal;
+          }
+        }
+        if (Object.keys(msgUpdates).length > 0) {
+          await update(msgsRef, msgUpdates);
+        }
+      }
+    } catch (err) {
+      console.warn('Error updating user rank in RTDB:', err);
+    }
+  };
+
   // Voice input toggle using Web Speech API
   const handleToggleVoiceInput = () => {
     if (isListeningVoice && recognitionRef.current) {
@@ -1691,10 +1955,130 @@ export default function App() {
       );
     };
 
+    const isCurrentUserStaff = isStaffRank(currentUserRank);
+    const hasUnreadNotifications = notifications.some((n) => !n.read);
+
     return (
       <div className="h-[100dvh] w-screen bg-[#111114] text-white flex flex-col font-sans overflow-hidden select-none relative">
         {/* TOP NAVBAR */}
-        <header className="h-14 bg-[#141418] border-b border-[#202026] flex items-center justify-end px-4 z-50 relative shrink-0">
+        <header className="h-14 bg-[#141418] border-b border-[#202026] flex items-center justify-end gap-3 px-4 z-50 relative shrink-0">
+          {/* Flag icon: only visible if current user is Staff */}
+          {isCurrentUserStaff && (
+            <button
+              type="button"
+              aria-label="Staff Reports"
+              className="bcell_mid text-white hover:text-zinc-300 p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-center"
+            >
+              <i className="fa fa-flag text-white text-lg" aria-hidden="true" />
+            </button>
+          )}
+
+          {/* Notifications Bell Icon (bcell_mid) next to flag (or where flag was for non-staff) */}
+          <div className="relative" ref={notificationsMenuRef}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowProfileMenu(false);
+                const nextOpen = !showNotificationsMenu;
+                setShowNotificationsMenu(nextOpen);
+                if (nextOpen) {
+                  markAllNotificationsAsRead();
+                }
+              }}
+              aria-label="Notifications"
+              className="bcell_mid relative text-white hover:text-zinc-300 p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-center"
+            >
+              <i className="fa fa-bell text-white text-lg" aria-hidden="true" />
+              {hasUnreadNotifications && (
+                <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-[#ff1e1e] rounded-full pointer-events-none" />
+              )}
+            </button>
+
+            {/* Notifications Dropdown Menu right underneath */}
+            {showNotificationsMenu && (
+              <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-[#141418] border border-[#262630] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100">
+                <div className="max-h-[380px] overflow-y-auto divide-y divide-[#22222c]">
+                  {notifications.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-xs text-zinc-500 font-medium">
+                      No notifications yet.
+                    </div>
+                  ) : (
+                    notifications.map((notif) => {
+                      const isSystemNotif =
+                        notif.type === 'rank_change' ||
+                        notif.fromUsername.toLowerCase() === 'system';
+                      const matchedUser = allUsersList.find(
+                        (u) => u.username.toLowerCase() === notif.fromUsername.toLowerCase()
+                      );
+                      const notifAvatar = isSystemNotif
+                        ? SYSTEM_BOT_AVATAR
+                        : (matchedUser?.avatarUrl ?? notif.fromAvatarUrl ?? null);
+                      const notifOnline = isSystemNotif
+                        ? true
+                        : (matchedUser?.isOnline ?? false);
+                      const notifBorderId = isSystemNotif
+                        ? 'pfp-default'
+                        : (matchedUser?.pfpBorderId ?? notif.fromPfpBorderId ?? 'pfp-default');
+                      const notifBorderThickness = isSystemNotif
+                        ? 2
+                        : (matchedUser?.pfpBorderThickness ?? notif.fromPfpBorderThickness ?? 2);
+
+                      return (
+                        <button
+                          key={notif.id}
+                          type="button"
+                          onClick={() => {
+                            setShowNotificationsMenu(false);
+                            if (matchedUser) {
+                              setSelectedUser(matchedUser);
+                              if (!isSystemNotif) {
+                                recordProfileVisitNotification(matchedUser.username);
+                              }
+                            } else {
+                              setSelectedUser({
+                                username: notif.fromUsername,
+                                avatarUrl: notifAvatar,
+                                isOnline: notifOnline
+                              });
+                              if (!isSystemNotif) {
+                                recordProfileVisitNotification(notif.fromUsername);
+                              }
+                            }
+                            setPublicProfileTab('info');
+                            setProfileViewMode('view');
+                            setProfileModalOpen(true);
+                          }}
+                          className="w-full px-4 py-3 flex items-start gap-3 hover:bg-white/[0.04] transition-colors cursor-pointer text-left"
+                        >
+                          <UserAvatar
+                            avatarUrl={notifAvatar}
+                            className="w-11 h-11 mt-0.5"
+                            showOnline={true}
+                            isOnline={notifOnline}
+                            pfpBorderClass={getPfpBorder(notifBorderId).pfpBorderClass}
+                            pfpBorderThickness={notifBorderThickness}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-black text-white truncate leading-tight">
+                              {isSystemNotif ? SYSTEM_BOT_USERNAME : (matchedUser?.username || notif.fromUsername)}
+                            </p>
+                            <p className="text-xs sm:text-sm text-zinc-200 font-medium leading-snug mt-0.5 break-words">
+                              {notif.text}
+                            </p>
+                            <p className="text-[11px] text-zinc-400 mt-1">
+                              {formatNotificationDate(notif.createdAt)}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Right: Default PFP or Uploaded PFP with green online status dot */}
           <div className="relative" ref={profileMenuRef}>
             <button
@@ -1721,7 +2105,7 @@ export default function App() {
                 {/* Header with Avatar, Username, and Green Checkmark */}
                 <div className="p-3.5 flex items-center justify-between">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-11 h-11 rounded-xl overflow-hidden bg-[#24252e] border border-white/10 shrink-0">
+                    <div className="w-11 h-11 rounded-xl overflow-hidden bg-[#24252e] shrink-0">
                       {userProfile.avatarUrl ? (
                         <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
                       ) : (
@@ -1856,6 +2240,7 @@ export default function App() {
                       setSelectedUser(null);
                     } else if (senderFromList) {
                       setSelectedUser(senderFromList);
+                      recordProfileVisitNotification(senderFromList.username);
                     } else {
                       setSelectedUser({
                         username: displaySenderName,
@@ -1865,7 +2250,9 @@ export default function App() {
                         rank: msg.rank || null,
                         isOnline: false
                       });
+                      recordProfileVisitNotification(displaySenderName);
                     }
+                    setPublicProfileTab('info');
                     setProfileViewMode('view');
                     setProfileModalOpen(true);
                   };
@@ -2168,6 +2555,20 @@ export default function App() {
               popoverMusicTrack &&
               activeAudioTrack?.url === popoverMusicTrack.url
             );
+            const popoverPfpBorderClass = getPfpBorder(
+              isSelectedUserMe ? userProfile.pfpBorderId : activePopoverUser.pfpBorderId
+            ).pfpBorderClass;
+            const popoverRank = getUserRank(
+              activePopoverUser.username,
+              isSelectedUserMe ? currentUser?.email : activePopoverUser.email,
+              isSelectedUserMe ? userProfile.rank : activePopoverUser.rank
+            );
+            const canMainDevActOnTarget = Boolean(
+              !isSelectedUserMe &&
+              activePopoverUser.username.toLowerCase() !== 'system' &&
+              currentUserRank?.id === 'main_developer' &&
+              currentUserRank.priority > (popoverRank?.priority ?? 0)
+            );
 
             return (
               <div
@@ -2194,9 +2595,13 @@ export default function App() {
                   {/* Centered Circular Avatar with custom border */}
                   <div
                     className={`w-20 h-20 rounded-full overflow-hidden bg-[#24252e] shadow-2xl relative shrink-0 z-10 transition-all ${
-                      getPfpBorder(isSelectedUserMe ? userProfile.pfpBorderId : activePopoverUser.pfpBorderId).pfpBorderClass || 'border-2 border-white'
+                      popoverPfpBorderClass || ''
                     }`}
-                    style={{ borderWidth: `${(isSelectedUserMe ? userProfile.pfpBorderThickness : activePopoverUser.pfpBorderThickness) || 2}px` }}
+                    style={
+                      popoverPfpBorderClass
+                        ? { borderWidth: `${(isSelectedUserMe ? userProfile.pfpBorderThickness : activePopoverUser.pfpBorderThickness) || 2}px` }
+                        : undefined
+                    }
                   >
                     {(isSelectedUserMe ? userProfile.avatarUrl : activePopoverUser.avatarUrl) ? (
                       <img
@@ -2213,25 +2618,18 @@ export default function App() {
 
                   {/* User Details over the banner */}
                   <div className="relative z-10 mt-2.5 flex flex-col items-center">
-                    {(() => {
-                      const popoverRank = getUserRank(
-                        activePopoverUser.username,
-                        isSelectedUserMe ? currentUser?.email : activePopoverUser.email,
-                        isSelectedUserMe ? userProfile.rank : activePopoverUser.rank
-                      );
-                      return popoverRank ? (
-                        <div className="flex items-center justify-center gap-1.5 mb-0.5">
-                          <img
-                            src={popoverRank.icon}
-                            alt={popoverRank.name}
-                            className="w-4 h-4 object-contain shrink-0 select-none"
-                          />
-                          <span className="text-xs font-bold text-white drop-shadow-md">
-                            {popoverRank.name}
-                          </span>
-                        </div>
-                      ) : null;
-                    })()}
+                    {popoverRank && (
+                      <div className="flex items-center justify-center gap-1.5 mb-0.5">
+                        <img
+                          src={popoverRank.icon}
+                          alt={popoverRank.name}
+                          className="w-4 h-4 object-contain shrink-0 select-none"
+                        />
+                        <span className="text-xs font-bold text-white drop-shadow-md">
+                          {popoverRank.name}
+                        </span>
+                      </div>
+                    )}
                     <h3 className="font-extrabold text-white text-base tracking-wide drop-shadow-md truncate flex items-center justify-center gap-1.5">
                       <span>{activePopoverUser.username}</span>
                     </h3>
@@ -2248,6 +2646,10 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       setPlayerPopoverOpen(false);
+                      if (!isSelectedUserMe) {
+                        recordProfileVisitNotification(activePopoverUser.username);
+                      }
+                      setPublicProfileTab('info');
                       setProfileViewMode('view');
                       setProfileModalOpen(true);
                     }}
@@ -2256,6 +2658,21 @@ export default function App() {
                     <User className="w-4 h-4 text-zinc-300" />
                     <span>View profile</span>
                   </button>
+
+                  {/* Action button (Main Developer only when clicking a lower rank) */}
+                  {canMainDevActOnTarget && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlayerPopoverOpen(false);
+                        setActionModalOpen(true);
+                      }}
+                      className="w-full bg-[#1e1e26] hover:bg-[#282834] text-white font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer shadow-sm"
+                    >
+                      <i className="fa fa-check error text-rose-500 text-sm" aria-hidden="true" />
+                      <span>Action</span>
+                    </button>
+                  )}
 
                   {/* 2. Edit button (self only) */}
                   {isSelectedUserMe && (
@@ -2298,6 +2715,143 @@ export default function App() {
               </div>
             );
           })()}
+
+        {/* ==================================================== */}
+        {/* ACTION MODAL (Main Developer Moderation Menu)        */}
+        {/* ==================================================== */}
+        {actionModalOpen && liveSelectedUser && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-[70] bg-black/75 backdrop-blur-[2px] flex items-center justify-center p-4 animate-in fade-in duration-150"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setActionModalOpen(false);
+            }}
+          >
+            <div className="w-full max-w-[420px] bg-[#141414] border border-[#26262c] rounded-3xl p-5 sm:p-6 shadow-2xl relative text-white animate-in zoom-in-95 duration-150">
+              {/* Close button */}
+              <button
+                type="button"
+                onClick={() => setActionModalOpen(false)}
+                aria-label="Close"
+                className="absolute top-5 right-5 text-white hover:text-zinc-300 p-1 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5 stroke-[2.5]" />
+              </button>
+
+              {/* Top User Header */}
+              <div className="flex items-center gap-3 pr-8">
+                <UserAvatar
+                  avatarUrl={liveSelectedUser.avatarUrl}
+                  className="w-12 h-12"
+                  showOnline={false}
+                  pfpBorderClass={getPfpBorder(liveSelectedUser.pfpBorderId).pfpBorderClass}
+                  pfpBorderThickness={liveSelectedUser.pfpBorderThickness}
+                />
+                <h3 className="text-lg sm:text-xl font-black text-white tracking-wide truncate">
+                  {liveSelectedUser.username}
+                </h3>
+              </div>
+
+              {/* Action Category Tab (Only Action category, no Main category) */}
+              <div className="mt-4 pb-3 border-b border-[#24242c] flex items-center">
+                <span className="px-4 py-1.5 rounded-xl bg-[#222228] text-white text-xs sm:text-sm font-extrabold">
+                  Action
+                </span>
+              </div>
+
+              {/* Action Buttons (Change rank, Warn, Mute) */}
+              <div className="mt-3.5 space-y-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionModalOpen(false);
+                    setChangeRankModalOpen(true);
+                  }}
+                  className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                >
+                  <i className="fa fa-star text-white text-base w-5 text-center" aria-hidden="true" />
+                  <span className="text-sm font-extrabold text-white">Change rank</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActionModalOpen(false)}
+                  className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                >
+                  <i className="fa fa-exclamation-triangle warn text-amber-500 text-base w-5 text-center" aria-hidden="true" />
+                  <span className="text-sm font-extrabold text-white">Warn</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActionModalOpen(false)}
+                  className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                >
+                  <i className="fa fa-microphone-slash error text-rose-500 text-base w-5 text-center" aria-hidden="true" />
+                  <span className="text-sm font-extrabold text-white">Mute</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ==================================================== */}
+        {/* CHANGE RANK MODAL (Main Developer Rank Selector)     */}
+        {/* ==================================================== */}
+        {changeRankModalOpen && liveSelectedUser && (() => {
+          const targetCurrentRank = getUserRank(
+            liveSelectedUser.username,
+            liveSelectedUser.email,
+            liveSelectedUser.rank
+          );
+          const currentRankValue = targetCurrentRank?.id || 'none';
+          const allowedRanks = ASSIGNABLE_RANKS.filter(
+            (r) => r.priority < (currentUserRank?.priority ?? 0)
+          );
+
+          return (
+            <div
+              role="dialog"
+              aria-modal="true"
+              className="fixed inset-0 z-[75] bg-black/75 backdrop-blur-[2px] flex items-center justify-center p-4 animate-in fade-in duration-150"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setChangeRankModalOpen(false);
+              }}
+            >
+              <div className="w-full max-w-[420px] bg-[#141414] border border-[#26262c] rounded-3xl p-6 shadow-2xl relative text-white animate-in zoom-in-95 duration-150">
+                {/* Close button */}
+                <button
+                  type="button"
+                  onClick={() => setChangeRankModalOpen(false)}
+                  aria-label="Close"
+                  className="absolute top-5 right-5 text-white hover:text-zinc-300 p-1 rounded-lg transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5 stroke-[2.5]" />
+                </button>
+
+                <label className="block text-base font-black text-white mb-2.5 text-left">
+                  User rank
+                </label>
+
+                <div className="relative">
+                  <select
+                    value={currentRankValue}
+                    onChange={(e) => handleChangeTargetUserRank(liveSelectedUser.username, e.target.value)}
+                    className="w-full bg-[#1b1b1f] border border-[#2a2a32] rounded-2xl px-4 py-3.5 pr-10 text-white text-sm sm:text-base font-medium focus:outline-none focus:border-zinc-500 appearance-none cursor-pointer"
+                  >
+                    {allowedRanks.map((r) => (
+                      <option key={r.id} value={r.id} className="bg-[#1b1b1f] text-white">
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-zinc-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Hidden Audio Element for Profile Music (Supports self or any viewed user's track) */}
         {activeAudioTrack && (
@@ -2475,9 +3029,13 @@ export default function App() {
                   {/* PFP Box (Rounded square with selected PFP border) */}
                   <div
                     className={`w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden bg-[#1f1f26] relative shrink-0 shadow-2xl -mt-12 sm:-mt-14 transition-all ${
-                      getPfpBorder(pfpBorderIdToShow).pfpBorderClass || 'border-2 border-white/90'
+                      getPfpBorder(pfpBorderIdToShow).pfpBorderClass || ''
                     }`}
-                    style={{ borderWidth: `${pfpBorderThicknessToShow || 2}px` }}
+                    style={
+                      getPfpBorder(pfpBorderIdToShow).pfpBorderClass
+                        ? { borderWidth: `${pfpBorderThicknessToShow || 2}px` }
+                        : undefined
+                    }
                   >
                     {avatarToShow ? (
                       <img
@@ -2527,7 +3085,7 @@ export default function App() {
                     {/* View mode: online status indicator */}
                     {effectiveProfileViewMode === 'view' && (
                       <span
-                        className={`absolute bottom-1 right-1 w-4 h-4 border-2 border-white rounded-full shadow-md ${
+                        className={`absolute bottom-1 right-1 w-4 h-4 border-2 border-[#1f1f26] rounded-full shadow-md ${
                           activeModalUser.isOnline !== false ? 'bg-[#70c91f]' : 'bg-zinc-500'
                         }`}
                       />
@@ -2741,138 +3299,161 @@ export default function App() {
 
                 {/* ========================================================= */}
                 {/* MODE 2: PUBLIC VIEW (How everyone else sees your profile) */}
-                {/* Only Info and About me tabs (No friends, gifts, etc.)    */}
+                {/* For System bot: only Info tab with Age (999) & Gender (Bot) */}
                 {/* ========================================================= */}
-                {effectiveProfileViewMode === 'view' && (
-                  <div className="p-5 pt-2 overflow-y-auto flex-1 flex flex-col">
-                    {/* Two Tabs: Info and About me */}
-                    <div className="flex items-center gap-2 border-b border-[#22222a] pb-3 mb-4">
-                      <button
-                        type="button"
-                        onClick={() => setPublicProfileTab('info')}
-                        className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                          publicProfileTab === 'info'
-                            ? 'bg-[#252532] text-white shadow-sm'
-                            : 'text-zinc-400 hover:text-white hover:bg-white/5'
-                        }`}
-                      >
-                        Info
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPublicProfileTab('aboutme')}
-                        className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                          publicProfileTab === 'aboutme'
-                            ? 'bg-[#252532] text-white shadow-sm'
-                            : 'text-zinc-400 hover:text-white hover:bg-white/5'
-                        }`}
-                      >
-                        About me
-                      </button>
-                    </div>
+                {effectiveProfileViewMode === 'view' && (() => {
+                  const isSystemProfile = usernameToShow.toLowerCase() === 'system';
+                  const activeTab = isSystemProfile ? 'info' : publicProfileTab;
 
-                    {/* Tab 1: Info */}
-                    {publicProfileTab === 'info' && (
-                      <div className="space-y-2.5">
-                        {/* Country */}
-                        <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
-                          <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
-                            <Globe className="w-4 h-4 text-zinc-400" />
-                            <span>Country</span>
-                          </div>
-                          <span className="text-sm font-bold text-white">
-                            {(isViewingSelf ? userProfile.country : activeModalUser.country) || 'Global'}
-                          </span>
-                        </div>
+                  return (
+                    <div className="p-5 pt-2 overflow-y-auto flex-1 flex flex-col">
+                      {/* Tabs: Info (and About me for non-System users) */}
+                      <div className="flex items-center gap-2 border-b border-[#22222a] pb-3 mb-4">
+                        <button
+                          type="button"
+                          onClick={() => setPublicProfileTab('info')}
+                          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                            activeTab === 'info'
+                              ? 'bg-[#252532] text-white shadow-sm'
+                              : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                          }`}
+                        >
+                          Info
+                        </button>
+                        {!isSystemProfile && (
+                          <button
+                            type="button"
+                            onClick={() => setPublicProfileTab('aboutme')}
+                            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                              activeTab === 'aboutme'
+                                ? 'bg-[#252532] text-white shadow-sm'
+                                : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                            }`}
+                          >
+                            About me
+                          </button>
+                        )}
+                      </div>
 
-                        {/* Gender */}
-                        <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
-                          <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
-                            <span className="text-base text-zinc-400">⚥</span>
-                            <span>Gender</span>
-                          </div>
-                          <span className="text-sm font-bold text-white">
-                            {(isViewingSelf ? userProfile.gender : activeModalUser.gender) || 'Unknown'}
-                          </span>
-                        </div>
-
-                        {/* Language */}
-                        <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
-                          <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
-                            <Languages className="w-4 h-4 text-zinc-400" />
-                            <span>Language</span>
-                          </div>
-                          <span className="text-sm font-bold text-white">
-                            {(isViewingSelf ? userProfile.language : activeModalUser.language) || 'English'}
-                          </span>
-                        </div>
-
-                        {/* Age */}
-                        <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
-                          <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
-                            <Calendar className="w-4 h-4 text-zinc-400" />
-                            <span>Age</span>
-                          </div>
-                          <span className="text-sm font-bold text-white">
-                            {(isViewingSelf ? userProfile.age : activeModalUser.age) || '18'} years old
-                          </span>
-                        </div>
-
-                        {/* Relationship */}
-                        <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
-                          <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
-                            <Heart className="w-4 h-4 text-zinc-400" />
-                            <span>Relationship</span>
-                          </div>
-                          <span className="text-sm font-bold text-white">
-                            {(isViewingSelf ? userProfile.relationship : activeModalUser.relationship) || 'Rather not say'}
-                          </span>
-                        </div>
-
-                        {/* Profile Music widget in Info tab if track exists */}
-                        {musicToShow && (
-                          <div className="bg-[#181820] border border-[#282838] rounded-xl px-4 py-3 flex items-center justify-between shadow-md">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <Music className="w-4 h-4 text-cyan-400 shrink-0" />
-                              <div className="min-w-0">
-                                <span className="text-xs font-bold text-white truncate block">
-                                  {musicToShow.name}
-                                </span>
-                                <span className="text-[10px] text-zinc-400">Profile Music</span>
-                              </div>
+                      {/* Tab 1: Info */}
+                      {activeTab === 'info' && (
+                        isSystemProfile ? (
+                          <div className="space-y-2.5">
+                            {/* Age (999 years old) */}
+                            <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                              <span className="text-zinc-300 text-sm font-bold">Age</span>
+                              <span className="text-sm font-bold text-white">999 years old</span>
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => handleToggleProfileMusic(musicToShow)}
-                              className="w-8 h-8 rounded-lg bg-[#00c2ff] hover:bg-[#00aee6] text-white flex items-center justify-center shrink-0 cursor-pointer shadow-sm ml-2"
-                            >
-                              {isModalTrackPlaying ? (
-                                <Pause className="w-4 h-4 fill-white" />
-                              ) : (
-                                <Play className="w-4 h-4 fill-white translate-x-0.5" />
-                              )}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
 
-                    {/* Tab 2: About me (Pure text, NO BOX, scrollable for long bios) */}
-                    {publicProfileTab === 'aboutme' && (
-                      <div className="w-full max-h-[340px] overflow-y-auto px-1 py-1 pr-2">
-                        {((isViewingSelf ? userProfile.bio : activeModalUser.bio)) ? (
-                          <p className="text-sm text-zinc-200 whitespace-pre-wrap break-words leading-relaxed select-text font-normal">
-                            {isViewingSelf ? userProfile.bio : activeModalUser.bio}
-                          </p>
+                            {/* Gender (Bot) */}
+                            <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                              <span className="text-zinc-300 text-sm font-bold">Gender</span>
+                              <span className="text-sm font-bold text-white">Bot</span>
+                            </div>
+                          </div>
                         ) : (
-                          <p className="text-sm text-zinc-500 italic">
-                            No about me info provided yet.
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                          <div className="space-y-2.5">
+                            {/* Country */}
+                            <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                              <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
+                                <Globe className="w-4 h-4 text-zinc-400" />
+                                <span>Country</span>
+                              </div>
+                              <span className="text-sm font-bold text-white">
+                                {(isViewingSelf ? userProfile.country : activeModalUser.country) || 'Global'}
+                              </span>
+                            </div>
+
+                            {/* Gender */}
+                            <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                              <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
+                                <span className="text-base text-zinc-400">⚥</span>
+                                <span>Gender</span>
+                              </div>
+                              <span className="text-sm font-bold text-white">
+                                {(isViewingSelf ? userProfile.gender : activeModalUser.gender) || 'Unknown'}
+                              </span>
+                            </div>
+
+                            {/* Language */}
+                            <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                              <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
+                                <Languages className="w-4 h-4 text-zinc-400" />
+                                <span>Language</span>
+                              </div>
+                              <span className="text-sm font-bold text-white">
+                                {(isViewingSelf ? userProfile.language : activeModalUser.language) || 'English'}
+                              </span>
+                            </div>
+
+                            {/* Age */}
+                            <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                              <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
+                                <Calendar className="w-4 h-4 text-zinc-400" />
+                                <span>Age</span>
+                              </div>
+                              <span className="text-sm font-bold text-white">
+                                {(isViewingSelf ? userProfile.age : activeModalUser.age) || '18'} years old
+                              </span>
+                            </div>
+
+                            {/* Relationship */}
+                            <div className="bg-[#181820] border border-[#242430] rounded-xl px-4 py-3 flex items-center justify-between">
+                              <div className="flex items-center gap-2.5 text-zinc-300 text-sm font-semibold">
+                                <Heart className="w-4 h-4 text-zinc-400" />
+                                <span>Relationship</span>
+                              </div>
+                              <span className="text-sm font-bold text-white">
+                                {(isViewingSelf ? userProfile.relationship : activeModalUser.relationship) || 'Rather not say'}
+                              </span>
+                            </div>
+
+                            {/* Profile Music widget in Info tab if track exists */}
+                            {musicToShow && (
+                              <div className="bg-[#181820] border border-[#282838] rounded-xl px-4 py-3 flex items-center justify-between shadow-md">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <Music className="w-4 h-4 text-cyan-400 shrink-0" />
+                                  <div className="min-w-0">
+                                    <span className="text-xs font-bold text-white truncate block">
+                                      {musicToShow.name}
+                                    </span>
+                                    <span className="text-[10px] text-zinc-400">Profile Music</span>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleProfileMusic(musicToShow)}
+                                  className="w-8 h-8 rounded-lg bg-[#00c2ff] hover:bg-[#00aee6] text-white flex items-center justify-center shrink-0 cursor-pointer shadow-sm ml-2"
+                                >
+                                  {isModalTrackPlaying ? (
+                                    <Pause className="w-4 h-4 fill-white" />
+                                  ) : (
+                                    <Play className="w-4 h-4 fill-white translate-x-0.5" />
+                                  )}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      )}
+
+                      {/* Tab 2: About me (Pure text, NO BOX, scrollable for long bios) */}
+                      {!isSystemProfile && activeTab === 'aboutme' && (
+                        <div className="w-full max-h-[340px] overflow-y-auto px-1 py-1 pr-2">
+                          {((isViewingSelf ? userProfile.bio : activeModalUser.bio)) ? (
+                            <p className="text-sm text-zinc-200 whitespace-pre-wrap break-words leading-relaxed select-text font-normal">
+                              {isViewingSelf ? userProfile.bio : activeModalUser.bio}
+                            </p>
+                          ) : (
+                            <p className="text-sm text-zinc-500 italic">
+                              No about me info provided yet.
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           );
@@ -3131,6 +3712,10 @@ export default function App() {
                           currentUser.email?.toLowerCase() !== 'null@gmail.com'
                         ) {
                           setUsernameEditError('The username Null is reserved.');
+                          return;
+                        }
+                        if (newName.toLowerCase() === 'system') {
+                          setUsernameEditError('The username System is reserved.');
                           return;
                         }
 

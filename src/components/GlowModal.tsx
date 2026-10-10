@@ -156,10 +156,10 @@ export default function GlowModal({
           >
             {/* Avatar */}
             <div
-              className={`w-10 h-10 rounded-full overflow-hidden bg-[#24252e] shrink-0 border transition-all ${
-                pfpBorderClass || 'border-white/10'
+              className={`w-10 h-10 rounded-full overflow-hidden bg-[#24252e] shrink-0 transition-all ${
+                pfpBorderClass || ''
               }`}
-              style={{ borderWidth: `${pfpBorderThickness}px` }}
+              style={pfpBorderClass ? { borderWidth: `${pfpBorderThickness}px` } : undefined}
             >
               {avatarUrl ? (
                 <img src={avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
