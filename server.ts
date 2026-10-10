@@ -4,17 +4,109 @@ import crypto from 'crypto';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const BAZAARLINK_API_URL = 'https://api.bazaarlink.ai/v1/chat/completions';
+const BAZAARLINK_API_KEY =
+  process.env.BAZAARLINK_API_KEY ||
+  'sk-bl-Lj2VRPx5ynD0-9AoM4uARPUBo4BDRvSAFPXJoaoxA7BOAQc9';
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(express.json());
+
+  // AI Bot Chat Completion Endpoint
+  app.post('/api/bot-chat', async (req, res) => {
+    try {
+      const { prompt, botName = 'System', senderName = 'User' } = req.body || {};
+      const userPrompt = String(prompt || 'Hello!').trim() || 'Hello!';
+
+      const systemPrompt = `You are ${botName}, an official automated system assistant. Respond in a strictly formal, polite, and professional tone in 1 to 2 concise sentences. Never use roleplay, actions in asterisks (*...*), slang, or emotes. Do not prefix your message with "${senderName}" or "@${senderName}" because the system automatically prepends their username tag.`;
+
+      const messages = [
+        {
+          role: 'system',
+          content: systemPrompt
+        },
+        {
+          role: 'user',
+          content: userPrompt
+        }
+      ];
+
+      const modelsToTry = [
+        'qwen/qwen3.7-flash:free',
+        'auto:free',
+        'deepseek/deepseek-v4-flash-0731free:free'
+      ];
+
+      for (const model of modelsToTry) {
+        try {
+          const response = await fetch(BAZAARLINK_API_URL, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${BAZAARLINK_API_KEY}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model,
+              messages
+            })
+          });
+
+          const data = (await response.json()) as any;
+          const reply = data?.choices?.[0]?.message?.content?.trim();
+          if (response.ok && reply) {
+            return res.json({ success: true, reply, model });
+          }
+        } catch (err) {
+          console.warn(`BazaarLink model ${model} attempt notice:`, err);
+        }
+      }
+
+      // Fallback to server-side Gemini if BazaarLink free capacity is temporarily full
+      if (process.env.GEMINI_API_KEY) {
+        try {
+          const ai = new GoogleGenAI({
+            apiKey: process.env.GEMINI_API_KEY,
+            httpOptions: {
+              headers: {
+                'User-Agent': 'aistudio-build'
+              }
+            }
+          });
+          const geminiRes = await ai.models.generateContent({
+            model: 'gemini-3.8-flash',
+            contents: userPrompt,
+            config: {
+              systemInstruction: systemPrompt
+            }
+          });
+          const fallbackReply = geminiRes.text?.trim();
+          if (fallbackReply) {
+            return res.json({ success: true, reply: fallbackReply, model: 'gemini-3.8-flash' });
+          }
+        } catch (geminiErr) {
+          console.warn('Gemini fallback notice:', geminiErr);
+        }
+      }
+
+      return res.json({
+        success: true,
+        reply: 'Hello. How may I assist you today?'
+      });
+    } catch (err: any) {
+      console.warn('Bot chat endpoint error:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
 
   // Cloudinary Deletion API Proxy
   // Allows deleting assets directly from Cloudinary using:

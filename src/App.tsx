@@ -157,6 +157,123 @@ function sanitizeMediaUrl(url: string | null | undefined): string | null {
   return url;
 }
 
+const BAZAARLINK_API_URL = 'https://api.bazaarlink.ai/v1/chat/completions';
+const BAZAARLINK_API_KEY = 'sk-bl-Lj2VRPx5ynD0-9AoM4uARPUBo4BDRvSAFPXJoaoxA7BOAQc9';
+
+async function generateAiBotReply(
+  prompt: string,
+  botName: string,
+  senderName: string
+): Promise<string> {
+  const userPrompt = prompt.trim() || 'Say hello in one sentence';
+
+  // 1. Try server-side proxy endpoint (/api/bot-chat) first
+  try {
+    const res = await fetch('/api/bot-chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: userPrompt, botName, senderName })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.reply && typeof data.reply === 'string' && data.reply.trim()) {
+        return data.reply.trim();
+      }
+    }
+  } catch (_) {
+    // Fall through to direct BazaarLink call if server route is unavailable
+  }
+
+  // 2. Direct BazaarLink API call fallback
+  const messages = [
+    {
+      role: 'system',
+      content: `You are ${botName}, an official automated system assistant. Respond in a strictly formal, polite, and professional tone in 1 to 2 concise sentences. Never use roleplay, actions in asterisks (*...*), slang, or emotes. Do not prefix your message with "${senderName}" or "@${senderName}" because the system automatically prepends their username tag.`
+    },
+    {
+      role: 'user',
+      content: userPrompt
+    }
+  ];
+
+  const modelsToTry = [
+    'qwen/qwen3.7-flash:free',
+    'auto:free',
+    'deepseek/deepseek-v4-flash-0731free:free'
+  ];
+
+  for (const model of modelsToTry) {
+    try {
+      const response = await fetch(BAZAARLINK_API_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${BAZAARLINK_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model,
+          messages
+        })
+      });
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content?.trim();
+      if (response.ok && content) {
+        return content;
+      }
+    } catch (_) {}
+  }
+
+  return 'Hello. How may I assist you today?';
+}
+
+// Highlight the logged-in user's username in a blue badge when they are tagged in a chat message
+function renderMessageTextWithMentions(
+  text: string,
+  myUsername?: string | null
+): React.ReactNode {
+  if (!text) return text;
+  const cleanMyUsername = (myUsername || '').trim();
+  if (!cleanMyUsername) return text;
+
+  const escaped = cleanMyUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const mentionRegex = new RegExp(`(^|[^a-zA-Z0-9_])(@?${escaped})(?=$|[^a-zA-Z0-9_])`, 'gi');
+
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = mentionRegex.exec(text)) !== null) {
+    const prefix = match[1] || '';
+    const matchedTag = match[2] || '';
+    const tagStartIndex = match.index + prefix.length;
+
+    if (tagStartIndex > lastIndex) {
+      parts.push(text.slice(lastIndex, tagStartIndex));
+    }
+
+    parts.push(
+      <span
+        key={`tag-${tagStartIndex}`}
+        className="inline-block bg-[#00add8] text-white font-bold px-1.5 py-[1px] rounded-[4px] leading-snug"
+      >
+        {cleanMyUsername}
+      </span>
+    );
+
+    lastIndex = tagStartIndex + matchedTag.length;
+  }
+
+  if (parts.length === 0) {
+    return text;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts;
+}
+
 // Dynamically update the browser tab favicon (/favicon.png or /favicon2.png)
 function setDocumentFavicon(href: '/favicon.png' | '/favicon2.png') {
   if (typeof document === 'undefined') return;
@@ -1651,6 +1768,99 @@ export default function App() {
       };
       setMessages((prev) => [...prev, fallbackMsg]);
     }
+
+    // Check if the message tags a bot (e.g. "System Hello!" - no @ required, just the bot's username)
+    const botCandidates = allUsersList.filter(
+      (u) =>
+        u.username.toLowerCase() === SYSTEM_BOT_USERNAME.toLowerCase() ||
+        u.rank === 'bot' ||
+        getUserRank(u.username, u.email, u.rank)?.id === 'bot'
+    );
+
+    let mentionedBot = botCandidates.find((bot) => {
+      const escapedBot = bot.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`(^|[^a-zA-Z0-9_])@?${escapedBot}(?=$|[^a-zA-Z0-9_])`, 'i');
+      return regex.test(textToSend);
+    });
+
+    if (!mentionedBot && currentReply?.sender) {
+      mentionedBot = botCandidates.find(
+        (bot) => bot.username.toLowerCase() === currentReply.sender.toLowerCase()
+      );
+    }
+
+    if (mentionedBot && mentionedBot.username.toLowerCase() !== currentUser.username.toLowerCase()) {
+      const targetBot = mentionedBot;
+      const senderUsername = currentUser.username;
+      const escapedBot = targetBot.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const leadingBotRegex = new RegExp(`^\\s*@?${escapedBot}(?:[\\s,:!.-]+|$)`, 'i');
+      const strippedPrompt = textToSend.replace(leadingBotRegex, '').trim();
+      const promptForAi = strippedPrompt || textToSend;
+
+      (async () => {
+        try {
+          const rawAiReply = await generateAiBotReply(
+            promptForAi,
+            targetBot.username,
+            senderUsername
+          );
+
+          // Clean AI reply, remove any *roleplay* actions, and strip any duplicate leading username tag
+          let cleanReply = rawAiReply
+            .replace(/<think>[\s\S]*?<\/think>/gi, '')
+            .replace(/\*[^*]+\*/g, '')
+            .replace(/\s{2,}/g, ' ')
+            .trim()
+            .replace(/^["']|["']$/g, '')
+            .trim();
+
+          const escapedSender = senderUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const leadingSenderRegex = new RegExp(`^@?${escapedSender}(?:[:,!]+)?\\s+`, 'i');
+          cleanReply = cleanReply.replace(leadingSenderRegex, '').trim();
+
+          if (!cleanReply) {
+            cleanReply = 'Hello. How may I assist you today?';
+          }
+
+          // Tag the person who tagged the bot (no @, just "[username] [reply]")
+          const botMessageText = `${senderUsername} ${cleanReply}`;
+          const botMsgData = {
+            sender: targetBot.username,
+            senderKey: sanitizeDbKey(targetBot.username),
+            text: botMessageText,
+            avatarUrl: sanitizeMediaUrl(targetBot.avatarUrl) || SYSTEM_BOT_AVATAR,
+            pfpBorderId: targetBot.pfpBorderId || 'pfp-default',
+            pfpBorderThickness: targetBot.pfpBorderThickness || 2,
+            rank: 'bot',
+            replyTo: null,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            createdAt: serverTimestamp()
+          };
+
+          try {
+            await push(ref(rtdb, 'messages'), botMsgData);
+          } catch (botPushErr) {
+            console.warn('Realtime Database bot push fallback:', botPushErr);
+            const fallbackBotMsg: ChatMessage = {
+              id: `${Date.now()}-bot`,
+              sender: targetBot.username,
+              senderKey: sanitizeDbKey(targetBot.username),
+              text: botMessageText,
+              timestamp: 'Just now',
+              createdAt: Date.now(),
+              avatarUrl: sanitizeMediaUrl(targetBot.avatarUrl) || SYSTEM_BOT_AVATAR,
+              pfpBorderId: targetBot.pfpBorderId || 'pfp-default',
+              pfpBorderThickness: targetBot.pfpBorderThickness || 2,
+              rank: 'bot',
+              replyTo: null
+            };
+            setMessages((prev) => [...prev, fallbackBotMsg]);
+          }
+        } catch (aiErr) {
+          console.warn('Error generating AI bot reply:', aiErr);
+        }
+      })();
+    }
   };
 
   // Delete a specific chat message (own message) from Realtime Database
@@ -1713,6 +1923,38 @@ export default function App() {
       console.warn('Error marking notifications read:', err);
     }
   }, [currentUser?.username, notifications]);
+
+  // Delete a single notification from Firebase Realtime Database
+  const handleDeleteNotification = useCallback(
+    async (notifId: string, e?: React.MouseEvent) => {
+      if (e) e.stopPropagation();
+      if (!currentUser?.username || !notifId) return;
+      const myKey = sanitizeDbKey(currentUser.username);
+      setNotifications((prev) => prev.filter((n) => n.id !== notifId));
+      try {
+        await remove(ref(rtdb, `users/${myKey}/notifications/${notifId}`));
+      } catch (err) {
+        console.warn('Error deleting notification from RTDB:', err);
+      }
+    },
+    [currentUser?.username]
+  );
+
+  // Clear all notifications for the current user from Firebase Realtime Database
+  const handleClearAllNotifications = useCallback(
+    async (e?: React.MouseEvent) => {
+      if (e) e.stopPropagation();
+      if (!currentUser?.username) return;
+      const myKey = sanitizeDbKey(currentUser.username);
+      setNotifications([]);
+      try {
+        await remove(ref(rtdb, `users/${myKey}/notifications`));
+      } catch (err) {
+        console.warn('Error clearing notifications from RTDB:', err);
+      }
+    },
+    [currentUser?.username]
+  );
 
   // Change another user's rank in Realtime Database (Main Developer only)
   const handleChangeTargetUserRank = async (targetUsername: string, newRankId: string) => {
@@ -2329,6 +2571,22 @@ export default function App() {
             {/* Notifications Dropdown Menu right underneath */}
             {showNotificationsMenu && (
               <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-[#141418] border border-[#262630] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100">
+                {notifications.length > 0 && (
+                  <div className="px-4 py-2.5 border-b border-[#22222c] flex items-center justify-between bg-[#18181f]">
+                    <span className="text-xs font-extrabold text-zinc-300 uppercase tracking-wider">
+                      Notifications
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleClearAllNotifications}
+                      className="text-xs font-bold text-rose-400 hover:text-rose-300 flex items-center gap-1 transition-colors cursor-pointer"
+                      title="Delete all notifications"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Clear all</span>
+                    </button>
+                  </div>
+                )}
                 <div className="max-h-[380px] overflow-y-auto divide-y divide-[#22222c]">
                   {notifications.length === 0 ? (
                     <div className="px-4 py-8 text-center text-xs text-zinc-500 font-medium">
@@ -2357,9 +2615,8 @@ export default function App() {
                         : (matchedUser?.pfpBorderThickness ?? notif.fromPfpBorderThickness ?? 2);
 
                       return (
-                        <button
+                        <div
                           key={notif.id}
-                          type="button"
                           onClick={() => {
                             setShowNotificationsMenu(false);
                             if (matchedUser) {
@@ -2381,7 +2638,7 @@ export default function App() {
                             setProfileViewMode('view');
                             setProfileModalOpen(true);
                           }}
-                          className="w-full px-4 py-3 flex items-start gap-3 hover:bg-white/[0.04] transition-colors cursor-pointer text-left"
+                          className="w-full px-4 py-3 flex items-start gap-3 hover:bg-white/[0.04] transition-colors cursor-pointer text-left group"
                         >
                           <UserAvatar
                             avatarUrl={notifAvatar}
@@ -2402,7 +2659,16 @@ export default function App() {
                               {formatNotificationDate(notif.createdAt)}
                             </p>
                           </div>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteNotification(notif.id, e)}
+                            aria-label="Delete notification"
+                            title="Delete notification"
+                            className="text-zinc-500 hover:text-rose-400 p-1.5 rounded-lg hover:bg-rose-500/10 transition-colors cursor-pointer shrink-0 self-center"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       );
                     })
                   )}
@@ -2706,7 +2972,7 @@ export default function App() {
                         )}
 
                         <p className="text-white font-medium text-sm sm:text-base mt-0.5 break-words leading-relaxed select-text">
-                          {msg.text}
+                          {renderMessageTextWithMentions(msg.text, currentUser?.username)}
                         </p>
                       </div>
                     </div>
