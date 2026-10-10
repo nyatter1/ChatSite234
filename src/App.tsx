@@ -42,7 +42,10 @@ import {
   Shield,
   Scale,
   Image as ImageIcon,
-  Plus
+  Plus,
+  Maximize2,
+  Minimize2,
+  Minus
 } from 'lucide-react';
 import {
   PROFILE_BORDERS,
@@ -118,6 +121,26 @@ interface AppNotification {
   text: string;
   createdAt: number;
   read?: boolean;
+}
+
+interface PmMessage {
+  id: string;
+  sender: string;
+  text: string;
+  timestamp: string;
+  createdAt: number;
+  mediaUrl?: string | null;
+  mediaType?: 'image' | 'audio' | 'video' | null;
+  mediaName?: string | null;
+}
+
+interface PmThread {
+  peerKey: string;
+  peerUsername: string;
+  peerAvatarUrl?: string | null;
+  unread: boolean;
+  updatedAt: number;
+  messages: PmMessage[];
 }
 
 interface NewsComment {
@@ -685,6 +708,24 @@ export default function App() {
   const [rulesModalOpen, setRulesModalOpen] = useState(false);
   const [activeRulesTab, setActiveRulesTab] = useState<'user' | 'staff'>('user');
 
+  // Private Messages (PMs) State
+  const [showPrivateMenu, setShowPrivateMenu] = useState(false);
+  const [pmThreads, setPmThreads] = useState<PmThread[]>([]);
+  const [activePmPeer, setActivePmPeer] = useState<string | null>(null);
+  const [pmWindowExpanded, setPmWindowExpanded] = useState(false);
+  const [pmInputText, setPmInputText] = useState('');
+  const [pmMediaUrl, setPmMediaUrl] = useState<string | null>(null);
+  const [pmMediaType, setPmMediaType] = useState<'image' | 'audio' | 'video' | null>(null);
+  const [pmMediaName, setPmMediaName] = useState<string | null>(null);
+  const [isUploadingPmMedia, setIsUploadingPmMedia] = useState(false);
+  const [isListeningPmVoice, setIsListeningPmVoice] = useState(false);
+  const pmRecognitionRef = useRef<any>(null);
+  const pmMediaInputRef = useRef<HTMLInputElement>(null);
+  const pmInputRef = useRef<HTMLInputElement>(null);
+  const pmMessagesEndRef = useRef<HTMLDivElement>(null);
+  const privateMenuRef = useRef<HTMLDivElement>(null);
+  const knownPmSignaturesRef = useRef<Set<string> | null>(null);
+
   // Targeted helper to persist profile updates cleanly to Realtime Database & localStorage
   // Prevents infinite onValue <-> useEffect loops and never writes temporary blob: URLs
   const saveProfileToRtdb = useCallback(
@@ -998,6 +1039,100 @@ export default function App() {
       },
       (err) => {
         console.warn('Realtime Database notifications listener notice:', err.message);
+      }
+    );
+    return () => unsubscribe();
+  }, [currentUser?.username]);
+
+  // Real-time listener for current user's Private Messages (PMs) in Firebase Realtime Database
+  useEffect(() => {
+    if (!currentUser?.username) {
+      knownPmSignaturesRef.current = null;
+      setPmThreads([]);
+      setActivePmPeer(null);
+      return;
+    }
+    knownPmSignaturesRef.current = null;
+    const myKey = sanitizeDbKey(currentUser.username);
+    const pmsRef = ref(rtdb, `users/${myKey}/pms`);
+    const unsubscribe = onValue(
+      pmsRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const threads: PmThread[] = [];
+          const currentSigs: string[] = [];
+
+          snapshot.forEach((childSnap) => {
+            const val = childSnap.val();
+            const peerKey = childSnap.key;
+            if (!val || typeof val !== 'object' || !peerKey) return;
+
+            const msgsList: PmMessage[] = [];
+            if (val.messages && typeof val.messages === 'object') {
+              for (const [mId, mVal] of Object.entries(val.messages)) {
+                const m = mVal as any;
+                if (!m || (typeof m.text !== 'string' && typeof m.mediaUrl !== 'string')) continue;
+                const cAt = typeof m.createdAt === 'number' ? m.createdAt : Date.now();
+                const cleanUrl = sanitizeMediaUrl(m.mediaUrl);
+                const mType: 'image' | 'audio' | 'video' | null =
+                  m.mediaType === 'video'
+                    ? 'video'
+                    : m.mediaType === 'audio'
+                    ? 'audio'
+                    : cleanUrl
+                    ? 'image'
+                    : null;
+                msgsList.push({
+                  id: mId,
+                  sender: m.sender || 'Anonymous',
+                  text: typeof m.text === 'string' ? m.text : '',
+                  timestamp:
+                    m.timestamp ||
+                    new Date(cAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                  createdAt: cAt,
+                  mediaUrl: cleanUrl,
+                  mediaType: mType,
+                  mediaName: m.mediaName || null
+                });
+                currentSigs.push(`${peerKey}:${mId}`);
+              }
+            }
+            msgsList.sort((a, b) => a.createdAt - b.createdAt);
+
+            const lastMsgTime = msgsList.length > 0 ? msgsList[msgsList.length - 1].createdAt : 0;
+            threads.push({
+              peerKey,
+              peerUsername: val.peerUsername || peerKey,
+              peerAvatarUrl: sanitizeMediaUrl(val.peerAvatarUrl),
+              unread: val.unread === true,
+              updatedAt: typeof val.updatedAt === 'number' ? val.updatedAt : lastMsgTime || Date.now(),
+              messages: msgsList
+            });
+          });
+
+          threads.sort((a, b) => b.updatedAt - a.updatedAt);
+
+          if (knownPmSignaturesRef.current === null) {
+            knownPmSignaturesRef.current = new Set(currentSigs);
+            if (threads.some((t) => t.unread)) {
+              triggerBackgroundTabFaviconAlert();
+            }
+          } else {
+            const hasNewPm = currentSigs.some((sig) => !knownPmSignaturesRef.current!.has(sig));
+            knownPmSignaturesRef.current = new Set(currentSigs);
+            if (hasNewPm) {
+              triggerBackgroundTabFaviconAlert();
+            }
+          }
+
+          setPmThreads(threads);
+        } else {
+          knownPmSignaturesRef.current = new Set();
+          setPmThreads([]);
+        }
+      },
+      (err) => {
+        console.warn('Realtime Database PMs listener notice:', err.message);
       }
     );
     return () => unsubscribe();
@@ -1476,6 +1611,9 @@ export default function App() {
       }
       if (notificationsMenuRef.current && !notificationsMenuRef.current.contains(e.target as Node)) {
         setShowNotificationsMenu(false);
+      }
+      if (privateMenuRef.current && !privateMenuRef.current.contains(e.target as Node)) {
+        setShowPrivateMenu(false);
       }
       if (hamburgerMenuRef.current && !hamburgerMenuRef.current.contains(e.target as Node)) {
         setShowHamburgerMenu(false);
@@ -2323,6 +2461,323 @@ export default function App() {
     }
   };
 
+  // ====================================================
+  // PRIVATE MESSAGES (PMs) HANDLERS
+  // ====================================================
+  const handleOpenPmWithUser = useCallback(
+    async (targetUsername: string) => {
+      if (!currentUser?.username || !targetUsername) return;
+      const cleanTarget = targetUsername.trim();
+      if (!cleanTarget || cleanTarget.toLowerCase() === currentUser.username.toLowerCase()) return;
+
+      setActivePmPeer(cleanTarget);
+      setShowPrivateMenu(false);
+
+      const myKey = sanitizeDbKey(currentUser.username);
+      const peerKey = sanitizeDbKey(cleanTarget);
+      const targetUserObj = allUsersList.find(
+        (u) => u.username.toLowerCase() === cleanTarget.toLowerCase()
+      );
+
+      try {
+        await update(ref(rtdb, `users/${myKey}/pms/${peerKey}`), {
+          peerUsername: targetUserObj?.username || cleanTarget,
+          peerAvatarUrl: sanitizeMediaUrl(targetUserObj?.avatarUrl) || null,
+          unread: false,
+          updatedAt: Date.now()
+        });
+      } catch (_) {}
+
+      setTimeout(() => {
+        pmMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        pmInputRef.current?.focus();
+      }, 60);
+    },
+    [currentUser?.username, allUsersList]
+  );
+
+  // Mark all PM threads as read (Checkmark square button in Private dropdown)
+  const handleMarkAllPmsRead = async (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!currentUser?.username) return;
+    const myKey = sanitizeDbKey(currentUser.username);
+    setPmThreads((prev) => prev.map((t) => ({ ...t, unread: false })));
+    try {
+      const updates: Record<string, any> = {};
+      pmThreads.forEach((t) => {
+        if (t.unread) {
+          updates[`${t.peerKey}/unread`] = false;
+        }
+      });
+      if (Object.keys(updates).length > 0) {
+        await update(ref(rtdb, `users/${myKey}/pms`), updates);
+      }
+    } catch (err) {
+      console.warn('Error marking all PMs read:', err);
+    }
+  };
+
+  // Delete a single PM conversation thread (X button next to user in Private dropdown)
+  const handleDeletePmThread = async (peerKey: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!currentUser?.username || !peerKey) return;
+    const myKey = sanitizeDbKey(currentUser.username);
+
+    const targetThread = pmThreads.find((t) => t.peerKey === peerKey);
+    if (
+      activePmPeer &&
+      (sanitizeDbKey(activePmPeer) === peerKey ||
+        (targetThread && targetThread.peerUsername.toLowerCase() === activePmPeer.toLowerCase()))
+    ) {
+      setActivePmPeer(null);
+    }
+
+    setPmThreads((prev) => prev.filter((t) => t.peerKey !== peerKey));
+    try {
+      await remove(ref(rtdb, `users/${myKey}/pms/${peerKey}`));
+    } catch (err) {
+      console.warn('Error deleting PM thread:', err);
+    }
+  };
+
+  // Delete all PM conversations (Trash icon in Private dropdown)
+  const handleClearAllPmThreads = async (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!currentUser?.username) return;
+    const myKey = sanitizeDbKey(currentUser.username);
+    setPmThreads([]);
+    setActivePmPeer(null);
+    try {
+      await remove(ref(rtdb, `users/${myKey}/pms`));
+    } catch (err) {
+      console.warn('Error clearing all PM threads:', err);
+    }
+  };
+
+  // Upload image (or media) in Private Message window
+  const handlePmMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+
+    const lowerName = file.name.toLowerCase();
+    const isAudio =
+      file.type.startsWith('audio/') ||
+      lowerName.endsWith('.mp3') ||
+      lowerName.endsWith('.wav') ||
+      lowerName.endsWith('.ogg') ||
+      lowerName.endsWith('.m4a');
+    const isVideo =
+      !isAudio &&
+      (file.type.startsWith('video/') ||
+        lowerName.endsWith('.mp4') ||
+        lowerName.endsWith('.webm') ||
+        lowerName.endsWith('.mov'));
+    const isGif = file.type === 'image/gif' || lowerName.endsWith('.gif');
+    const detectedType: 'image' | 'audio' | 'video' = isAudio
+      ? 'audio'
+      : isVideo
+      ? 'video'
+      : 'image';
+
+    setIsUploadingPmMedia(true);
+    try {
+      let uploadFile = file;
+      if (detectedType === 'image' && !isGif && file.type.startsWith('image/')) {
+        try {
+          const comp = await compressBanner(file);
+          uploadFile = comp.file;
+        } catch (_) {}
+      }
+
+      const cloudinaryResourceType = detectedType === 'image' ? 'image' : 'video';
+      try {
+        const res = await uploadToCloudinary(uploadFile, cloudinaryResourceType, 'pm_media');
+        setPmMediaUrl(res.secure_url || res.url);
+        setPmMediaType(detectedType);
+        setPmMediaName(file.name);
+      } catch (cloudErr) {
+        console.warn('Cloudinary PM media upload fallback to Data URL:', cloudErr);
+        const dataUrl = await fileToDataUrl(uploadFile);
+        setPmMediaUrl(dataUrl);
+        setPmMediaType(detectedType);
+        setPmMediaName(file.name);
+      }
+    } catch (err) {
+      console.warn('Error uploading PM media:', err);
+    } finally {
+      setIsUploadingPmMedia(false);
+    }
+  };
+
+  // Voice dictation inside the PM input bar
+  const handleTogglePmVoiceInput = () => {
+    if (isListeningPmVoice && pmRecognitionRef.current) {
+      try {
+        pmRecognitionRef.current.stop();
+      } catch (_) {}
+      setIsListeningPmVoice(false);
+      return;
+    }
+
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      pmInputRef.current?.focus();
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'en-US';
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      recognition.onstart = () => setIsListeningPmVoice(true);
+      recognition.onend = () => setIsListeningPmVoice(false);
+      recognition.onerror = () => setIsListeningPmVoice(false);
+      recognition.onresult = (event: any) => {
+        const transcript = event.results?.[0]?.[0]?.transcript;
+        if (transcript) {
+          setPmInputText((prev) => (prev ? `${prev} ${transcript}` : transcript));
+          pmInputRef.current?.focus();
+        }
+      };
+
+      pmRecognitionRef.current = recognition;
+      recognition.start();
+    } catch (_) {
+      setIsListeningPmVoice(false);
+    }
+  };
+
+  // Send a Private Message (syncs to both sender's and recipient's PM threads in RTDB)
+  const handleSendPmMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if ((!pmInputText.trim() && !pmMediaUrl) || !currentUser?.username || !activePmPeer || isUploadingPmMedia) {
+      return;
+    }
+    if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
+
+    const textToSend = pmInputText.trim();
+    const mediaUrlToSend = sanitizeMediaUrl(pmMediaUrl);
+    const mediaTypeToSend = mediaUrlToSend ? pmMediaType : null;
+    const mediaNameToSend = mediaUrlToSend ? pmMediaName : null;
+    const targetPeerName = activePmPeer.trim();
+
+    setPmInputText('');
+    setPmMediaUrl(null);
+    setPmMediaType(null);
+    setPmMediaName(null);
+
+    const myKey = sanitizeDbKey(currentUser.username);
+    const peerKey = sanitizeDbKey(targetPeerName);
+    const now = Date.now();
+    const msgId = `${now}-${Math.random().toString(36).slice(2, 8)}`;
+    const timeStr = new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    const targetUserObj = allUsersList.find(
+      (u) => u.username.toLowerCase() === targetPeerName.toLowerCase()
+    );
+
+    const msgPayload = {
+      sender: currentUser.username,
+      text: textToSend,
+      mediaUrl: mediaUrlToSend || null,
+      mediaType: mediaTypeToSend || null,
+      mediaName: mediaNameToSend || null,
+      timestamp: timeStr,
+      createdAt: now
+    };
+
+    try {
+      // 1. Save message in sender's PM thread
+      await update(ref(rtdb, `users/${myKey}/pms/${peerKey}`), {
+        peerUsername: targetUserObj?.username || targetPeerName,
+        peerAvatarUrl: sanitizeMediaUrl(targetUserObj?.avatarUrl) || null,
+        unread: false,
+        updatedAt: now,
+        [`messages/${msgId}`]: msgPayload
+      });
+
+      // 2. If recipient is a real user (not System), deliver into recipient's PM thread and trigger action alert
+      if (targetPeerName.toLowerCase() !== 'system') {
+        await update(ref(rtdb, `users/${peerKey}/pms/${myKey}`), {
+          peerUsername: currentUser.username,
+          peerAvatarUrl: sanitizeMediaUrl(userProfile.avatarUrl) || null,
+          unread: true,
+          updatedAt: now,
+          [`messages/${msgId}`]: msgPayload
+        });
+      } else {
+        // If PMing System bot, generate AI reply inside the PM thread
+        const promptForBot = textToSend || 'Hello';
+        const senderName = currentUser.username;
+        (async () => {
+          try {
+            const rawReply = await generateAiBotReply(promptForBot, SYSTEM_BOT_USERNAME, senderName);
+            const cleanReply =
+              rawReply
+                .replace(/<think>[\s\S]*?<\/think>/gi, '')
+                .replace(/\*[^*]+\*/g, '')
+                .replace(/\s{2,}/g, ' ')
+                .trim()
+                .replace(/^["']|["']$/g, '')
+                .trim() || 'Hello. How may I assist you today?';
+
+            const botNow = Date.now();
+            const botMsgId = `${botNow}-bot`;
+            await update(ref(rtdb, `users/${myKey}/pms/${peerKey}`), {
+              peerUsername: SYSTEM_BOT_USERNAME,
+              peerAvatarUrl: SYSTEM_BOT_AVATAR,
+              unread: false,
+              updatedAt: botNow,
+              [`messages/${botMsgId}`]: {
+                sender: SYSTEM_BOT_USERNAME,
+                text: cleanReply,
+                timestamp: new Date(botNow).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit'
+                }),
+                createdAt: botNow
+              }
+            });
+          } catch (_) {}
+        })();
+      }
+    } catch (err) {
+      console.warn('Error sending PM in RTDB:', err);
+    }
+
+    setTimeout(() => {
+      pmMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 50);
+  };
+
+  // Auto-mark active PM peer thread as read when open & scroll to bottom on new PM messages
+  const activePmThread = useMemo(() => {
+    if (!activePmPeer) return null;
+    const pKey = sanitizeDbKey(activePmPeer);
+    return (
+      pmThreads.find(
+        (t) =>
+          t.peerKey === pKey ||
+          t.peerUsername.toLowerCase() === activePmPeer.toLowerCase()
+      ) || null
+    );
+  }, [activePmPeer, pmThreads]);
+
+  useEffect(() => {
+    if (!activePmPeer || !currentUser?.username) return;
+    if (activePmThread?.unread) {
+      const myKey = sanitizeDbKey(currentUser.username);
+      update(ref(rtdb, `users/${myKey}/pms/${activePmThread.peerKey}`), {
+        unread: false
+      }).catch(() => {});
+    }
+    pmMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [activePmPeer, activePmThread?.messages.length, activePmThread?.unread, currentUser?.username]);
+
   // Record a "Is stalking you!" notification when viewing another user's profile
   const recordProfileVisitNotification = useCallback(
     async (targetUsername?: string | null) => {
@@ -2982,6 +3437,7 @@ export default function App() {
     const isDevOrAbove = (currentUserRank?.priority ?? 0) >= 80;
     const isOwnerOrAbove = (currentUserRank?.priority ?? 0) >= 90;
     const hasUnreadNotifications = notifications.some((n) => !n.read);
+    const hasUnreadPms = pmThreads.some((t) => t.unread);
 
     return (
       <div className="h-[100dvh] w-screen bg-[#111114] text-white flex flex-col font-sans overflow-hidden select-none relative">
@@ -2995,6 +3451,7 @@ export default function App() {
                 e.stopPropagation();
                 setShowProfileMenu(false);
                 setShowNotificationsMenu(false);
+                setShowPrivateMenu(false);
                 setShowHamburgerMenu((prev) => !prev);
               }}
               aria-label="Open menu"
@@ -3046,6 +3503,127 @@ export default function App() {
 
           {/* Top-Right Controls */}
           <div className="flex items-center gap-3">
+          {/* Private Messages Envelope Icon (Screenshot 1) */}
+          <div className="relative" ref={privateMenuRef}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowProfileMenu(false);
+                setShowNotificationsMenu(false);
+                setShowHamburgerMenu(false);
+                setShowPrivateMenu((prev) => !prev);
+              }}
+              aria-label="Private messages"
+              className="bcell_mid relative text-white hover:text-zinc-300 p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-center"
+            >
+              <i className="fa fa-envelope text-white text-lg" aria-hidden="true" />
+              {hasUnreadPms && (
+                <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-[#ff1e1e] rounded-full pointer-events-none" />
+              )}
+            </button>
+
+            {/* Private Dropdown Menu (Screenshot 1) */}
+            {showPrivateMenu && (
+              <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-[#18181c] border border-[#282832] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100">
+                {/* Private Dropdown Header */}
+                <div className="px-4 py-3 border-b border-[#25252e] flex items-center justify-between bg-[#1b1b20]">
+                  <div className="flex items-center gap-2">
+                    <i className="fa fa-comments text-white text-base" aria-hidden="true" />
+                    <span className="text-base font-black text-white tracking-wide">
+                      Private
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3.5">
+                    <button
+                      type="button"
+                      onClick={handleMarkAllPmsRead}
+                      title="Mark all as read"
+                      className="text-white hover:text-cyan-300 transition-colors cursor-pointer"
+                    >
+                      <i className="fa fa-check-square text-base" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClearAllPmThreads}
+                      title="Delete all private conversations"
+                      className="text-white hover:text-rose-400 transition-colors cursor-pointer"
+                    >
+                      <i className="fa fa-trash text-base" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Private Conversations List */}
+                <div className="max-h-[380px] overflow-y-auto py-1">
+                  {pmThreads.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-xs text-zinc-500 font-medium">
+                      No private messages yet.
+                    </div>
+                  ) : (
+                    pmThreads.map((thread) => {
+                      const isSystemPeer = thread.peerUsername.toLowerCase() === 'system';
+                      const peerUser = allUsersList.find(
+                        (u) => u.username.toLowerCase() === thread.peerUsername.toLowerCase()
+                      );
+                      const peerAvatar = isSystemPeer
+                        ? SYSTEM_BOT_AVATAR
+                        : (peerUser?.avatarUrl ?? thread.peerAvatarUrl ?? null);
+                      const peerGlow = peerUser?.glowColor || null;
+                      const peerBorderId = peerUser?.pfpBorderId || 'pfp-default';
+                      const peerBorderThickness = peerUser?.pfpBorderThickness || 2;
+
+                      return (
+                        <div
+                          key={thread.peerKey}
+                          onClick={() => handleOpenPmWithUser(peerUser?.username || thread.peerUsername)}
+                          className="w-full px-4 py-2.5 flex items-center justify-between gap-3 hover:bg-white/[0.05] transition-colors cursor-pointer group"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <UserAvatar
+                              avatarUrl={peerAvatar}
+                              className="w-11 h-11"
+                              pfpBorderClass={getPfpBorder(peerBorderId).pfpBorderClass}
+                              pfpBorderThickness={peerBorderThickness}
+                            />
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span
+                                style={
+                                  peerGlow
+                                    ? {
+                                        color: peerGlow,
+                                        textShadow: `0 0 10px ${peerGlow}80`
+                                      }
+                                    : undefined
+                                }
+                                className="text-sm sm:text-base font-black text-white truncate"
+                              >
+                                {peerUser?.username || thread.peerUsername}
+                              </span>
+                              {thread.unread && (
+                                <span className="w-2.5 h-2.5 rounded-full bg-[#ff1e1e] shrink-0" />
+                              )}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeletePmThread(thread.peerKey, e)}
+                            aria-label="Remove conversation"
+                            title="Remove conversation"
+                            className="text-white hover:text-rose-400 p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer shrink-0"
+                          >
+                            <X className="w-4 h-4 stroke-[3]" />
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Flag icon: only visible if current user is Staff */}
           {isCurrentUserStaff && (
             <button
@@ -3064,6 +3642,8 @@ export default function App() {
               onClick={(e) => {
                 e.stopPropagation();
                 setShowProfileMenu(false);
+                setShowPrivateMenu(false);
+                setShowHamburgerMenu(false);
                 const nextOpen = !showNotificationsMenu;
                 setShowNotificationsMenu(nextOpen);
                 if (nextOpen) {
@@ -4292,6 +4872,21 @@ export default function App() {
                     <User className="w-4 h-4 text-zinc-300" />
                     <span>View profile</span>
                   </button>
+
+                  {/* Private message button (Screenshot 2) */}
+                  {!isSelectedUserMe && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlayerPopoverOpen(false);
+                        handleOpenPmWithUser(activePopoverUser.username);
+                      }}
+                      className="w-full bg-[#1e1e26] hover:bg-[#282834] text-white font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer shadow-sm"
+                    >
+                      <i className="fa fa-comments text-[#00b4d8] text-sm" aria-hidden="true" />
+                      <span>Private</span>
+                    </button>
+                  )}
 
                   {/* Action button (Main Developer only when clicking a lower rank) */}
                   {canMainDevActOnTarget && (
@@ -6287,6 +6882,326 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* ==================================================== */}
+        {/* FLOATING PRIVATE MESSAGE (PM) CHAT WINDOW (Screenshot 3) */}
+        {/* ==================================================== */}
+        {activePmPeer && (() => {
+          const isSystemPeer = activePmPeer.toLowerCase() === 'system';
+          const peerUserObj = allUsersList.find(
+            (u) => u.username.toLowerCase() === activePmPeer.toLowerCase()
+          );
+          const peerDisplayName = peerUserObj?.username || activePmThread?.peerUsername || activePmPeer;
+          const peerAvatar = isSystemPeer
+            ? SYSTEM_BOT_AVATAR
+            : (peerUserObj?.avatarUrl ?? activePmThread?.peerAvatarUrl ?? null);
+          const peerBorderId = peerUserObj?.pfpBorderId || 'pfp-default';
+          const peerBorderThickness = peerUserObj?.pfpBorderThickness || 2;
+          const pmMessagesList = activePmThread?.messages || [];
+
+          return (
+            <div
+              className={`fixed z-50 bg-[#121215] border border-[#25252e] rounded-2xl shadow-2xl flex flex-col overflow-hidden transition-all duration-150 ${
+                pmWindowExpanded
+                  ? 'inset-3 sm:inset-auto sm:bottom-12 sm:right-4 sm:w-[580px] sm:h-[620px]'
+                  : 'bottom-11 right-2 sm:right-4 w-[calc(100vw-16px)] sm:w-[430px] h-[440px] sm:h-[470px]'
+              }`}
+            >
+              {/* PM Window Top Header Bar */}
+              <div className="h-13 bg-[#1a1a20] border-b border-[#24242d] px-3.5 flex items-center justify-between shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (peerUserObj) {
+                      setSelectedUser(peerUserObj);
+                      if (!isSystemPeer) {
+                        recordProfileVisitNotification(peerUserObj.username);
+                      }
+                    } else {
+                      setSelectedUser({
+                        username: peerDisplayName,
+                        avatarUrl: peerAvatar,
+                        isOnline: false
+                      });
+                    }
+                    setPublicProfileTab('info');
+                    setProfileViewMode('view');
+                    setProfileModalOpen(true);
+                  }}
+                  className="flex items-center gap-2.5 min-w-0 cursor-pointer hover:opacity-90 transition-opacity text-left"
+                >
+                  <UserAvatar
+                    avatarUrl={peerAvatar}
+                    className="w-9 h-9"
+                    pfpBorderClass={getPfpBorder(peerBorderId).pfpBorderClass}
+                    pfpBorderThickness={peerBorderThickness}
+                  />
+                  <span className="font-black text-white text-base sm:text-lg truncate">
+                    {peerDisplayName}
+                  </span>
+                </button>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setPmWindowExpanded((prev) => !prev)}
+                    aria-label={pmWindowExpanded ? 'Restore size' : 'Expand window'}
+                    title={pmWindowExpanded ? 'Restore size' : 'Expand window'}
+                    className="text-white hover:text-zinc-300 p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                  >
+                    {pmWindowExpanded ? (
+                      <Minimize2 className="w-4 h-4 stroke-[2.5]" />
+                    ) : (
+                      <Maximize2 className="w-4 h-4 stroke-[2.5]" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActivePmPeer(null)}
+                    aria-label="Minimize private chat"
+                    title="Minimize"
+                    className="text-white hover:text-zinc-300 p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                  >
+                    <Minus className="w-4 h-4 stroke-[2.5]" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActivePmPeer(null)}
+                    aria-label="Close private chat"
+                    title="Close"
+                    className="text-white hover:text-rose-400 p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                  >
+                    <X className="w-4 h-4 stroke-[2.5]" />
+                  </button>
+                </div>
+              </div>
+
+              {/* PM Messages Area */}
+              <div className="flex-1 overflow-y-auto px-3.5 py-3 space-y-3 bg-[#121215]">
+                {pmMessagesList.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-xs text-zinc-500 font-medium select-none">
+                    No messages yet. Say hello to {peerDisplayName}!
+                  </div>
+                ) : (
+                  pmMessagesList.map((pm) => {
+                    const isMeSender =
+                      pm.sender.toLowerCase() === currentUser.username.toLowerCase();
+                    const senderUser = isMeSender
+                      ? {
+                          username: currentUser.username,
+                          avatarUrl: userProfile.avatarUrl,
+                          pfpBorderId: userProfile.pfpBorderId,
+                          pfpBorderThickness: userProfile.pfpBorderThickness,
+                          rank: userProfile.rank,
+                          email: currentUser.email
+                        }
+                      : allUsersList.find(
+                          (u) => u.username.toLowerCase() === pm.sender.toLowerCase()
+                        );
+                    const senderRankObj = getUserRank(
+                      pm.sender,
+                      senderUser?.email,
+                      senderUser?.rank
+                    );
+
+                    return (
+                      <div
+                        key={pm.id}
+                        className="flex items-start gap-2.5 hover:bg-white/[0.02] p-1.5 rounded-xl transition-colors"
+                      >
+                        <UserAvatar
+                          avatarUrl={
+                            isMeSender
+                              ? userProfile.avatarUrl
+                              : (senderUser?.avatarUrl ?? peerAvatar)
+                          }
+                          className="w-8 h-8 mt-0.5"
+                          pfpBorderClass={
+                            getPfpBorder(
+                              isMeSender ? userProfile.pfpBorderId : senderUser?.pfpBorderId
+                            ).pfpBorderClass
+                          }
+                          pfpBorderThickness={
+                            isMeSender
+                              ? userProfile.pfpBorderThickness
+                              : senderUser?.pfpBorderThickness
+                          }
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              {senderRankObj && (
+                                <img
+                                  src={senderRankObj.icon}
+                                  alt={senderRankObj.name}
+                                  className="w-3.5 h-3.5 object-contain shrink-0"
+                                />
+                              )}
+                              <span className="font-bold text-white text-xs sm:text-sm truncate">
+                                {senderUser?.username || pm.sender}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-zinc-500 shrink-0">
+                              {pm.timestamp}
+                            </span>
+                          </div>
+
+                          {pm.text && (
+                            <p className="text-xs sm:text-sm text-zinc-100 mt-0.5 break-words leading-relaxed select-text">
+                              {pm.text}
+                            </p>
+                          )}
+
+                          {pm.mediaUrl && (
+                            <div className="mt-1.5">
+                              {pm.mediaType === 'video' ? (
+                                <video
+                                  src={pm.mediaUrl}
+                                  controls
+                                  playsInline
+                                  className="max-w-full max-h-56 rounded-xl border border-[#262632] bg-black/40 object-contain"
+                                />
+                              ) : pm.mediaType === 'audio' ? (
+                                <div className="bg-[#181820] border border-[#282834] rounded-xl p-2.5 space-y-1.5">
+                                  <div className="flex items-center gap-1.5 text-xs font-bold text-cyan-400 truncate">
+                                    <Music className="w-3.5 h-3.5 shrink-0" />
+                                    <span className="truncate text-white">
+                                      {pm.mediaName || 'Audio (.mp3)'}
+                                    </span>
+                                  </div>
+                                  <audio src={pm.mediaUrl} controls className="w-full h-8" />
+                                </div>
+                              ) : (
+                                <img
+                                  src={pm.mediaUrl}
+                                  alt={pm.mediaName || 'Attachment'}
+                                  className="max-w-full max-h-60 rounded-xl border border-[#262632] bg-black/20 object-contain"
+                                />
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+                <div ref={pmMessagesEndRef} />
+              </div>
+
+              {/* Pending PM Media Upload Preview */}
+              {(pmMediaUrl || isUploadingPmMedia) && (
+                <div className="px-3.5 py-2 bg-[#181820] border-t border-[#262632] flex items-center justify-between gap-2">
+                  {isUploadingPmMedia ? (
+                    <div className="flex items-center gap-2 text-xs text-cyan-300 font-bold">
+                      <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+                      <span>Uploading image...</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {pmMediaType === 'video' ? (
+                        <video
+                          src={pmMediaUrl!}
+                          className="w-10 h-10 rounded-lg object-cover bg-black border border-white/10 shrink-0"
+                        />
+                      ) : pmMediaType === 'audio' ? (
+                        <div className="w-9 h-9 rounded-lg bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
+                          <Music className="w-4 h-4" />
+                        </div>
+                      ) : (
+                        <img
+                          src={pmMediaUrl!}
+                          alt="Preview"
+                          className="w-10 h-10 rounded-lg object-cover bg-black border border-white/10 shrink-0"
+                        />
+                      )}
+                      <span className="text-xs font-bold text-white truncate">
+                        {pmMediaName || 'Attachment ready'}
+                      </span>
+                    </div>
+                  )}
+
+                  {!isUploadingPmMedia && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPmMediaUrl(null);
+                        setPmMediaType(null);
+                        setPmMediaName(null);
+                      }}
+                      className="text-zinc-400 hover:text-rose-400 p-1 rounded-lg cursor-pointer shrink-0"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Hidden File Input for PM Media Uploads */}
+              <input
+                type="file"
+                ref={pmMediaInputRef}
+                accept="image/*,video/*,audio/*,.mp3,.wav,.ogg,.m4a,.mp4,.webm,.mov,.gif"
+                className="hidden"
+                onChange={handlePmMediaUpload}
+              />
+
+              {/* PM Bottom Input Bar (Screenshot 3) */}
+              <form
+                onSubmit={handleSendPmMessage}
+                className="bg-[#18181c] border-t border-[#23232c] px-3 py-2.5 flex items-center gap-2 shrink-0"
+              >
+                <button
+                  type="button"
+                  disabled={isUploadingPmMedia}
+                  onClick={() => pmMediaInputRef.current?.click()}
+                  aria-label="Upload image"
+                  title="Upload image"
+                  className="text-zinc-400 hover:text-white p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                >
+                  {isUploadingPmMedia ? (
+                    <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
+                  ) : (
+                    <Plus className="w-5 h-5 stroke-[2.5]" />
+                  )}
+                </button>
+
+                <input
+                  ref={pmInputRef}
+                  type="text"
+                  value={pmInputText}
+                  onChange={(e) => setPmInputText(e.target.value)}
+                  placeholder="Type here..."
+                  className="flex-1 bg-[#121216] border border-[#24242d] rounded-full px-4 py-2 text-white text-sm placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
+                />
+
+                <button
+                  type="button"
+                  onClick={handleTogglePmVoiceInput}
+                  aria-label="Voice input"
+                  title={isListeningPmVoice ? 'Listening... Click to stop' : 'Voice dictation'}
+                  className={`p-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
+                    isListeningPmVoice
+                      ? 'text-rose-400 bg-rose-500/15 animate-pulse'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <Mic className="w-5 h-5" />
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={(!pmInputText.trim() && !pmMediaUrl) || isUploadingPmMedia}
+                  aria-label="Send private message"
+                  className="text-white hover:text-cyan-300 disabled:text-zinc-600 p-1.5 rounded-lg transition-colors cursor-pointer shrink-0"
+                >
+                  <i className="fa fa-paper-plane text-lg" aria-hidden="true" />
+                </button>
+              </form>
+            </div>
+          );
+        })()}
       </div>
     );
   }
