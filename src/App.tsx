@@ -610,7 +610,7 @@ export default function App() {
       return;
     }
     const myKey = sanitizeDbKey(currentUser.username);
-    const notifRef = query(ref(rtdb, `notifications/${myKey}`), limitToLast(50));
+    const notifRef = query(ref(rtdb, `users/${myKey}/notifications`), limitToLast(50));
     const unsubscribe = onValue(
       notifRef,
       (snapshot) => {
@@ -1511,7 +1511,7 @@ export default function App() {
 
       const targetKey = sanitizeDbKey(cleanTarget);
       try {
-        await push(ref(rtdb, `notifications/${targetKey}`), {
+        await push(ref(rtdb, `users/${targetKey}/notifications`), {
           type: 'profile_visit',
           fromUsername: currentUser.username,
           fromAvatarUrl: sanitizeMediaUrl(userProfile.avatarUrl) || null,
@@ -1540,7 +1540,7 @@ export default function App() {
       updatesMap[`${n.id}/read`] = true;
     });
     try {
-      await update(ref(rtdb, `notifications/${myKey}`), updatesMap);
+      await update(ref(rtdb, `users/${myKey}/notifications`), updatesMap);
     } catch (err) {
       console.warn('Error marking notifications read:', err);
     }
@@ -1563,15 +1563,19 @@ export default function App() {
       ASSIGNABLE_RANKS.find((r) => r.id === dbRankVal)?.name || 'User';
 
     try {
-      // 1. Send System rank-change notification first so it's in RTDB when the target's tab reloads
-      await push(ref(rtdb, `notifications/${targetKey}`), {
-        type: 'rank_change',
-        fromUsername: SYSTEM_BOT_USERNAME,
-        fromAvatarUrl: SYSTEM_BOT_AVATAR,
-        text: `Your rank has been changed to ${newRankDisplayName}`,
-        createdAt: Date.now(),
-        read: false
-      });
+      // 1. Send System rank-change notification into users/{targetKey}/notifications so it's ready when the target's tab reloads
+      try {
+        await push(ref(rtdb, `users/${targetKey}/notifications`), {
+          type: 'rank_change',
+          fromUsername: SYSTEM_BOT_USERNAME,
+          fromAvatarUrl: SYSTEM_BOT_AVATAR,
+          text: `Your rank has been changed to ${newRankDisplayName}`,
+          createdAt: Date.now(),
+          read: false
+        });
+      } catch (notifErr) {
+        console.warn('Error pushing rank change notification:', notifErr);
+      }
 
       // 2. Update user's rank & trigger live reload on their tab
       await update(ref(rtdb, `users/${targetKey}`), {

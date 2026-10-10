@@ -11,7 +11,7 @@ const GITHUB_RANKS_BASE = 'https://raw.githubusercontent.com/nyatter1/chatranks/
 
 export const SYSTEM_BOT_USERNAME = 'System';
 export const SYSTEM_BOT_AVATAR = botAvatar || '/bot.png';
-export const SYSTEM_BOT_RANK_ICON = 'https://teenchatcity.com/default_images/rank/bot.svg';
+export const SYSTEM_BOT_RANK_ICON = '/ranks/bot.svg';
 
 export const RANKS: Record<string, RankDefinition> = {
   main_developer: {
