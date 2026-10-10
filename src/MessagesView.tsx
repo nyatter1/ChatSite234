@@ -174,20 +174,6 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   const [myFollowers, setMyFollowers] = useState<Record<string, boolean>>({});
   const [myFavorites, setMyFavorites] = useState<Record<string, boolean>>({});
 
-  // All users' msgProfiles, followers, following map
-  const [usersMessengerData, setUsersMessengerData] = useState<
-    Record<
-      string,
-      {
-        displayName?: string;
-        avatarUrl?: string | null;
-        about?: string;
-        followers: Record<string, boolean>;
-        following: Record<string, boolean>;
-      }
-    >
-  >({});
-
   // Stories & Groups
   const [stories, setStories] = useState<MessengerStory[]>([]);
   const [groups, setGroups] = useState<MessengerGroupChat[]>([]);
@@ -257,60 +243,66 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
     return () => document.removeEventListener('mousedown', handleOutside);
   }, []);
 
-  // Listen to all users' msgProfile, followers, following, favorites in RTDB
-  useEffect(() => {
-    const usersRef = ref(rtdb, 'users');
-    const unsub = onValue(usersRef, (snap) => {
-      if (!snap.exists()) return;
-      const map: Record<
-        string,
-        {
-          displayName?: string;
-          avatarUrl?: string | null;
-          about?: string;
-          followers: Record<string, boolean>;
-          following: Record<string, boolean>;
-        }
-      > = {};
-
-      snap.forEach((child) => {
-        const key = child.key;
-        const val = child.val();
-        if (!key || !val || typeof val !== 'object') return;
-        if (key === '__system_news__' || key === '__system_bot__' || key === '__system_messenger__') {
-          return;
-        }
-        const mp = val.msgProfile && typeof val.msgProfile === 'object' ? val.msgProfile : {};
-        const flwrs = val.msgFollowers && typeof val.msgFollowers === 'object' ? val.msgFollowers : {};
-        const flwng = val.msgFollowing && typeof val.msgFollowing === 'object' ? val.msgFollowing : {};
-        map[key] = {
-          displayName: mp.displayName || val.username || key,
-          avatarUrl: mp.avatarUrl || val.avatarUrl || null,
-          about: mp.about || val.mood || 'Hey there! I am using Messages.',
-          followers: flwrs,
-          following: flwng
-        };
-
-        if (key === myKey) {
-          setMyMsgProfile({
-            displayName: mp.displayName || currentUser.username,
-            avatarUrl: mp.avatarUrl || val.avatarUrl || userAvatarUrl || null,
-            about: mp.about || 'Hey there! I am using Messages.'
-          });
-          setMyFollowers(flwrs);
-          setMyFollowing(flwng);
-          setMyFavorites(
-            val.msgFavorites && typeof val.msgFavorites === 'object' ? val.msgFavorites : {}
-          );
-        }
-      });
-
-      setUsersMessengerData(map);
+  // Derive all users' msgProfile, followers, following from allUsersList (no duplicate root users listener!)
+  const usersMessengerData = useMemo(() => {
+    const map: Record<
+      string,
+      {
+        displayName?: string;
+        avatarUrl?: string | null;
+        about?: string;
+        followers: Record<string, boolean>;
+        following: Record<string, boolean>;
+      }
+    > = {};
+    allUsersList.forEach((u) => {
+      const k = sanitizeDbKey(u.username);
+      if (!k) return;
+      map[k] = {
+        displayName: u.msgProfile?.displayName || u.username,
+        avatarUrl: u.msgProfile?.avatarUrl || u.avatarUrl || null,
+        about: u.msgProfile?.about || u.mood || 'Hey there! I am using Messages.',
+        followers: u.msgFollowers || {},
+        following: u.msgFollowing || {}
+      };
     });
-    return () => unsub();
+    return map;
+  }, [allUsersList]);
+
+  // Listen ONLY to the current user's specific lightweight messenger subpaths (not the entire users root)
+  useEffect(() => {
+    const profRef = ref(rtdb, `users/${myKey}/msgProfile`);
+    const flwrsRef = ref(rtdb, `users/${myKey}/msgFollowers`);
+    const flwngRef = ref(rtdb, `users/${myKey}/msgFollowing`);
+    const favsRef = ref(rtdb, `users/${myKey}/msgFavorites`);
+
+    const unsubProf = onValue(profRef, (snap) => {
+      const mp = snap.exists() && typeof snap.val() === 'object' ? snap.val() : {};
+      setMyMsgProfile({
+        displayName: mp.displayName || currentUser.username,
+        avatarUrl: mp.avatarUrl || userAvatarUrl || null,
+        about: mp.about || 'Hey there! I am using Messages.'
+      });
+    });
+    const unsubFlwrs = onValue(flwrsRef, (snap) => {
+      setMyFollowers(snap.exists() && typeof snap.val() === 'object' ? snap.val() : {});
+    });
+    const unsubFlwng = onValue(flwngRef, (snap) => {
+      setMyFollowing(snap.exists() && typeof snap.val() === 'object' ? snap.val() : {});
+    });
+    const unsubFavs = onValue(favsRef, (snap) => {
+      setMyFavorites(snap.exists() && typeof snap.val() === 'object' ? snap.val() : {});
+    });
+
+    return () => {
+      unsubProf();
+      unsubFlwrs();
+      unsubFlwng();
+      unsubFavs();
+    };
   }, [myKey, currentUser.username, userAvatarUrl]);
 
-  // Listen to Stories & Group Chats under users/__system_messenger__
+  // Listen to Stories & Group Chats under users/__system_messenger__ (with auto-purge at 50 stories & 1,000 group messages)
   useEffect(() => {
     const messengerRef = ref(rtdb, 'users/__system_messenger__');
     const unsub = onValue(messengerRef, (snap) => {
@@ -324,52 +316,63 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
       // Parse Stories
       const loadedStories: MessengerStory[] = [];
       if (val.stories && typeof val.stories === 'object') {
-        for (const [sId, sVal] of Object.entries(val.stories)) {
-          const s = sVal as any;
-          if (!s || !s.mediaUrl) continue;
-          const commentsList: MessengerStoryComment[] = [];
-          if (s.comments && typeof s.comments === 'object') {
-            for (const [cId, cVal] of Object.entries(s.comments)) {
-              const c = cVal as any;
-              if (c && typeof c.text === 'string') {
-                commentsList.push({
-                  id: cId,
-                  authorUsername: c.authorUsername || 'User',
-                  authorDisplayName: c.authorDisplayName || c.authorUsername || 'User',
-                  authorAvatarUrl: c.authorAvatarUrl || null,
-                  text: c.text,
-                  createdAt: typeof c.createdAt === 'number' ? c.createdAt : Date.now()
-                });
+        const rawStoryEntries = Object.entries(val.stories);
+        // Auto-clear all stories if total hits 50
+        if (rawStoryEntries.length >= 50) {
+          remove(ref(rtdb, 'users/__system_messenger__/stories')).catch(() => {});
+          setStories([]);
+        } else {
+          for (const [sId, sVal] of rawStoryEntries) {
+            const s = sVal as any;
+            if (!s || !s.mediaUrl) continue;
+            const commentsList: MessengerStoryComment[] = [];
+            if (s.comments && typeof s.comments === 'object') {
+              for (const [cId, cVal] of Object.entries(s.comments)) {
+                const c = cVal as any;
+                if (c && typeof c.text === 'string') {
+                  commentsList.push({
+                    id: cId,
+                    authorUsername: c.authorUsername || 'User',
+                    authorDisplayName: c.authorDisplayName || c.authorUsername || 'User',
+                    authorAvatarUrl: c.authorAvatarUrl || null,
+                    text: c.text,
+                    createdAt: typeof c.createdAt === 'number' ? c.createdAt : Date.now()
+                  });
+                }
               }
             }
-          }
-          commentsList.sort((a, b) => a.createdAt - b.createdAt);
+            commentsList.sort((a, b) => a.createdAt - b.createdAt);
 
-          loadedStories.push({
-            id: sId,
-            authorUsername: s.authorUsername || 'User',
-            authorDisplayName: s.authorDisplayName || s.authorUsername || 'User',
-            authorAvatarUrl: s.authorAvatarUrl || null,
-            mediaUrl: s.mediaUrl,
-            mediaType: s.mediaType === 'video' ? 'video' : 'image',
-            caption: s.caption || '',
-            createdAt: typeof s.createdAt === 'number' ? s.createdAt : Date.now(),
-            likes: s.likes && typeof s.likes === 'object' ? s.likes : {},
-            comments: commentsList
-          });
+            loadedStories.push({
+              id: sId,
+              authorUsername: s.authorUsername || 'User',
+              authorDisplayName: s.authorDisplayName || s.authorUsername || 'User',
+              authorAvatarUrl: s.authorAvatarUrl || null,
+              mediaUrl: s.mediaUrl,
+              mediaType: s.mediaType === 'video' ? 'video' : 'image',
+              caption: s.caption || '',
+              createdAt: typeof s.createdAt === 'number' ? s.createdAt : Date.now(),
+              likes: s.likes && typeof s.likes === 'object' ? s.likes : {},
+              comments: commentsList
+            });
+          }
+          loadedStories.sort((a, b) => a.createdAt - b.createdAt);
+          setStories(loadedStories);
         }
+      } else {
+        setStories([]);
       }
-      loadedStories.sort((a, b) => a.createdAt - b.createdAt);
-      setStories(loadedStories);
 
       // Parse Group Chats
       const loadedGroups: MessengerGroupChat[] = [];
+      let totalGroupMsgsCount = 0;
       if (val.groups && typeof val.groups === 'object') {
         for (const [gId, gVal] of Object.entries(val.groups)) {
           const g = gVal as any;
           if (!g || !g.name) continue;
+          const gMsgCount = g.messages && typeof g.messages === 'object' ? Object.keys(g.messages).length : 0;
+          totalGroupMsgsCount += gMsgCount;
           const members = g.members && typeof g.members === 'object' ? g.members : {};
-          // Show groups where currentUser is a member
           if (!members[myKey]) continue;
 
           const msgs: MessengerChatMessage[] = [];
@@ -409,6 +412,15 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
             unreadBy: g.unreadBy && typeof g.unreadBy === 'object' ? g.unreadBy : {},
             messages: msgs
           });
+        }
+
+        // Auto-clear all group chat messages if total hits 1,000
+        if (totalGroupMsgsCount >= 1000) {
+          const groupClearMap: Record<string, null> = {};
+          for (const gId of Object.keys(val.groups)) {
+            groupClearMap[`users/__system_messenger__/groups/${gId}/messages`] = null;
+          }
+          update(ref(rtdb), groupClearMap).catch(() => {});
         }
       }
       loadedGroups.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -989,21 +1001,25 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
     }
   };
 
-  // Publish Story to Firebase RTDB
+  // Publish Story to Firebase RTDB (Auto-clears all stories if hitting 50)
   const handlePublishStory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!storyMediaUrl || isPostingStory) return;
     setIsPostingStory(true);
     try {
-      await push(ref(rtdb, 'users/__system_messenger__/stories'), {
-        authorUsername: currentUser.username,
-        authorDisplayName: myMsgProfile.displayName || currentUser.username,
-        authorAvatarUrl: myMsgProfile.avatarUrl || userAvatarUrl || null,
-        mediaUrl: storyMediaUrl,
-        mediaType: storyMediaType,
-        caption: storyCaption.trim(),
-        createdAt: Date.now()
-      });
+      if (stories.length + 1 >= 50) {
+        await remove(ref(rtdb, 'users/__system_messenger__/stories'));
+      } else {
+        await push(ref(rtdb, 'users/__system_messenger__/stories'), {
+          authorUsername: currentUser.username,
+          authorDisplayName: myMsgProfile.displayName || currentUser.username,
+          authorAvatarUrl: myMsgProfile.avatarUrl || userAvatarUrl || null,
+          mediaUrl: storyMediaUrl,
+          mediaType: storyMediaType,
+          caption: storyCaption.trim(),
+          createdAt: Date.now()
+        });
+      }
       setStoryMediaUrl(null);
       setStoryCaption('');
       setShowStoryCreatorModal(false);

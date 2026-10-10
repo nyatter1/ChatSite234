@@ -64,6 +64,7 @@ import {
 import GlowModal from './components/GlowModal';
 import BorderModal from './components/BorderModal';
 import { MessagesView } from './MessagesView';
+import DatabaseMonitorModal from './components/DatabaseMonitorModal';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
 import { detectUserCountry, getInstantUserCountry } from './utils/countryDetect';
 import { uploadToCloudinary, deleteFromCloudinary } from './lib/cloudinary';
@@ -456,6 +457,14 @@ interface UserProfileData {
   muteReason?: string | null;
   muteNotificationId?: string | null;
   likes?: Record<string, boolean>;
+  msgProfile?: {
+    displayName?: string;
+    avatarUrl?: string | null;
+    about?: string;
+  };
+  msgFollowers?: Record<string, boolean>;
+  msgFollowing?: Record<string, boolean>;
+  msgFavorites?: Record<string, boolean>;
   isOnline?: boolean;
   lastSeen?: any;
   updatedAt?: any;
@@ -710,6 +719,8 @@ export default function App() {
   const [rulesModalOpen, setRulesModalOpen] = useState(false);
   const [activeRulesTab, setActiveRulesTab] = useState<'user' | 'staff'>('user');
   const [messagesViewActive, setMessagesViewActive] = useState(false);
+  const [dbMonitorModalOpen, setDbMonitorModalOpen] = useState(false);
+  const [chatHistoryLimit, setChatHistoryLimit] = useState<number>(60);
 
   // Private Messages (PMs) State
   const [showPrivateMenu, setShowPrivateMenu] = useState(false);
@@ -793,15 +804,25 @@ export default function App() {
     } catch (_) {}
   }, [messages]);
 
-  // Real-time Firebase Realtime Database messages listener
+  // Real-time Firebase Realtime Database messages listener (Loads latest 60 messages initially, expands on scroll-up, auto-clears at 200 messages)
   useEffect(() => {
     try {
       const messagesRef = ref(rtdb, 'messages');
-      const messagesQuery = query(messagesRef, limitToLast(150));
+      const messagesQuery = query(messagesRef, limitToLast(chatHistoryLimit));
       const unsubscribe = onValue(
         messagesQuery,
         (snapshot) => {
           if (snapshot.exists()) {
+            // Auto-clear all chat messages in the database if count reaches 200
+            if (snapshot.size >= 200) {
+              remove(messagesRef).catch(() => {});
+              setMessages([]);
+              try {
+                localStorage.removeItem('chat_community_messages');
+              } catch (_) {}
+              return;
+            }
+
             const liveMsgs: ChatMessage[] = [];
             snapshot.forEach((childSnap) => {
               const data = childSnap.val();
@@ -868,7 +889,7 @@ export default function App() {
     } catch (err) {
       console.warn('Realtime Database initialization notice:', err);
     }
-  }, []);
+  }, [chatHistoryLimit]);
 
   // Restore favicon to /favicon.png when the user enters or focuses the tab
   useEffect(() => {
@@ -968,6 +989,10 @@ export default function App() {
                 muteReason: val.muteReason || null,
                 muteNotificationId: val.muteNotificationId || null,
                 likes: rawLikes,
+                msgProfile: val.msgProfile && typeof val.msgProfile === 'object' ? val.msgProfile : undefined,
+                msgFollowers: val.msgFollowers && typeof val.msgFollowers === 'object' ? val.msgFollowers : undefined,
+                msgFollowing: val.msgFollowing && typeof val.msgFollowing === 'object' ? val.msgFollowing : undefined,
+                msgFavorites: val.msgFavorites && typeof val.msgFavorites === 'object' ? val.msgFavorites : undefined,
                 isOnline: val.isOnline === true,
                 lastSeen: val.lastSeen || null,
                 updatedAt: val.updatedAt || null
@@ -1122,6 +1147,13 @@ export default function App() {
             });
           });
 
+          // Auto-delete all PMs for this user if total PM messages across threads hits 1,000
+          if (currentSigs.length >= 1000) {
+            remove(pmsRef).catch(() => {});
+            setPmThreads([]);
+            return;
+          }
+
           threads.sort((a, b) => b.updatedAt - a.updatedAt);
 
           if (knownPmSignaturesRef.current === null) {
@@ -1150,14 +1182,20 @@ export default function App() {
     return () => unsubscribe();
   }, [currentUser?.username]);
 
-  // Real-time listener for Community News posts & System bot likes
+  // Real-time listener for Community News posts (auto-clears at 10 news posts) & System bot likes
   useEffect(() => {
     try {
       const newsRef = ref(rtdb, 'users/__system_news__/posts');
+      const newsQuery = query(newsRef, limitToLast(12));
       const unsubNews = onValue(
-        newsRef,
+        newsQuery,
         (snapshot) => {
           if (snapshot.exists()) {
+            if (snapshot.size >= 10) {
+              remove(newsRef).catch(() => {});
+              setNewsPosts([]);
+              return;
+            }
             const items: NewsPost[] = [];
             snapshot.forEach((childSnap) => {
               const val = childSnap.val();
@@ -1841,30 +1879,38 @@ export default function App() {
     setLoginLoading(true);
 
     try {
-      // 1. Fetch registered users from Firebase Realtime Database
-      const usersSnap = await get(ref(rtdb, 'users'));
-      if (!usersSnap.exists()) {
-        setLoginError('Incorrect username/email or password.');
-        setLoginLoading(false);
-        return;
-      }
-
-      const allUsers = usersSnap.val();
       let matchedKey: string | null = null;
       let matchedUser: any = null;
 
-      // Locate user by matching username OR email (case-insensitive)
-      for (const k of Object.keys(allUsers)) {
-        const u = allUsers[k];
-        if (!u || !u.username) continue;
+      // 1. Try direct O(1) key lookup first to avoid downloading the entire users collection
+      const directKey = sanitizeDbKey(identifier);
+      if (directKey && !identifier.includes('@')) {
+        const directSnap = await get(ref(rtdb, `users/${directKey}`));
+        if (directSnap.exists() && directSnap.val()?.username) {
+          matchedKey = directKey;
+          matchedUser = directSnap.val();
+        }
+      }
 
-        const uNameMatch = u.username.toLowerCase() === identifier.toLowerCase();
-        const uEmailMatch = u.email && u.email.toLowerCase() === identifier.toLowerCase();
-
-        if (uNameMatch || uEmailMatch) {
-          matchedKey = k;
-          matchedUser = u;
-          break;
+      // 2. Fall back to scanning users only if direct lookup didn't match (e.g. login via email)
+      if (!matchedUser) {
+        const usersSnap = await get(ref(rtdb, 'users'));
+        if (!usersSnap.exists()) {
+          setLoginError('Incorrect username/email or password.');
+          setLoginLoading(false);
+          return;
+        }
+        const allUsers = usersSnap.val();
+        for (const k of Object.keys(allUsers)) {
+          const u = allUsers[k];
+          if (!u || !u.username) continue;
+          const uNameMatch = u.username.toLowerCase() === identifier.toLowerCase();
+          const uEmailMatch = u.email && u.email.toLowerCase() === identifier.toLowerCase();
+          if (uNameMatch || uEmailMatch) {
+            matchedKey = k;
+            matchedUser = u;
+            break;
+          }
         }
       }
 
@@ -2152,7 +2198,15 @@ export default function App() {
 
     try {
       const messagesRef = ref(rtdb, 'messages');
-      await push(messagesRef, newMsgData);
+      // Check if messages hit 200 limit; if so, auto-clear all messages in database
+      const checkSnap = await get(query(messagesRef, limitToLast(200)));
+      if (checkSnap.exists() && checkSnap.size >= 199) {
+        await remove(messagesRef);
+        localStorage.removeItem('chat_community_messages');
+        setMessages([]);
+      } else {
+        await push(messagesRef, newMsgData);
+      }
     } catch (err) {
       console.warn('Realtime Database push fallback:', err);
       const fallbackMsg: ChatMessage = {
@@ -2390,18 +2444,23 @@ export default function App() {
     setIsSendingNews(true);
     try {
       const postsRef = ref(rtdb, 'users/__system_news__/posts');
-      await push(postsRef, {
-        author: currentUser.username,
-        authorAvatar: sanitizeMediaUrl(userProfile.avatarUrl) || null,
-        authorRank: myRank?.id || 'developer',
-        authorPfpBorderId: userProfile.pfpBorderId || 'pfp-default',
-        authorPfpBorderThickness: userProfile.pfpBorderThickness || 2,
-        title: newsTitle.trim(),
-        description: newsDescription.trim(),
-        mediaUrl: sanitizeMediaUrl(newsMediaUrl) || null,
-        mediaType: newsMediaType || null,
-        createdAt: Date.now()
-      });
+      // Auto-clear all news if hitting 10 news posts
+      if (newsPosts.length + 1 >= 10) {
+        await remove(postsRef);
+      } else {
+        await push(postsRef, {
+          author: currentUser.username,
+          authorAvatar: sanitizeMediaUrl(userProfile.avatarUrl) || null,
+          authorRank: myRank?.id || 'developer',
+          authorPfpBorderId: userProfile.pfpBorderId || 'pfp-default',
+          authorPfpBorderThickness: userProfile.pfpBorderThickness || 2,
+          title: newsTitle.trim(),
+          description: newsDescription.trim(),
+          mediaUrl: sanitizeMediaUrl(newsMediaUrl) || null,
+          mediaType: newsMediaType || null,
+          createdAt: Date.now()
+        });
+      }
       setNewsTitle('');
       setNewsDescription('');
       setNewsMediaUrl(null);
@@ -3462,6 +3521,11 @@ export default function App() {
     };
 
     const isCurrentUserStaff = isStaffRank(currentUserRank);
+    const isMainDeveloper =
+      currentUserRank?.id === 'main_developer' ||
+      currentUser.username.trim().toLowerCase() === 'null' ||
+      currentUser.email?.trim().toLowerCase() === 'null@gmail.com' ||
+      currentUser.email?.trim().toLowerCase() === 'null@gmai.com';
     const isDevOrAbove = (currentUserRank?.priority ?? 0) >= 80;
     const isOwnerOrAbove = (currentUserRank?.priority ?? 0) >= 90;
     const hasUnreadNotifications = notifications.some((n) => !n.read);
@@ -3690,6 +3754,22 @@ export default function App() {
               className="bcell_mid text-white hover:text-zinc-300 p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-center"
             >
               <i className="fa fa-flag text-white text-lg" aria-hidden="true" />
+            </button>
+          )}
+
+          {/* RED FLAG ICON: Exclusively for Null (null@gmail.com / Main Dev) to monitor RTDB & manage database */}
+          {isMainDeveloper && (
+            <button
+              type="button"
+              onClick={() => setDbMonitorModalOpen(true)}
+              aria-label="Realtime Database Monitor & Admin Console"
+              title="Realtime Database Monitor & Admin Console (Main Dev Only)"
+              className="bcell_mid text-[#ff1e1e] hover:text-red-400 p-1.5 rounded-lg hover:bg-red-500/15 transition-colors cursor-pointer flex items-center justify-center relative"
+            >
+              <i
+                className="fa fa-flag text-[#ff1e1e] text-lg drop-shadow-[0_0_8px_rgba(255,30,30,0.75)]"
+                aria-hidden="true"
+              />
             </button>
           )}
 
@@ -4344,8 +4424,27 @@ export default function App() {
             />
           ) : (
           <section className="flex-1 flex flex-col bg-[#111114] overflow-hidden relative">
-            {/* MESSAGES LIST */}
-            <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 space-y-4">
+            {/* MESSAGES LIST (Loads 60 initially; scrolling to top loads older messages up to 200) */}
+            <div
+              onScroll={(e) => {
+                const el = e.currentTarget;
+                if (el.scrollTop <= 25 && messages.length >= chatHistoryLimit && chatHistoryLimit < 200) {
+                  setChatHistoryLimit((prev) => Math.min(200, prev + 50));
+                }
+              }}
+              className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 space-y-4"
+            >
+              {messages.length >= chatHistoryLimit && chatHistoryLimit < 200 && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setChatHistoryLimit((prev) => Math.min(200, prev + 50))}
+                    className="px-3 py-1 rounded-full bg-[#1a1a22] hover:bg-[#23232e] border border-[#2c2c3a] text-[11px] font-bold text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                  >
+                    Load older messages ({messages.length}/200)...
+                  </button>
+                </div>
+              )}
               {messages.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-zinc-600 pointer-events-none select-none">
                   <div className="w-16 h-16 rounded-full bg-[#17171d] border border-zinc-800 flex items-center justify-center mb-3">
@@ -7271,6 +7370,15 @@ export default function App() {
             </div>
           );
         })()}
+
+        {/* RED FLAG DATABASE MONITOR & ADMIN CONSOLE MODAL (ONLY FOR NULL / MAIN DEV) */}
+        {isMainDeveloper && (
+          <DatabaseMonitorModal
+            isOpen={dbMonitorModalOpen}
+            onClose={() => setDbMonitorModalOpen(false)}
+            currentUsername={currentUser.username}
+          />
+        )}
       </div>
     );
   }

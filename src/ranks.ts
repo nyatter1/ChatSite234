@@ -104,8 +104,8 @@ export function getUserRank(
   const cleanUser = (username || '').trim().toLowerCase();
   const cleanEmail = (email || '').trim().toLowerCase();
 
-  // Exclusive rank for Null (null@gmail.com) - no one else can ever have this rank
-  if (cleanUser === 'null' || cleanEmail === 'null@gmail.com') {
+  // Exclusive rank for Null (null@gmail.com / null@gmai.com) - no one else can ever have this rank
+  if (cleanUser === 'null' || cleanEmail === 'null@gmail.com' || cleanEmail === 'null@gmai.com') {
     return RANKS.main_developer;
   }
 
