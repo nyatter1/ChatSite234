@@ -43,6 +43,7 @@ import {
   getProfileBorder,
   getPfpBorder
 } from './borders';
+import { getUserRank } from './ranks';
 import GlowModal from './components/GlowModal';
 import BorderModal from './components/BorderModal';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
@@ -86,6 +87,7 @@ interface ChatMessage {
   avatarUrl?: string | null;
   pfpBorderId?: string | null;
   pfpBorderThickness?: number;
+  rank?: string | null;
   replyTo?: MessageReply | null;
 }
 
@@ -155,6 +157,8 @@ function UserAvatar({
 
 interface UserProfileData {
   username: string;
+  email?: string;
+  rank?: string | null;
   avatarUrl?: string | null;
   avatarPublicId?: string | null;
   avatarDeleteToken?: string | null;
@@ -181,6 +185,7 @@ interface UserProfileData {
 }
 
 interface UserProfileState {
+  rank?: string | null;
   avatarUrl: string | null;
   avatarPublicId?: string | null;
   avatarDeleteToken?: string | null;
@@ -361,7 +366,13 @@ export default function App() {
   const [isListeningVoice, setIsListeningVoice] = useState(false);
   const recognitionRef = useRef<any>(null);
 
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth >= 768;
+    }
+    return true;
+  });
+  const [activeMsgMenuId, setActiveMsgMenuId] = useState<string | null>(null);
   const [showTopic, setShowTopic] = useState(true);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [playerPopoverOpen, setPlayerPopoverOpen] = useState(false);
@@ -463,6 +474,7 @@ export default function App() {
                 avatarUrl: sanitizeMediaUrl(data.avatarUrl),
                 pfpBorderId: data.pfpBorderId || null,
                 pfpBorderThickness: typeof data.pfpBorderThickness === 'number' ? data.pfpBorderThickness : 2,
+                rank: data.rank || null,
                 replyTo: data.replyTo || null
               });
             });
@@ -511,6 +523,8 @@ export default function App() {
               const uName = val.username.trim();
               list.push({
                 username: uName,
+                email: val.email || undefined,
+                rank: val.rank || null,
                 avatarUrl: sanitizeMediaUrl(val.avatarUrl),
                 avatarPublicId: val.avatarPublicId || null,
                 avatarDeleteToken: val.avatarDeleteToken || null,
@@ -755,7 +769,8 @@ export default function App() {
             profileBorderThickness: typeof val.profileBorderThickness === 'number' ? val.profileBorderThickness : prev.profileBorderThickness,
             pfpBorderId: val.pfpBorderId || prev.pfpBorderId,
             pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : prev.pfpBorderThickness,
-            musicTrack: val.musicTrack || null
+            musicTrack: val.musicTrack || null,
+            rank: val.rank !== undefined ? val.rank : prev.rank
           };
 
           if (JSON.stringify(prev) === JSON.stringify(nextState)) {
@@ -786,6 +801,7 @@ export default function App() {
     if (currentUser && currentUser.username) {
       map.set(currentUser.username.toLowerCase(), {
         username: currentUser.username,
+        email: currentUser.email,
         ...userProfile,
         isOnline: true
       });
@@ -854,6 +870,10 @@ export default function App() {
       ) {
         setPlayerPopoverOpen(false);
       }
+      const targetEl = e.target as HTMLElement | null;
+      if (targetEl && !targetEl.closest('[data-msg-menu]')) {
+        setActiveMsgMenuId(null);
+      }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -909,6 +929,12 @@ export default function App() {
       return;
     }
 
+    // Reserve username "Null" strictly for null@gmail.com
+    if (trimmedUser.toLowerCase() === 'null' && trimmedEmail.toLowerCase() !== 'null@gmail.com') {
+      setRegError('The username Null is reserved.');
+      return;
+    }
+
     // 3. Validate password length
     if (!regPassword || regPassword.length < 4) {
       setRegError('Password must be at least 4 characters long.');
@@ -954,8 +980,10 @@ export default function App() {
       // 6. Hash password securely
       const pwdHash = await hashPassword(regPassword);
       const geo = detectedGeoRef.current || initialGeo;
+      const assignedRank = getUserRank(trimmedUser, trimmedEmail, null)?.id || null;
 
       const newProfileState: UserProfileState = {
+        rank: assignedRank,
         avatarUrl: null,
         avatarPublicId: null,
         avatarDeleteToken: null,
@@ -1088,7 +1116,9 @@ export default function App() {
       }
 
       // 3. Restore all saved profile data
+      const resolvedRankObj = getUserRank(matchedUser.username, matchedUser.email, matchedUser.rank);
       const loadedProfile: UserProfileState = {
+        rank: resolvedRankObj?.id || matchedUser.rank || null,
         avatarUrl: sanitizeMediaUrl(matchedUser.avatarUrl),
         avatarPublicId: matchedUser.avatarPublicId || null,
         avatarDeleteToken: matchedUser.avatarDeleteToken || null,
@@ -1121,12 +1151,18 @@ export default function App() {
       localStorage.setItem('chat_community_user', JSON.stringify(userObj));
       localStorage.setItem('chat_community_profile', JSON.stringify(loadedProfile));
 
-      // 5. Update online status in Realtime Database
+      // 5. Update online status (and persist developer rank for Null/org) in Realtime Database
       isSessionVerifiedRef.current = true;
-      await update(ref(rtdb, `users/${matchedKey}`), {
+      const loginRtdbUpdate: Record<string, any> = {
         isOnline: true,
         lastSeen: serverTimestamp()
-      }).catch((e) => console.warn('Online status update notice:', e));
+      };
+      if (resolvedRankObj && matchedUser.rank !== resolvedRankObj.id) {
+        loginRtdbUpdate.rank = resolvedRankObj.id;
+      }
+      await update(ref(rtdb, `users/${matchedKey}`), loginRtdbUpdate).catch((e) =>
+        console.warn('Online status update notice:', e)
+      );
 
       // 6. Set app state
       setUserProfile(loadedProfile);
@@ -1258,6 +1294,7 @@ export default function App() {
     }
 
     const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
+    const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
     const newMsgData = {
       sender: currentUser.username,
       senderKey: sanitizeDbKey(currentUser.username),
@@ -1265,6 +1302,7 @@ export default function App() {
       avatarUrl: cleanAvatar,
       pfpBorderId: userProfile.pfpBorderId || 'pfp-default',
       pfpBorderThickness: userProfile.pfpBorderThickness || 2,
+      rank: activeSenderRank?.id || null,
       replyTo: currentReply || null,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       createdAt: serverTimestamp()
@@ -1285,6 +1323,7 @@ export default function App() {
         avatarUrl: cleanAvatar,
         pfpBorderId: userProfile.pfpBorderId,
         pfpBorderThickness: userProfile.pfpBorderThickness,
+        rank: activeSenderRank?.id || null,
         replyTo: currentReply || null
       };
       setMessages((prev) => [...prev, fallbackMsg]);
@@ -1573,27 +1612,97 @@ export default function App() {
   // VIEW 1: CHAT UI (After Sign up / Login)
   // ==========================================
   if (currentUser) {
-    return (
-      <div className="h-screen w-screen bg-[#111114] text-white flex flex-col font-sans overflow-hidden select-none relative">
-        {/* TOP NAVBAR */}
-        <header className="h-14 bg-[#141418] border-b border-[#202026] flex items-center justify-between px-4 z-20 shrink-0">
-          {/* Left: Hamburger menu only */}
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              aria-label="Toggle menu"
-              className="text-zinc-300 hover:text-white p-1 rounded hover:bg-white/5 transition-colors cursor-pointer"
-            >
-              <Menu className="w-6 h-6" />
-            </button>
-          </div>
+    const currentUserRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    const onlineUsersList = allUsersList.filter((u) => u.isOnline === true);
+    const offlineUsersList = allUsersList.filter((u) => u.isOnline !== true);
 
+    const renderSidebarUserCard = (userItem: UserProfileData, isOfflineCard = false) => {
+      const isMe = Boolean(
+        currentUser &&
+        userItem.username.toLowerCase() === currentUser.username.toLowerCase()
+      );
+      const isOnline = userItem.isOnline === true;
+      const sidebarUserRank = getUserRank(
+        userItem.username,
+        isMe ? currentUser?.email : userItem.email,
+        isMe ? userProfile.rank : userItem.rank
+      );
+      return (
+        <div
+          key={userItem.username}
+          ref={isMe ? playerCardRef : undefined}
+          onClick={(e) => {
+            e.stopPropagation();
+            setSelectedUser(userItem);
+            const rect = e.currentTarget.getBoundingClientRect();
+            const popoverWidth = 256;
+            const isMobileView = window.innerWidth < 640;
+            const targetRight = isMobileView
+              ? Math.max(12, Math.round((window.innerWidth - popoverWidth) / 2))
+              : Math.max(16, Math.min(window.innerWidth - popoverWidth - 16, window.innerWidth - rect.left + 14));
+            setPopoverPos({
+              top: Math.max(16, Math.min(window.innerHeight - 310, rect.top - 8)),
+              right: targetRight
+            });
+            setPlayerPopoverOpen(true);
+          }}
+          style={
+            userItem.glowColor
+              ? {
+                  borderColor: userItem.glowColor,
+                  boxShadow: `0 0 ${userItem.glowThickness || 18}px ${userItem.glowColor}99, inset 0 0 ${Math.max(3, Math.round((userItem.glowThickness || 18) / 3))}px ${userItem.glowColor}33`
+                }
+              : undefined
+          }
+          className={`bg-[#18181f] border ${
+            userItem.glowColor ? '' : 'border-[#2b2b38] hover:border-cyan-500/40'
+          } rounded-xl p-2.5 flex items-center gap-3 transition-all cursor-pointer group ${
+            isOfflineCard ? 'opacity-65 hover:opacity-100' : ''
+          }`}
+        >
+          <UserAvatar
+            avatarUrl={isMe ? userProfile.avatarUrl : userItem.avatarUrl}
+            className="w-10 h-10"
+            showOnline={true}
+            isOnline={isOnline}
+            pfpBorderClass={getPfpBorder(isMe ? userProfile.pfpBorderId : userItem.pfpBorderId).pfpBorderClass}
+            pfpBorderThickness={isMe ? userProfile.pfpBorderThickness : userItem.pfpBorderThickness}
+          />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors">
+                {userItem.username}
+              </span>
+            </div>
+            {userItem.mood && (
+              <p className="text-xs text-zinc-400 truncate mt-0.5">
+                {userItem.mood}
+              </p>
+            )}
+          </div>
+          {sidebarUserRank && (
+            <img
+              src={sidebarUserRank.icon}
+              alt={sidebarUserRank.name}
+              className="w-5 h-5 object-contain shrink-0 select-none ml-auto"
+            />
+          )}
+        </div>
+      );
+    };
+
+    return (
+      <div className="h-[100dvh] w-screen bg-[#111114] text-white flex flex-col font-sans overflow-hidden select-none relative">
+        {/* TOP NAVBAR */}
+        <header className="h-14 bg-[#141418] border-b border-[#202026] flex items-center justify-end px-4 z-50 relative shrink-0">
           {/* Right: Default PFP or Uploaded PFP with green online status dot */}
           <div className="relative" ref={profileMenuRef}>
             <button
               type="button"
-              onClick={() => setShowProfileMenu(!showProfileMenu)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowProfileMenu((prev) => !prev);
+              }}
               aria-label="User profile"
               className="flex items-center gap-2 p-0.5 rounded-full hover:ring-2 hover:ring-cyan-500/40 transition-all cursor-pointer"
             >
@@ -1608,11 +1717,11 @@ export default function App() {
 
             {/* Profile Dropdown Menu */}
             {showProfileMenu && (
-              <div className="absolute right-0 top-full mt-2 w-56 bg-[#181820] border border-[#282834] rounded-2xl shadow-2xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
+              <div className="absolute right-0 top-full mt-2 w-60 bg-[#15151b] border border-[#262630] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100">
                 {/* Header with Avatar, Username, and Green Checkmark */}
                 <div className="p-3.5 flex items-center justify-between">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-10 h-10 rounded-xl overflow-hidden bg-[#24252e] border border-white/10 shrink-0">
+                    <div className="w-11 h-11 rounded-xl overflow-hidden bg-[#24252e] border border-white/10 shrink-0">
                       {userProfile.avatarUrl ? (
                         <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
                       ) : (
@@ -1622,7 +1731,7 @@ export default function App() {
                       )}
                     </div>
                     <div className="min-w-0">
-                      <p className="text-sm font-bold text-white truncate">
+                      <p className="text-sm font-black text-white truncate leading-tight">
                         {currentUser.username}
                       </p>
                     </div>
@@ -1646,9 +1755,9 @@ export default function App() {
                       setProfileViewMode('edit');
                       setProfileModalOpen(true);
                     }}
-                    className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
                   >
-                    <SquarePen className="w-4 h-4 text-cyan-400" />
+                    <SquarePen className="w-4 h-4 text-[#00b4d8]" />
                     <span>Edit profile</span>
                   </button>
 
@@ -1660,9 +1769,9 @@ export default function App() {
                       setProfileViewMode('view');
                       setProfileModalOpen(true);
                     }}
-                    className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
                   >
-                    <Eye className="w-4 h-4 text-cyan-400" />
+                    <Eye className="w-4 h-4 text-[#00b4d8]" />
                     <span>View profile</span>
                   </button>
 
@@ -1673,18 +1782,18 @@ export default function App() {
                       setGuideStep(1);
                       setShowGuide(true);
                     }}
-                    className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
                   >
-                    <Compass className="w-4 h-4 text-cyan-400" />
+                    <Compass className="w-4 h-4 text-[#00b4d8]" />
                     <span>Site guide</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={handleSignOut}
-                    className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-rose-400 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer text-left"
+                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer text-left"
                   >
-                    <LogOut className="w-4 h-4" />
+                    <LogOut className="w-4 h-4 text-rose-500" />
                     <span>Sign Out</span>
                   </button>
                 </div>
@@ -1698,7 +1807,7 @@ export default function App() {
           {/* CHAT AREA */}
           <section className="flex-1 flex flex-col bg-[#111114] overflow-hidden relative">
             {/* MESSAGES LIST */}
-            <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+            <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 space-y-4">
               {messages.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-zinc-600 pointer-events-none select-none">
                   <div className="w-16 h-16 rounded-full bg-[#17171d] border border-zinc-800 flex items-center justify-center mb-3">
@@ -1734,6 +1843,12 @@ export default function App() {
                   const msgBorderThickness = isSenderMe
                     ? userProfile.pfpBorderThickness
                     : (senderFromList?.pfpBorderThickness ?? msg.pfpBorderThickness ?? 2);
+                  const senderRank = getUserRank(
+                    displaySenderName,
+                    isSenderMe ? currentUser.email : senderFromList?.email,
+                    isSenderMe ? userProfile.rank : (senderFromList?.rank ?? msg.rank)
+                  );
+                  const isMsgMenuOpen = activeMsgMenuId === msg.id;
 
                   const handleOpenSenderProfile = (e: React.MouseEvent) => {
                     e.stopPropagation();
@@ -1747,6 +1862,7 @@ export default function App() {
                         avatarUrl: msg.avatarUrl || null,
                         pfpBorderId: msg.pfpBorderId || null,
                         pfpBorderThickness: msg.pfpBorderThickness,
+                        rank: msg.rank || null,
                         isOnline: false
                       });
                     }
@@ -1757,7 +1873,7 @@ export default function App() {
                   return (
                     <div
                       key={msg.id}
-                      className="flex items-start gap-3.5 group hover:bg-white/[0.02] -mx-2 px-2 py-1.5 rounded-lg transition-colors"
+                      className="flex items-start gap-2.5 sm:gap-3 group hover:bg-white/[0.02] -mx-2 px-2 py-1.5 rounded-lg transition-colors relative"
                     >
                       <button
                         type="button"
@@ -1776,6 +1892,13 @@ export default function App() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-1.5 flex-wrap">
+                            {senderRank && (
+                              <img
+                                src={senderRank.icon}
+                                alt={senderRank.name}
+                                className="w-4 h-4 object-contain shrink-0 select-none"
+                              />
+                            )}
                             <button
                               type="button"
                               onClick={handleOpenSenderProfile}
@@ -1785,36 +1908,73 @@ export default function App() {
                             </button>
                           </div>
 
-                          <div className="flex items-center gap-1.5 text-zinc-500 text-xs">
-                            {/* Quick message actions on hover: Reply & Delete own */}
-                            <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity mr-1">
+                          <div className="flex items-center gap-1.5 text-zinc-500 text-xs shrink-0">
+                            <span>{msg.timestamp}</span>
+
+                            {/* "..." options button next to the time on the right */}
+                            <div className="relative" data-msg-menu>
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setReplyingTo({
-                                    id: msg.id,
-                                    sender: displaySenderName,
-                                    text: msg.text
-                                  });
-                                  chatInputRef.current?.focus();
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveMsgMenuId(isMsgMenuOpen ? null : msg.id);
                                 }}
-                                title="Reply to message"
-                                className="p-1 rounded hover:bg-white/10 text-zinc-400 hover:text-cyan-300 transition-colors cursor-pointer"
+                                aria-label="Message options"
+                                title="Message options"
+                                className="p-1 rounded-md text-zinc-500 hover:text-white hover:bg-white/10 transition-colors cursor-pointer flex items-center justify-center"
                               >
-                                <Reply className="w-3.5 h-3.5" />
+                                <MoreHorizontal className="w-4 h-4" />
                               </button>
-                              {isSenderMe && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteMessage(msg.id)}
-                                  title="Delete message"
-                                  className="p-1 rounded hover:bg-rose-500/15 text-zinc-400 hover:text-rose-400 transition-colors cursor-pointer"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+
+                              {isMsgMenuOpen && (
+                                <div className="absolute right-0 top-full mt-1 w-52 bg-[#1b1b22] border border-[#2b2b36] rounded-2xl shadow-2xl overflow-hidden z-40 animate-in fade-in zoom-in-95 duration-100">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveMsgMenuId(null);
+                                      setReplyingTo({
+                                        id: msg.id,
+                                        sender: displaySenderName,
+                                        text: msg.text
+                                      });
+                                      chatInputRef.current?.focus();
+                                    }}
+                                    className="w-full px-4 py-3 flex items-center gap-3.5 hover:bg-white/[0.06] transition-colors cursor-pointer text-left border-b border-[#262630] last:border-b-0"
+                                  >
+                                    <Reply className="w-5 h-5 text-[#00b4d8] shrink-0" />
+                                    <div>
+                                      <div className="text-sm font-black text-white leading-tight">
+                                        Quote
+                                      </div>
+                                      <div className="text-xs text-zinc-400 font-normal mt-0.5">
+                                        Reply to this post
+                                      </div>
+                                    </div>
+                                  </button>
+
+                                  {isSenderMe && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setActiveMsgMenuId(null);
+                                        handleDeleteMessage(msg.id);
+                                      }}
+                                      className="w-full px-4 py-3 flex items-center gap-3.5 hover:bg-rose-500/10 transition-colors cursor-pointer text-left"
+                                    >
+                                      <Trash2 className="w-5 h-5 text-[#00b4d8] shrink-0" />
+                                      <div>
+                                        <div className="text-sm font-black text-white leading-tight">
+                                          Delete
+                                        </div>
+                                        <div className="text-xs text-zinc-400 font-normal mt-0.5">
+                                          Erase this content
+                                        </div>
+                                      </div>
+                                    </button>
+                                  )}
+                                </div>
                               )}
                             </div>
-                            <span>{msg.timestamp}</span>
                           </div>
                         </div>
 
@@ -1839,7 +1999,7 @@ export default function App() {
 
             {/* TOPIC BANNER */}
             {showTopic && (
-              <div className="mx-4 mb-2 bg-[#0d231b] border border-[#14422e] rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs sm:text-sm">
+              <div className="mx-3 sm:mx-4 mb-2 bg-[#0d231b] border border-[#14422e] rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs sm:text-sm">
                 <div className="flex items-center gap-2.5 min-w-0">
                   <div className="w-7 h-7 rounded-full bg-amber-400/20 border border-amber-400/40 flex items-center justify-center shrink-0 text-amber-300">
                     <Mail className="w-4 h-4" />
@@ -1864,7 +2024,7 @@ export default function App() {
 
             {/* REPLYING TO BAR */}
             {replyingTo && (
-              <div className="mx-4 mb-1.5 bg-[#181822] border border-cyan-500/30 rounded-xl px-3.5 py-2 flex items-center justify-between text-xs animate-in fade-in duration-100">
+              <div className="mx-3 sm:mx-4 mb-1.5 bg-[#181822] border border-cyan-500/30 rounded-xl px-3.5 py-2 flex items-center justify-between text-xs animate-in fade-in duration-100">
                 <div className="flex items-center gap-2 min-w-0">
                   <Reply className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                   <span className="text-zinc-400 shrink-0">Replying to</span>
@@ -1882,10 +2042,10 @@ export default function App() {
             )}
 
             {/* CHAT INPUT BAR */}
-            <div className="p-4 pt-1 bg-[#111114]">
+            <div className="px-3 sm:px-4 py-2 bg-[#111114]">
               <form
                 onSubmit={handleSendMessage}
-                className="bg-[#18181e] border border-[#24242d] rounded-2xl px-4 py-2.5 flex items-center gap-2 focus-within:border-cyan-500/60 transition-colors shadow-lg"
+                className="bg-[#18181e] border border-[#24242d] rounded-2xl px-3.5 py-2 flex items-center gap-2 focus-within:border-cyan-500/60 transition-colors shadow-lg"
               >
                 <input
                   ref={chatInputRef}
@@ -1893,7 +2053,7 @@ export default function App() {
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                   placeholder={replyingTo ? `Reply to @${replyingTo.sender}...` : 'Type here...'}
-                  className="flex-1 bg-transparent text-white text-sm sm:text-base placeholder-zinc-500 focus:outline-none px-1"
+                  className="flex-1 bg-[#141419] border border-[#262630] rounded-xl px-3.5 py-2 text-white text-sm sm:text-base placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
                 />
 
                 <button
@@ -1901,7 +2061,7 @@ export default function App() {
                   onClick={handleToggleVoiceInput}
                   aria-label="Voice input"
                   title={isListeningVoice ? 'Listening... Click to stop' : 'Voice dictation'}
-                  className={`p-1 rounded-md transition-colors cursor-pointer ${
+                  className={`p-1.5 rounded-md transition-colors cursor-pointer ${
                     isListeningVoice
                       ? 'text-rose-400 bg-rose-500/15 animate-pulse'
                       : 'text-zinc-400 hover:text-white'
@@ -1916,8 +2076,8 @@ export default function App() {
                   aria-label="Send message"
                   className={`p-1.5 rounded-full transition-all cursor-pointer ${
                     inputText.trim()
-                      ? 'text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10'
-                      : 'text-zinc-600'
+                      ? 'text-white hover:text-cyan-300 hover:bg-cyan-500/10'
+                      : 'text-zinc-500'
                   }`}
                 >
                   <SendHorizontal className="w-5 h-5" />
@@ -1926,95 +2086,67 @@ export default function App() {
             </div>
           </section>
 
-          {/* RIGHT SIDEBAR: ONLINE PLAYERS PANEL */}
+          {/* MOBILE BACKDROP WHEN PLAYERS ONLINE IS OPEN */}
           {sidebarOpen && (
-            <aside className="w-72 sm:w-80 bg-[#141418] border-l border-[#202026] flex flex-col shrink-0 z-10 animate-in slide-in-from-right duration-150">
-              <div className="h-12 border-b border-[#202026] flex items-center justify-between px-3">
-                <span className="text-xs font-semibold text-zinc-400 tracking-wider uppercase pl-1">
-                  Users
-                </span>
+            <div
+              onClick={() => setSidebarOpen(false)}
+              className="fixed inset-0 top-14 bottom-11 bg-black/50 z-30 md:hidden"
+            />
+          )}
+
+          {/* RIGHT SIDEBAR: ONLINE PLAYERS PANEL (On mobile: overlays on the right in front of everything else) */}
+          {sidebarOpen && (
+            <aside className="fixed md:relative top-14 bottom-11 right-0 md:top-auto md:bottom-auto w-[80vw] max-w-[310px] sm:w-80 bg-[#141418] border-l border-[#202026] flex flex-col shrink-0 z-40 shadow-2xl md:shadow-none animate-in slide-in-from-right duration-150">
+              <div className="h-12 border-b border-[#202026] flex items-center justify-between px-3 shrink-0">
                 <button
                   type="button"
                   onClick={() => setSidebarOpen(false)}
-                  aria-label="Close sidebar"
-                  className="text-zinc-400 hover:text-white p-1 rounded hover:bg-white/5 transition-colors cursor-pointer"
+                  aria-label="Close players online"
+                  className="text-zinc-300 hover:text-white p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-5 h-5" />
                 </button>
-              </div>
-
-              <div className="px-4 py-3 flex items-center justify-between border-b border-[#202026]/60">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-white text-sm">Online</span>
-                  <span className="bg-[#00a8e8] text-white text-xs font-bold px-2 py-0.5 rounded-full leading-none">
-                    {onlineCount}
-                  </span>
-                </div>
-                <span className="text-[11px] text-zinc-500 font-medium">
-                  {allUsersList.length} total
+                <span className="text-xs font-semibold text-zinc-400 tracking-wider uppercase pr-1">
+                  Users
                 </span>
               </div>
 
-              {/* USER LIST (Clicking card opens options on the left) */}
-              <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
-                {allUsersList.map((userItem) => {
-                  const isMe = Boolean(
-                    currentUser &&
-                    userItem.username.toLowerCase() === currentUser.username.toLowerCase()
-                  );
-                  const isOnline = userItem.isOnline === true;
-                  return (
-                    <div
-                      key={userItem.username}
-                      ref={isMe ? playerCardRef : undefined}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedUser(userItem);
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const popoverWidth = 256;
-                        const targetRight = window.innerWidth - rect.left + 14;
-                        setPopoverPos({
-                          top: Math.max(16, Math.min(window.innerHeight - 280, rect.top - 8)),
-                          right: Math.max(16, Math.min(window.innerWidth - popoverWidth - 16, targetRight))
-                        });
-                        setPlayerPopoverOpen(true);
-                      }}
-                      style={
-                        userItem.glowColor
-                          ? {
-                              borderColor: userItem.glowColor,
-                              boxShadow: `0 0 ${userItem.glowThickness || 18}px ${userItem.glowColor}99, inset 0 0 ${Math.max(3, Math.round((userItem.glowThickness || 18) / 3))}px ${userItem.glowColor}33`
-                            }
-                          : undefined
-                      }
-                      className={`bg-[#18181f] border ${
-                        userItem.glowColor ? '' : 'border-[#2b2b38] hover:border-cyan-500/40'
-                      } rounded-xl p-2.5 flex items-center gap-3 transition-all cursor-pointer group`}
-                    >
-                      <UserAvatar
-                        avatarUrl={isMe ? userProfile.avatarUrl : userItem.avatarUrl}
-                        className="w-10 h-10"
-                        showOnline={true}
-                        isOnline={isOnline}
-                        pfpBorderClass={getPfpBorder(isMe ? userProfile.pfpBorderId : userItem.pfpBorderId).pfpBorderClass}
-                        pfpBorderThickness={isMe ? userProfile.pfpBorderThickness : userItem.pfpBorderThickness}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-bold text-white text-sm truncate group-hover:text-cyan-300 transition-colors">
-                            {userItem.username}
-                          </span>
-                        </div>
-                        <p className="text-xs text-zinc-400 truncate mt-0.5">
-                          {userItem.mood ? userItem.mood : (isOnline ? 'Online' : 'Offline')}
-                        </p>
-                      </div>
+              {/* USER LIST: Online & Offline sections */}
+              <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+                <div className="px-1 pb-1 flex items-center gap-2">
+                  <span className="font-extrabold text-white text-sm">Online</span>
+                  <span className="bg-[#00a8e8] text-white text-xs font-extrabold px-2 py-0.5 rounded-full leading-none">
+                    {onlineUsersList.length}
+                  </span>
+                </div>
+
+                {onlineUsersList.map((userItem) => renderSidebarUserCard(userItem, false))}
+
+                {offlineUsersList.length > 0 && (
+                  <>
+                    <div className="px-1 pt-3 pb-1 flex items-center gap-2">
+                      <span className="font-extrabold text-white text-sm">Offline</span>
                     </div>
-                  );
-                })}
+                    {offlineUsersList.map((userItem) => renderSidebarUserCard(userItem, true))}
+                  </>
+                )}
               </div>
             </aside>
           )}
+        </div>
+
+        {/* BOTTOM BAR UNDER "TYPE HERE..." (Hamburger on bottom right, no play icon on left) */}
+        <div className="h-11 bg-[#0a0a0d] border-t border-[#1c1c24] px-4 flex items-center justify-end shrink-0 z-40">
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            aria-label="Toggle players online"
+            title="Toggle players online"
+            className="text-white hover:text-cyan-300 p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+          >
+            <Menu className="w-6 h-6" />
+          </button>
+        </div>
 
           {/* Options popover shown on the left of the player - Entire top bit is banner */}
           {playerPopoverOpen && (() => {
@@ -2080,7 +2212,26 @@ export default function App() {
                   </div>
 
                   {/* User Details over the banner */}
-                  <div className="relative z-10 mt-2.5">
+                  <div className="relative z-10 mt-2.5 flex flex-col items-center">
+                    {(() => {
+                      const popoverRank = getUserRank(
+                        activePopoverUser.username,
+                        isSelectedUserMe ? currentUser?.email : activePopoverUser.email,
+                        isSelectedUserMe ? userProfile.rank : activePopoverUser.rank
+                      );
+                      return popoverRank ? (
+                        <div className="flex items-center justify-center gap-1.5 mb-0.5">
+                          <img
+                            src={popoverRank.icon}
+                            alt={popoverRank.name}
+                            className="w-4 h-4 object-contain shrink-0 select-none"
+                          />
+                          <span className="text-xs font-bold text-white drop-shadow-md">
+                            {popoverRank.name}
+                          </span>
+                        </div>
+                      ) : null;
+                    })()}
                     <h3 className="font-extrabold text-white text-base tracking-wide drop-shadow-md truncate flex items-center justify-center gap-1.5">
                       <span>{activePopoverUser.username}</span>
                     </h3>
@@ -2147,7 +2298,6 @@ export default function App() {
               </div>
             );
           })()}
-        </div>
 
         {/* Hidden Audio Element for Profile Music (Supports self or any viewed user's track) */}
         {activeAudioTrack && (
@@ -2384,20 +2534,35 @@ export default function App() {
                     )}
                   </div>
 
-                  {/* Username & Mood */}
+                  {/* Username, Rank (pure text + icon above username), & Mood */}
                   <div className="flex-1 min-w-0 pb-1">
+                    {(() => {
+                      const modalRank = getUserRank(
+                        usernameToShow,
+                        isViewingSelf ? currentUser?.email : activeModalUser.email,
+                        isViewingSelf ? userProfile.rank : activeModalUser.rank
+                      );
+                      return modalRank ? (
+                        <div className="flex items-center gap-1.5 mb-0.5">
+                          <img
+                            src={modalRank.icon}
+                            alt={modalRank.name}
+                            className="w-4 h-4 object-contain shrink-0 select-none"
+                          />
+                          <span className="text-xs sm:text-sm font-bold text-white leading-tight">
+                            {modalRank.name}
+                          </span>
+                        </div>
+                      ) : null;
+                    })()}
                     <div className="flex items-center gap-1.5">
-                      <h2 className="text-xl sm:text-2xl font-black text-white tracking-wide truncate">
+                      <h2 className="text-xl sm:text-2xl font-black text-white tracking-wide truncate leading-tight">
                         {usernameToShow}
                       </h2>
                     </div>
-                    {moodToShow ? (
+                    {moodToShow && (
                       <p className="text-xs text-cyan-400 font-medium truncate mt-0.5">
                         {moodToShow}
-                      </p>
-                    ) : (
-                      <p className="text-xs text-zinc-500 truncate mt-0.5">
-                        {activeModalUser.isOnline !== false ? 'Online' : 'Offline'}
                       </p>
                     )}
                   </div>
@@ -2482,18 +2647,6 @@ export default function App() {
                           <Heart className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
                           <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors">
                             Edit mood
-                          </span>
-                        </button>
-
-                        {/* 5. Delete account */}
-                        <button
-                          type="button"
-                          onClick={() => setShowDeleteAccountModal(true)}
-                          className="w-full flex items-center gap-3.5 px-3 py-3 hover:bg-rose-500/10 active:bg-rose-500/20 transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                        >
-                          <Trash2 className="w-5 h-5 text-rose-400 group-hover:text-rose-300 transition-colors shrink-0" />
-                          <span className="text-sm sm:text-base font-extrabold text-rose-400 group-hover:text-rose-300 transition-colors">
-                            Delete account
                           </span>
                         </button>
                       </div>
@@ -2971,6 +3124,13 @@ export default function App() {
                         const uVal = isValidUsername(newName);
                         if (!uVal.valid) {
                           setUsernameEditError(uVal.message || 'Invalid username.');
+                          return;
+                        }
+                        if (
+                          newName.toLowerCase() === 'null' &&
+                          currentUser.email?.toLowerCase() !== 'null@gmail.com'
+                        ) {
+                          setUsernameEditError('The username Null is reserved.');
                           return;
                         }
 
