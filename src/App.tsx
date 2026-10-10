@@ -61,6 +61,7 @@ import {
   SYSTEM_BOT_USERNAME,
   SYSTEM_BOT_AVATAR
 } from './ranks';
+import appLogo from '../logo.png';
 import GlowModal from './components/GlowModal';
 import BorderModal from './components/BorderModal';
 import { MessagesView } from './MessagesView';
@@ -3535,22 +3536,23 @@ export default function App() {
       <div className="h-[100dvh] w-screen bg-[#111114] text-white flex flex-col font-sans overflow-hidden select-none relative">
         {/* TOP NAVBAR */}
         <header className="h-14 bg-[#141418] border-b border-[#202026] flex items-center justify-between px-4 z-50 relative shrink-0">
-          {/* Top-Left Hamburger Icon (no "Menu" text) */}
-          <div className="relative" ref={hamburgerMenuRef}>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowProfileMenu(false);
-                setShowNotificationsMenu(false);
-                setShowPrivateMenu(false);
-                setShowHamburgerMenu((prev) => !prev);
-              }}
-              aria-label="Open menu"
-              className="text-white hover:text-zinc-300 p-2 rounded-xl hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-center"
-            >
-              <Menu className="w-6 h-6 text-white" />
-            </button>
+          {/* Top-Left Hamburger Icon + App Logo */}
+          <div className="flex items-center gap-2.5">
+            <div className="relative" ref={hamburgerMenuRef}>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowProfileMenu(false);
+                  setShowNotificationsMenu(false);
+                  setShowPrivateMenu(false);
+                  setShowHamburgerMenu((prev) => !prev);
+                }}
+                aria-label="Open menu"
+                className="text-white hover:text-zinc-300 p-2 rounded-xl hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-center"
+              >
+                <Menu className="w-6 h-6 text-white" />
+              </button>
 
             {showHamburgerMenu && (
               <div className="absolute left-0 top-full mt-2 w-48 bg-[#15151b] border border-[#262630] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100 py-1.5 px-1.5 space-y-1">
@@ -3621,6 +3623,13 @@ export default function App() {
                 )}
               </div>
             )}
+            </div>
+
+            <img
+              src={appLogo || '/logo.png'}
+              alt="Logo"
+              className="h-9 sm:h-11 w-auto object-contain select-none pointer-events-none shrink-0"
+            />
           </div>
 
           {/* Top-Right Controls */}
@@ -6817,6 +6826,7 @@ export default function App() {
 
               <div className="p-4 overflow-y-auto space-y-2.5 flex-1">
                 {Object.values(RANKS)
+                  .filter((rankDef) => rankDef.id !== 'ghost')
                   .sort((a, b) => b.priority - a.priority)
                   .map((rankDef) => {
                     const rankKey = rankDef.id;
@@ -7406,6 +7416,12 @@ export default function App() {
             </button>
           </div>
         )}
+
+        <img
+          src={appLogo || '/logo.png'}
+          alt="Logo"
+          className="h-24 sm:h-28 md:h-32 w-auto object-contain mx-auto mb-5 drop-shadow-[0_8px_24px_rgba(0,0,0,0.45)] select-none pointer-events-none"
+        />
 
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight text-white mb-4">
           Welcome To The Chat
