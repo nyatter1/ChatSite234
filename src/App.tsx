@@ -61,8 +61,16 @@ import {
   SYSTEM_BOT_USERNAME,
   SYSTEM_BOT_AVATAR
 } from './ranks';
-import appLogo from '../logo.png';
 import GlowModal from './components/GlowModal';
+
+const appLogo = '/logo.png';
+const usernameSoundUrl = '/username.mp3';
+const newNewsSoundUrl = '/new_news.mp3';
+const newMessagesSoundUrl = '/new_messages.mp3';
+const privateSoundUrl = '/private.mp3';
+const quoteSoundUrl = '/quote.mp3';
+const notifySoundUrl = '/notify.mp3';
+const clearSoundUrl = '/clear.mp3';
 import BorderModal from './components/BorderModal';
 import { MessagesView } from './MessagesView';
 import DatabaseMonitorModal from './components/DatabaseMonitorModal';
@@ -95,6 +103,24 @@ interface MessageReply {
   id: string;
   sender: string;
   text: string;
+}
+
+interface MessengerToastItem {
+  id: string;
+  senderUsername: string;
+  senderDisplayName: string;
+  senderAvatarUrl: string | null;
+  groupName?: string | null;
+  text: string;
+  exiting?: boolean;
+}
+
+function playAppSound(soundUrl: string) {
+  try {
+    const audio = new Audio(soundUrl);
+    audio.volume = 0.85;
+    audio.play().catch(() => {});
+  } catch (_) {}
 }
 
 interface ChatMessage {
@@ -578,6 +604,10 @@ export default function App() {
   }>({ loaded: false, rank: null, rankUpdatedAt: null, lastActionAt: null });
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
   const knownNotificationIdsRef = useRef<Set<string> | null>(null);
+  const knownNewsPostIdsRef = useRef<Set<string> | null>(null);
+  const knownGroupMsgSignaturesRef = useRef<Set<string> | null>(null);
+  const currentUsernameRef = useRef<string | null>(currentUser?.username || null);
+  currentUsernameRef.current = currentUser?.username || null;
 
   // Action, Change Rank, & Mute Modals (Main Developer moderation tools)
   const [actionModalOpen, setActionModalOpen] = useState(false);
@@ -740,6 +770,35 @@ export default function App() {
   const pmMessagesEndRef = useRef<HTMLDivElement>(null);
   const privateMenuRef = useRef<HTMLDivElement>(null);
   const knownPmSignaturesRef = useRef<Set<string> | null>(null);
+  const registeredUsersRef = useRef<UserProfileData[]>([]);
+  registeredUsersRef.current = registeredUsers;
+
+  // Discord-style bottom-left stacking & fading toast notifications for Messages / Groupchats
+  const [messengerToasts, setMessengerToasts] = useState<MessengerToastItem[]>([]);
+
+  const dismissMessengerToast = useCallback((toastId: string) => {
+    setMessengerToasts((prev) =>
+      prev.map((t) => (t.id === toastId ? { ...t, exiting: true } : t))
+    );
+    setTimeout(() => {
+      setMessengerToasts((prev) => prev.filter((t) => t.id !== toastId));
+    }, 320);
+  }, []);
+
+  const enqueueMessengerToast = useCallback((toast: Omit<MessengerToastItem, 'exiting'>) => {
+    setMessengerToasts((prev) => {
+      if (prev.some((t) => t.id === toast.id)) return prev;
+      return [...prev.slice(-4), { ...toast, exiting: false }];
+    });
+    setTimeout(() => {
+      setMessengerToasts((prev) =>
+        prev.map((t) => (t.id === toast.id ? { ...t, exiting: true } : t))
+      );
+    }, 4200);
+    setTimeout(() => {
+      setMessengerToasts((prev) => prev.filter((t) => t.id !== toast.id));
+    }, 4550);
+  }, []);
 
   // Targeted helper to persist profile updates cleanly to Realtime Database & localStorage
   // Prevents infinite onValue <-> useEffect loops and never writes temporary blob: URLs
@@ -862,19 +921,56 @@ export default function App() {
               });
             });
 
-            // Detect newly arrived chat messages while the user is not in the tab
+            // Detect newly arrived chat messages and play appropriate sound effects
             if (knownMessageIdsRef.current === null) {
               knownMessageIdsRef.current = new Set(liveMsgs.map((m) => m.id));
             } else {
-              const hasNewMessage = liveMsgs.some((m) => !knownMessageIdsRef.current!.has(m.id));
+              const newlyAddedMsgs = liveMsgs.filter((m) => !knownMessageIdsRef.current!.has(m.id));
               knownMessageIdsRef.current = new Set(liveMsgs.map((m) => m.id));
-              if (hasNewMessage) {
+              if (newlyAddedMsgs.length > 0) {
                 triggerBackgroundTabFaviconAlert();
+
+                const myName = (currentUsernameRef.current || '').trim();
+                const otherUserMsgs = myName
+                  ? newlyAddedMsgs.filter(
+                      (m) => m.sender.trim().toLowerCase() !== myName.toLowerCase()
+                    )
+                  : newlyAddedMsgs;
+
+                if (otherUserMsgs.length > 0) {
+                  const isReplyToMe = Boolean(
+                    myName &&
+                      otherUserMsgs.some(
+                        (m) =>
+                          m.replyTo?.sender &&
+                          m.replyTo.sender.trim().toLowerCase() === myName.toLowerCase()
+                      )
+                  );
+
+                  const escapedMe = myName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                  const tagRegex = myName
+                    ? new RegExp(`(^|[^a-zA-Z0-9_])@?${escapedMe}(?=$|[^a-zA-Z0-9_])`, 'i')
+                    : null;
+                  const isTaggedMe = Boolean(
+                    tagRegex && otherUserMsgs.some((m) => tagRegex.test(m.text || ''))
+                  );
+
+                  if (isReplyToMe) {
+                    playAppSound(quoteSoundUrl || '/quote.mp3');
+                  } else if (isTaggedMe) {
+                    playAppSound(usernameSoundUrl || '/username.mp3');
+                  } else {
+                    playAppSound(newMessagesSoundUrl || '/new_messages.mp3');
+                  }
+                }
               }
             }
 
             setMessages(liveMsgs);
           } else {
+            if (knownMessageIdsRef.current !== null && knownMessageIdsRef.current.size > 0) {
+              playAppSound(clearSoundUrl || '/clear.mp3');
+            }
             knownMessageIdsRef.current = new Set();
             setMessages([]);
             try {
@@ -1065,6 +1161,7 @@ export default function App() {
             knownNotificationIdsRef.current = new Set(items.map((n) => `${n.id}:${n.text}`));
             if (hasNewOrUpdatedNotif) {
               triggerBackgroundTabFaviconAlert();
+              playAppSound(notifySoundUrl || '/notify.mp3');
             }
           }
 
@@ -1098,12 +1195,20 @@ export default function App() {
         if (snapshot.exists()) {
           const threads: PmThread[] = [];
           const currentSigs: string[] = [];
+          const allPmEntries: {
+            sig: string;
+            peerUsername: string;
+            peerAvatarUrl: string | null;
+            msg: PmMessage;
+          }[] = [];
 
           snapshot.forEach((childSnap) => {
             const val = childSnap.val();
             const peerKey = childSnap.key;
             if (!val || typeof val !== 'object' || !peerKey) return;
 
+            const threadPeerName = val.peerUsername || peerKey;
+            const threadPeerAvatar = sanitizeMediaUrl(val.peerAvatarUrl);
             const msgsList: PmMessage[] = [];
             if (val.messages && typeof val.messages === 'object') {
               for (const [mId, mVal] of Object.entries(val.messages)) {
@@ -1119,7 +1224,7 @@ export default function App() {
                     : cleanUrl
                     ? 'image'
                     : null;
-                msgsList.push({
+                const msgObj: PmMessage = {
                   id: mId,
                   sender: m.sender || 'Anonymous',
                   text: typeof m.text === 'string' ? m.text : '',
@@ -1130,8 +1235,16 @@ export default function App() {
                   mediaUrl: cleanUrl,
                   mediaType: mType,
                   mediaName: m.mediaName || null
+                };
+                msgsList.push(msgObj);
+                const sig = `${peerKey}:${mId}`;
+                currentSigs.push(sig);
+                allPmEntries.push({
+                  sig,
+                  peerUsername: threadPeerName,
+                  peerAvatarUrl: threadPeerAvatar,
+                  msg: msgObj
                 });
-                currentSigs.push(`${peerKey}:${mId}`);
               }
             }
             msgsList.sort((a, b) => a.createdAt - b.createdAt);
@@ -1139,8 +1252,8 @@ export default function App() {
             const lastMsgTime = msgsList.length > 0 ? msgsList[msgsList.length - 1].createdAt : 0;
             threads.push({
               peerKey,
-              peerUsername: val.peerUsername || peerKey,
-              peerAvatarUrl: sanitizeMediaUrl(val.peerAvatarUrl),
+              peerUsername: threadPeerName,
+              peerAvatarUrl: threadPeerAvatar,
               unread: val.unread === true,
               unreadCount: typeof val.unreadCount === 'number' ? val.unreadCount : val.unread ? 1 : 0,
               updatedAt: typeof val.updatedAt === 'number' ? val.updatedAt : lastMsgTime || Date.now(),
@@ -1163,10 +1276,57 @@ export default function App() {
               triggerBackgroundTabFaviconAlert();
             }
           } else {
-            const hasNewPm = currentSigs.some((sig) => !knownPmSignaturesRef.current!.has(sig));
+            const newEntries = allPmEntries.filter(
+              (entry) => !knownPmSignaturesRef.current!.has(entry.sig)
+            );
             knownPmSignaturesRef.current = new Set(currentSigs);
-            if (hasNewPm) {
+
+            if (newEntries.length > 0) {
               triggerBackgroundTabFaviconAlert();
+
+              const incomingFromOthers = newEntries.filter(
+                (entry) =>
+                  entry.msg.sender.trim().toLowerCase() !==
+                  currentUser.username.trim().toLowerCase()
+              );
+
+              if (incomingFromOthers.length > 0) {
+                playAppSound(privateSoundUrl || '/private.mp3');
+
+                incomingFromOthers.slice(-3).forEach((entry) => {
+                  const senderLower = entry.msg.sender.trim().toLowerCase();
+                  const senderProfile = registeredUsersRef.current.find(
+                    (u) => u.username.toLowerCase() === senderLower
+                  );
+                  const displayName =
+                    senderProfile?.msgProfile?.displayName ||
+                    senderProfile?.username ||
+                    entry.msg.sender;
+                  const avatarUrl =
+                    senderLower === 'system'
+                      ? SYSTEM_BOT_AVATAR
+                      : senderProfile?.msgProfile?.avatarUrl ||
+                        senderProfile?.avatarUrl ||
+                        entry.peerAvatarUrl ||
+                        null;
+                  const previewText =
+                    entry.msg.text ||
+                    (entry.msg.mediaType === 'video'
+                      ? '🎬 Sent a video'
+                      : entry.msg.mediaType === 'audio'
+                      ? '🎵 Sent an audio clip'
+                      : '📷 Sent an image');
+
+                  enqueueMessengerToast({
+                    id: `pm-${entry.sig}`,
+                    senderUsername: entry.msg.sender,
+                    senderDisplayName: displayName,
+                    senderAvatarUrl: avatarUrl,
+                    groupName: null,
+                    text: previewText
+                  });
+                });
+              }
             }
           }
 
@@ -1181,7 +1341,117 @@ export default function App() {
       }
     );
     return () => unsubscribe();
-  }, [currentUser?.username]);
+  }, [currentUser?.username, enqueueMessengerToast]);
+
+  // Real-time listener for Groupchat messages in Messages (triggers bottom-left Discord toast & sound)
+  useEffect(() => {
+    if (!currentUser?.username) {
+      knownGroupMsgSignaturesRef.current = null;
+      return;
+    }
+    knownGroupMsgSignaturesRef.current = null;
+    const myKey = sanitizeDbKey(currentUser.username);
+    const groupsRef = ref(rtdb, 'users/__system_messenger__/groups');
+
+    const unsubGroups = onValue(
+      groupsRef,
+      (snap) => {
+        if (!snap.exists() || typeof snap.val() !== 'object') {
+          knownGroupMsgSignaturesRef.current = new Set();
+          return;
+        }
+        const groupsVal = snap.val();
+        const currentSigs: string[] = [];
+        const allGroupEntries: {
+          sig: string;
+          groupName: string;
+          sender: string;
+          senderDisplayName: string;
+          senderAvatarUrl: string | null;
+          text: string;
+        }[] = [];
+
+        for (const [gId, gRaw] of Object.entries(groupsVal)) {
+          const g = gRaw as any;
+          if (!g || !g.name) continue;
+          const members = g.members && typeof g.members === 'object' ? g.members : {};
+          if (!members[myKey]) continue;
+
+          if (g.messages && typeof g.messages === 'object') {
+            for (const [mId, mRaw] of Object.entries(g.messages)) {
+              const m = mRaw as any;
+              if (!m) continue;
+              const sig = `${gId}:${mId}`;
+              currentSigs.push(sig);
+              const previewText =
+                (typeof m.text === 'string' && m.text.trim()) ||
+                (m.mediaType === 'video'
+                  ? '🎬 Sent a video'
+                  : m.mediaType === 'audio'
+                  ? '🎵 Sent an audio clip'
+                  : m.mediaUrl
+                  ? '📷 Sent an image'
+                  : '');
+              if (!previewText) continue;
+
+              allGroupEntries.push({
+                sig,
+                groupName: g.name,
+                sender: m.sender || 'User',
+                senderDisplayName: m.senderDisplayName || m.sender || 'User',
+                senderAvatarUrl: sanitizeMediaUrl(m.senderAvatarUrl),
+                text: previewText
+              });
+            }
+          }
+        }
+
+        if (knownGroupMsgSignaturesRef.current === null) {
+          knownGroupMsgSignaturesRef.current = new Set(currentSigs);
+        } else {
+          const newEntries = allGroupEntries.filter(
+            (e) => !knownGroupMsgSignaturesRef.current!.has(e.sig)
+          );
+          knownGroupMsgSignaturesRef.current = new Set(currentSigs);
+
+          const incomingFromOthers = newEntries.filter(
+            (e) => e.sender.trim().toLowerCase() !== currentUser.username.trim().toLowerCase()
+          );
+
+          if (incomingFromOthers.length > 0) {
+            triggerBackgroundTabFaviconAlert();
+            playAppSound(privateSoundUrl || '/private.mp3');
+
+            incomingFromOthers.slice(-3).forEach((entry) => {
+              const senderLower = entry.sender.trim().toLowerCase();
+              const senderProfile = registeredUsersRef.current.find(
+                (u) => u.username.toLowerCase() === senderLower
+              );
+              const resolvedAvatar =
+                senderLower === 'system'
+                  ? SYSTEM_BOT_AVATAR
+                  : entry.senderAvatarUrl ||
+                    senderProfile?.msgProfile?.avatarUrl ||
+                    senderProfile?.avatarUrl ||
+                    null;
+
+              enqueueMessengerToast({
+                id: `grp-${entry.sig}`,
+                senderUsername: entry.sender,
+                senderDisplayName: entry.senderDisplayName,
+                senderAvatarUrl: resolvedAvatar,
+                groupName: entry.groupName,
+                text: entry.text
+              });
+            });
+          }
+        }
+      },
+      () => {}
+    );
+
+    return () => unsubGroups();
+  }, [currentUser?.username, enqueueMessengerToast]);
 
   // Real-time listener for Community News posts (auto-clears at 10 news posts) & System bot likes
   useEffect(() => {
@@ -1239,8 +1509,19 @@ export default function App() {
               });
             });
             items.sort((a, b) => b.createdAt - a.createdAt);
+            if (knownNewsPostIdsRef.current === null) {
+              knownNewsPostIdsRef.current = new Set(items.map((p) => p.id));
+            } else {
+              const hasNewNewsPost = items.some((p) => !knownNewsPostIdsRef.current!.has(p.id));
+              knownNewsPostIdsRef.current = new Set(items.map((p) => p.id));
+              if (hasNewNewsPost) {
+                playAppSound(newNewsSoundUrl || '/new_news.mp3');
+                triggerBackgroundTabFaviconAlert();
+              }
+            }
             setNewsPosts(items);
           } else {
+            knownNewsPostIdsRef.current = new Set();
             setNewsPosts([]);
           }
         },
@@ -7380,6 +7661,61 @@ export default function App() {
             </div>
           );
         })()}
+
+        {/* DISCORD-STYLE BOTTOM-LEFT STACKING & FADING MESSAGE NOTIFICATIONS */}
+        {messengerToasts.length > 0 && (
+          <div className="fixed bottom-16 left-4 z-[95] flex flex-col gap-2.5 w-[calc(100vw-32px)] max-w-[340px] pointer-events-none">
+            {messengerToasts.map((toast) => (
+              <div
+                key={toast.id}
+                onClick={() => {
+                  dismissMessengerToast(toast.id);
+                  setMessagesViewActive(true);
+                }}
+                className={`pointer-events-auto bg-[#18191c]/95 backdrop-blur-md border border-[#2f3136] hover:border-[#5865f2]/70 rounded-2xl p-3.5 shadow-[0_12px_32px_rgba(0,0,0,0.65)] flex items-start gap-3 cursor-pointer transition-all duration-300 ${
+                  toast.exiting
+                    ? 'opacity-0 translate-x-6 scale-95'
+                    : 'opacity-100 translate-x-0 scale-100 animate-in fade-in slide-in-from-left-8 duration-300'
+                }`}
+              >
+                <UserAvatar
+                  avatarUrl={toast.senderAvatarUrl}
+                  className="w-10 h-10 shrink-0"
+                  showOnline={true}
+                  isOnline={true}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="font-black text-white text-xs sm:text-sm truncate">
+                        {toast.senderDisplayName || toast.senderUsername}
+                      </span>
+                      {toast.groupName && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-[#5865f2]/20 text-[#99a2ff] truncate max-w-[115px]">
+                          {toast.groupName}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        dismissMessengerToast(toast.id);
+                      }}
+                      className="text-zinc-400 hover:text-white p-0.5 rounded transition-colors cursor-pointer shrink-0"
+                      aria-label="Dismiss notification"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <p className="text-xs text-zinc-300 mt-0.5 line-clamp-2 break-words leading-snug">
+                    {toast.text}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* RED FLAG DATABASE MONITOR & ADMIN CONSOLE MODAL (ONLY FOR NULL / MAIN DEV) */}
         {isMainDeveloper && (

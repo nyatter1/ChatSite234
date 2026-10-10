@@ -1,11 +1,3 @@
-import botAvatar from '../bot.png';
-import superFounderIcon from '../superfounder.gif';
-import mainFounderIcon from '../mainfounder.gif';
-import mainAdminIcon from '../mainadmin.gif';
-import superPremIcon from '../superprem.gif';
-import premIcon from '../prem.gif';
-import ghostIcon from '../ghost.gif';
-
 export interface RankDefinition {
   id: string;
   name: string;
@@ -16,7 +8,7 @@ export interface RankDefinition {
 const GITHUB_RANKS_BASE = 'https://raw.githubusercontent.com/nyatter1/chatranks/main';
 
 export const SYSTEM_BOT_USERNAME = 'System';
-export const SYSTEM_BOT_AVATAR = botAvatar || '/bot.png';
+export const SYSTEM_BOT_AVATAR = '/bot.png';
 export const SYSTEM_BOT_RANK_ICON = '/ranks/bot.svg';
 
 export const RANKS: Record<string, RankDefinition> = {
@@ -35,13 +27,13 @@ export const RANKS: Record<string, RankDefinition> = {
   superfounder: {
     id: 'superfounder',
     name: 'Super Founder',
-    icon: superFounderIcon || '/ranks/superfounder.gif',
+    icon: '/superfounder.gif',
     priority: 86
   },
   mainfounder: {
     id: 'mainfounder',
     name: 'Main Founder',
-    icon: mainFounderIcon || '/ranks/mainfounder.gif',
+    icon: '/mainfounder.gif',
     priority: 83
   },
   founder: {
@@ -59,7 +51,7 @@ export const RANKS: Record<string, RankDefinition> = {
   mainadmin: {
     id: 'mainadmin',
     name: 'Main Admin',
-    icon: mainAdminIcon || '/ranks/mainadmin.gif',
+    icon: '/mainadmin.gif',
     priority: 65
   },
   superadmin: {
@@ -101,19 +93,19 @@ export const RANKS: Record<string, RankDefinition> = {
   superprem: {
     id: 'superprem',
     name: 'Super Premium',
-    icon: superPremIcon || '/ranks/superprem.gif',
+    icon: '/superprem.gif',
     priority: 18
   },
   prem: {
     id: 'prem',
     name: 'Premium',
-    icon: premIcon || '/ranks/prem.gif',
+    icon: '/prem.gif',
     priority: 15
   },
   ghost: {
     id: 'ghost',
     name: 'Ghost',
-    icon: ghostIcon || '/ranks/ghost.gif',
+    icon: '/ghost.gif',
     priority: 10
   }
 };
