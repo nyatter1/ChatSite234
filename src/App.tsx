@@ -99,7 +99,7 @@ interface ChatMessage {
 
 interface AppNotification {
   id: string;
-  type: 'profile_visit' | 'rank_change';
+  type: 'profile_visit' | 'rank_change' | 'mute';
   fromUsername: string;
   fromAvatarUrl?: string | null;
   fromPfpBorderId?: string | null;
@@ -108,6 +108,28 @@ interface AppNotification {
   createdAt: number;
   read?: boolean;
 }
+
+const MUTE_DURATIONS: { id: string; label: string; ms: number }[] = [
+  { id: '10s', label: '10s', ms: 10 * 1000 },
+  { id: '30s', label: '30s', ms: 30 * 1000 },
+  { id: '1m', label: '1m', ms: 60 * 1000 },
+  { id: '5m', label: '5m', ms: 5 * 60 * 1000 },
+  { id: '10m', label: '10m', ms: 10 * 60 * 1000 },
+  { id: '15m', label: '15m', ms: 15 * 60 * 1000 },
+  { id: '30m', label: '30m', ms: 30 * 60 * 1000 },
+  { id: '60m', label: '60m', ms: 60 * 60 * 1000 },
+  { id: '1d', label: '1d', ms: 24 * 60 * 60 * 1000 },
+  { id: '5d', label: '5d', ms: 5 * 24 * 60 * 60 * 1000 },
+  { id: '10d', label: '10d', ms: 10 * 24 * 60 * 60 * 1000 },
+  { id: '1w', label: '1w', ms: 7 * 24 * 60 * 60 * 1000 },
+  { id: '5w', label: '5w', ms: 5 * 7 * 24 * 60 * 60 * 1000 },
+  { id: '10w', label: '10w', ms: 10 * 7 * 24 * 60 * 60 * 1000 },
+  { id: '1yr', label: '1yr', ms: 365 * 24 * 60 * 60 * 1000 },
+  { id: '5yr', label: '5yr', ms: 5 * 365 * 24 * 60 * 60 * 1000 },
+  { id: '10yr', label: '10yr', ms: 10 * 365 * 24 * 60 * 60 * 1000 },
+  { id: '100yrs', label: '100yrs', ms: 100 * 365 * 24 * 60 * 60 * 1000 },
+  { id: '1000yrs', label: '1000yrs', ms: 1000 * 365 * 24 * 60 * 60 * 1000 }
+];
 
 function formatNotificationDate(ts?: number): string {
   const d = ts ? new Date(ts) : new Date();
@@ -133,6 +155,39 @@ function sanitizeMediaUrl(url: string | null | undefined): string | null {
   if (!url || typeof url !== 'string') return null;
   if (url.startsWith('blob:')) return null;
   return url;
+}
+
+// Dynamically update the browser tab favicon (/favicon.png or /favicon2.png)
+function setDocumentFavicon(href: '/favicon.png' | '/favicon2.png') {
+  if (typeof document === 'undefined') return;
+  const links = document.querySelectorAll<HTMLLinkElement>("link[rel*='icon']");
+  if (links.length > 0) {
+    links.forEach((link) => {
+      if (link.getAttribute('href') !== href) {
+        link.href = href;
+      }
+    });
+  } else {
+    const link = document.createElement('link');
+    link.rel = 'icon';
+    link.type = 'image/png';
+    link.href = href;
+    document.head.appendChild(link);
+  }
+}
+
+function isUserOutOfTab(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.hidden || document.visibilityState === 'hidden' || !document.hasFocus();
+}
+
+function triggerBackgroundTabFaviconAlert() {
+  if (isUserOutOfTab()) {
+    setDocumentFavicon('/favicon2.png');
+    try {
+      sessionStorage.setItem('teenverse_pending_favicon_alert', '1');
+    } catch (_) {}
+  }
 }
 
 // Reusable Avatar component supporting custom uploaded avatar or default silhouette
@@ -206,6 +261,10 @@ interface UserProfileData {
   pfpBorderId?: string | null;
   pfpBorderThickness?: number;
   musicTrack?: MusicTrack | null;
+  mutedUntil?: number | null;
+  muteDuration?: string | null;
+  muteReason?: string | null;
+  muteNotificationId?: string | null;
   isOnline?: boolean;
   lastSeen?: any;
   updatedAt?: any;
@@ -233,6 +292,10 @@ interface UserProfileState {
   pfpBorderId: string | null;
   pfpBorderThickness: number;
   musicTrack: MusicTrack | null;
+  mutedUntil?: number | null;
+  muteDuration?: string | null;
+  muteReason?: string | null;
+  muteNotificationId?: string | null;
 }
 
 export default function App() {
@@ -309,11 +372,20 @@ export default function App() {
     loaded: boolean;
     rank: string | null;
     rankUpdatedAt: number | null;
-  }>({ loaded: false, rank: null, rankUpdatedAt: null });
+    lastActionAt: number | null;
+  }>({ loaded: false, rank: null, rankUpdatedAt: null, lastActionAt: null });
+  const knownMessageIdsRef = useRef<Set<string> | null>(null);
+  const knownNotificationIdsRef = useRef<Set<string> | null>(null);
 
-  // Action & Change Rank Modals (Main Developer moderation tools)
+  // Action, Change Rank, & Mute Modals (Main Developer moderation tools)
   const [actionModalOpen, setActionModalOpen] = useState(false);
   const [changeRankModalOpen, setChangeRankModalOpen] = useState(false);
+  const [muteModalOpen, setMuteModalOpen] = useState(false);
+  const [muteDurationId, setMuteDurationId] = useState<string>('5m');
+  const [muteDropdownOpen, setMuteDropdownOpen] = useState(false);
+  const [muteReason, setMuteReason] = useState('');
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const isUnmutingRef = useRef(false);
 
   // Sub-modal state for Edit actions (info, username, bio, mood, glow, profileBorder, pfpBorder, music)
   const [activeEditSubModal, setActiveEditSubModal] = useState<
@@ -516,8 +588,21 @@ export default function App() {
                 replyTo: data.replyTo || null
               });
             });
+
+            // Detect newly arrived chat messages while the user is not in the tab
+            if (knownMessageIdsRef.current === null) {
+              knownMessageIdsRef.current = new Set(liveMsgs.map((m) => m.id));
+            } else {
+              const hasNewMessage = liveMsgs.some((m) => !knownMessageIdsRef.current!.has(m.id));
+              knownMessageIdsRef.current = new Set(liveMsgs.map((m) => m.id));
+              if (hasNewMessage) {
+                triggerBackgroundTabFaviconAlert();
+              }
+            }
+
             setMessages(liveMsgs);
           } else {
+            knownMessageIdsRef.current = new Set();
             setMessages([]);
             try {
               localStorage.removeItem('chat_community_messages');
@@ -532,6 +617,42 @@ export default function App() {
     } catch (err) {
       console.warn('Realtime Database initialization notice:', err);
     }
+  }, []);
+
+  // Restore favicon to /favicon.png when the user enters or focuses the tab
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem('teenverse_pending_favicon_alert') === '1' && isUserOutOfTab()) {
+        setDocumentFavicon('/favicon2.png');
+      }
+    } catch (_) {}
+
+    const handleEnterTab = () => {
+      if (!document.hidden && document.visibilityState !== 'hidden') {
+        try {
+          sessionStorage.removeItem('teenverse_pending_favicon_alert');
+        } catch (_) {}
+        setDocumentFavicon('/favicon.png');
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden && document.visibilityState !== 'hidden') {
+        handleEnterTab();
+      }
+    };
+
+    window.addEventListener('focus', handleEnterTab);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pointerdown', handleEnterTab);
+    window.addEventListener('keydown', handleEnterTab);
+
+    return () => {
+      window.removeEventListener('focus', handleEnterTab);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pointerdown', handleEnterTab);
+      window.removeEventListener('keydown', handleEnterTab);
+    };
   }, []);
 
   // Real-time listener for all registered/online users in Firebase Realtime Database
@@ -583,6 +704,10 @@ export default function App() {
                 pfpBorderId: val.pfpBorderId || 'pfp-default',
                 pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : 2,
                 musicTrack: val.musicTrack || null,
+                mutedUntil: typeof val.mutedUntil === 'number' ? val.mutedUntil : null,
+                muteDuration: val.muteDuration || null,
+                muteReason: val.muteReason || null,
+                muteNotificationId: val.muteNotificationId || null,
                 isOnline: val.isOnline === true,
                 lastSeen: val.lastSeen || null,
                 updatedAt: val.updatedAt || null
@@ -606,9 +731,11 @@ export default function App() {
   // Real-time listener for current user's notifications in Firebase Realtime Database
   useEffect(() => {
     if (!currentUser?.username) {
+      knownNotificationIdsRef.current = null;
       setNotifications([]);
       return;
     }
+    knownNotificationIdsRef.current = null;
     const myKey = sanitizeDbKey(currentUser.username);
     const notifRef = query(ref(rtdb, `users/${myKey}/notifications`), limitToLast(50));
     const unsubscribe = onValue(
@@ -621,7 +748,12 @@ export default function App() {
             if (!val || typeof val !== 'object') return;
             items.push({
               id: childSnap.key || String(Date.now()),
-              type: val.type === 'rank_change' ? 'rank_change' : 'profile_visit',
+              type:
+                val.type === 'rank_change'
+                  ? 'rank_change'
+                  : val.type === 'mute'
+                  ? 'mute'
+                  : 'profile_visit',
               fromUsername: val.fromUsername || 'System',
               fromAvatarUrl: sanitizeMediaUrl(val.fromAvatarUrl),
               fromPfpBorderId: val.fromPfpBorderId || null,
@@ -632,8 +764,25 @@ export default function App() {
             });
           });
           items.sort((a, b) => b.createdAt - a.createdAt);
+
+          if (knownNotificationIdsRef.current === null) {
+            knownNotificationIdsRef.current = new Set(items.map((n) => `${n.id}:${n.text}`));
+            if (items.some((n) => !n.read)) {
+              triggerBackgroundTabFaviconAlert();
+            }
+          } else {
+            const hasNewOrUpdatedNotif = items.some(
+              (n) => !knownNotificationIdsRef.current!.has(`${n.id}:${n.text}`)
+            );
+            knownNotificationIdsRef.current = new Set(items.map((n) => `${n.id}:${n.text}`));
+            if (hasNewOrUpdatedNotif) {
+              triggerBackgroundTabFaviconAlert();
+            }
+          }
+
           setNotifications(items);
         } else {
+          knownNotificationIdsRef.current = new Set();
           setNotifications([]);
         }
       },
@@ -804,7 +953,7 @@ export default function App() {
       });
     };
 
-    initialRankSnapshotRef.current = { loaded: false, rank: null, rankUpdatedAt: null };
+    initialRankSnapshotRef.current = { loaded: false, rank: null, rankUpdatedAt: null, lastActionAt: null };
 
     const unsubscribeUser = onValue(
       userRef,
@@ -822,36 +971,50 @@ export default function App() {
         isSessionVerifiedRef.current = true;
         setupPresence();
 
-        // Detect live rank changes on the currently logged-in user and trigger a full browser reload (like Ctrl + R)
+        // Detect live rank changes or moderation actions on the currently logged-in user
         const incomingRank = val.rank !== undefined ? (val.rank || null) : null;
         const incomingRankUpdatedAt = typeof val.rankUpdatedAt === 'number' ? val.rankUpdatedAt : null;
+        const incomingLastActionAt = typeof val.lastActionAt === 'number' ? val.lastActionAt : null;
 
         if (!initialRankSnapshotRef.current.loaded) {
           initialRankSnapshotRef.current = {
             loaded: true,
             rank: incomingRank,
-            rankUpdatedAt: incomingRankUpdatedAt
+            rankUpdatedAt: incomingRankUpdatedAt,
+            lastActionAt: incomingLastActionAt
           };
-        } else if (
-          incomingRank !== initialRankSnapshotRef.current.rank ||
-          (incomingRankUpdatedAt !== null &&
-            incomingRankUpdatedAt !== initialRankSnapshotRef.current.rankUpdatedAt)
-        ) {
-          initialRankSnapshotRef.current = {
-            loaded: true,
-            rank: incomingRank,
-            rankUpdatedAt: incomingRankUpdatedAt
-          };
-          try {
-            const savedProf = localStorage.getItem('chat_community_profile');
-            const parsedProf = savedProf ? JSON.parse(savedProf) : {};
-            localStorage.setItem(
-              'chat_community_profile',
-              JSON.stringify({ ...parsedProf, rank: incomingRank })
-            );
-          } catch (_) {}
-          window.location.reload();
-          return;
+        } else {
+          if (
+            incomingLastActionAt !== null &&
+            incomingLastActionAt !== initialRankSnapshotRef.current.lastActionAt
+          ) {
+            initialRankSnapshotRef.current.lastActionAt = incomingLastActionAt;
+            triggerBackgroundTabFaviconAlert();
+          }
+
+          if (
+            incomingRank !== initialRankSnapshotRef.current.rank ||
+            (incomingRankUpdatedAt !== null &&
+              incomingRankUpdatedAt !== initialRankSnapshotRef.current.rankUpdatedAt)
+          ) {
+            initialRankSnapshotRef.current = {
+              loaded: true,
+              rank: incomingRank,
+              rankUpdatedAt: incomingRankUpdatedAt,
+              lastActionAt: incomingLastActionAt
+            };
+            triggerBackgroundTabFaviconAlert();
+            try {
+              const savedProf = localStorage.getItem('chat_community_profile');
+              const parsedProf = savedProf ? JSON.parse(savedProf) : {};
+              localStorage.setItem(
+                'chat_community_profile',
+                JSON.stringify({ ...parsedProf, rank: incomingRank })
+              );
+            } catch (_) {}
+            window.location.reload();
+            return;
+          }
         }
 
         // Sync remote profile changes into local state only if values actually changed
@@ -883,7 +1046,11 @@ export default function App() {
             pfpBorderId: val.pfpBorderId || prev.pfpBorderId,
             pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : prev.pfpBorderThickness,
             musicTrack: val.musicTrack || null,
-            rank: val.rank !== undefined ? val.rank : prev.rank
+            rank: val.rank !== undefined ? val.rank : prev.rank,
+            mutedUntil: typeof val.mutedUntil === 'number' ? val.mutedUntil : null,
+            muteDuration: val.muteDuration || null,
+            muteReason: val.muteReason || null,
+            muteNotificationId: val.muteNotificationId || null
           };
 
           if (JSON.stringify(prev) === JSON.stringify(nextState)) {
@@ -1427,6 +1594,7 @@ export default function App() {
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!inputText.trim() || !currentUser) return;
+    if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
 
     const textToSend = inputText.trim();
     const currentReply = replyingTo;
@@ -1607,6 +1775,163 @@ export default function App() {
       console.warn('Error updating user rank in RTDB:', err);
     }
   };
+
+  // Unmute a user in RTDB and update their mute notification to "You have been unmuted."
+  const handleUnmuteTargetUser = useCallback(
+    async (targetUsername: string, specificNotifId?: string | null) => {
+      if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
+      const targetKey = sanitizeDbKey(targetUsername);
+      try {
+        // 1. Update existing mute notification(s) to "You have been unmuted."
+        const notifsRef = ref(rtdb, `users/${targetKey}/notifications`);
+        const notifsSnap = await get(notifsRef);
+        let updatedExistingNotif = false;
+
+        if (notifsSnap.exists()) {
+          const allNotifs = notifsSnap.val();
+          const notifUpdates: Record<string, any> = {};
+          for (const [nKey, nVal] of Object.entries(allNotifs)) {
+            const n = nVal as any;
+            if (
+              (specificNotifId && nKey === specificNotifId) ||
+              (n?.type === 'mute' && n?.text !== 'You have been unmuted.')
+            ) {
+              notifUpdates[`${nKey}/text`] = 'You have been unmuted.';
+              notifUpdates[`${nKey}/read`] = false;
+              notifUpdates[`${nKey}/createdAt`] = Date.now();
+              updatedExistingNotif = true;
+            }
+          }
+          if (Object.keys(notifUpdates).length > 0) {
+            await update(notifsRef, notifUpdates);
+          }
+        }
+
+        if (!updatedExistingNotif) {
+          await push(notifsRef, {
+            type: 'mute',
+            fromUsername: SYSTEM_BOT_USERNAME,
+            fromAvatarUrl: SYSTEM_BOT_AVATAR,
+            text: 'You have been unmuted.',
+            createdAt: Date.now(),
+            read: false
+          });
+        }
+
+        // 2. Clear mute fields on user node
+        await update(ref(rtdb, `users/${targetKey}`), {
+          mutedUntil: null,
+          muteDuration: null,
+          muteReason: null,
+          muteNotificationId: null,
+          lastActionAt: Date.now(),
+          updatedAt: serverTimestamp()
+        });
+      } catch (err) {
+        console.warn('Error unmuting user in RTDB:', err);
+      }
+    },
+    []
+  );
+
+  // Mute target user (Main Developer only) for the selected duration
+  const handleMuteTargetUser = async () => {
+    if (!currentUser || !liveSelectedUser) return;
+    const targetUsername = liveSelectedUser.username;
+    if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
+    const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    if (!myRank || myRank.id !== 'main_developer') return;
+
+    const selectedDur = MUTE_DURATIONS.find((d) => d.id === muteDurationId) || MUTE_DURATIONS[3];
+    const mutedUntil = Date.now() + selectedDur.ms;
+    const cleanReason = muteReason.trim();
+    const targetKey = sanitizeDbKey(targetUsername);
+
+    setMuteModalOpen(false);
+    setMuteDropdownOpen(false);
+    setActionModalOpen(false);
+    setMuteReason('');
+
+    try {
+      // 1. Push or update the System mute notification so it shows "You have been muted for (duration)"
+      const notifText = cleanReason
+        ? `You have been muted for ${selectedDur.label} (${cleanReason})`
+        : `You have been muted for ${selectedDur.label}`;
+
+      const newNotifRef = await push(ref(rtdb, `users/${targetKey}/notifications`), {
+        type: 'mute',
+        fromUsername: SYSTEM_BOT_USERNAME,
+        fromAvatarUrl: SYSTEM_BOT_AVATAR,
+        text: notifText,
+        createdAt: Date.now(),
+        read: false
+      });
+
+      // 2. Save mute state on target user in RTDB
+      await update(ref(rtdb, `users/${targetKey}`), {
+        mutedUntil,
+        muteDuration: selectedDur.label,
+        muteReason: cleanReason || null,
+        muteNotificationId: newNotifRef.key || null,
+        lastActionAt: Date.now(),
+        updatedAt: serverTimestamp()
+      });
+    } catch (err) {
+      console.warn('Error muting user in RTDB:', err);
+    }
+  };
+
+  // Automatic real-time timer to unmute the current user as soon as their mute duration expires
+  useEffect(() => {
+    setNowMs(Date.now());
+    const mutedUntil = userProfile.mutedUntil;
+    if (!currentUser?.username || !mutedUntil) {
+      isUnmutingRef.current = false;
+      return;
+    }
+
+    // Stop voice recording & clear input while muted
+    if (mutedUntil > Date.now()) {
+      if (isListeningVoice && recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (_) {}
+        setIsListeningVoice(false);
+      }
+      if (inputText) setInputText('');
+      if (replyingTo) setReplyingTo(null);
+    }
+
+    const checkMuteExpiry = () => {
+      const currentNow = Date.now();
+      setNowMs(currentNow);
+      if (mutedUntil <= currentNow && !isUnmutingRef.current) {
+        isUnmutingRef.current = true;
+        setUserProfile((prev) => ({
+          ...prev,
+          mutedUntil: null,
+          muteDuration: null,
+          muteReason: null,
+          muteNotificationId: null
+        }));
+        handleUnmuteTargetUser(currentUser.username, userProfile.muteNotificationId).finally(() => {
+          isUnmutingRef.current = false;
+        });
+      }
+    };
+
+    checkMuteExpiry();
+    const interval = setInterval(checkMuteExpiry, 500);
+    return () => clearInterval(interval);
+  }, [
+    currentUser?.username,
+    userProfile.mutedUntil,
+    userProfile.muteNotificationId,
+    handleUnmuteTargetUser,
+    isListeningVoice,
+    inputText,
+    replyingTo
+  ]);
 
   // Voice input toggle using Web Speech API
   const handleToggleVoiceInput = () => {
@@ -1895,6 +2220,8 @@ export default function App() {
         isMe ? currentUser?.email : userItem.email,
         isMe ? userProfile.rank : userItem.rank
       );
+      const activeGlowColor = isMe ? userProfile.glowColor : userItem.glowColor;
+      const activeGlowThickness = (isMe ? userProfile.glowThickness : userItem.glowThickness) || 18;
       return (
         <div
           key={userItem.username}
@@ -1914,7 +2241,17 @@ export default function App() {
             });
             setPlayerPopoverOpen(true);
           }}
+          style={
+            activeGlowColor
+              ? {
+                  borderColor: activeGlowColor,
+                  boxShadow: `0 0 ${activeGlowThickness}px ${activeGlowColor}99, inset 0 0 ${Math.max(4, Math.round(activeGlowThickness / 3))}px ${activeGlowColor}40`
+                }
+              : undefined
+          }
           className={`px-3.5 py-2 flex items-center gap-3 hover:bg-black/35 transition-colors cursor-pointer group ${
+            activeGlowColor ? 'border rounded-xl mx-2 my-1' : ''
+          } ${
             isOfflineCard ? 'opacity-75 hover:opacity-100' : ''
           }`}
         >
@@ -2001,6 +2338,7 @@ export default function App() {
                     notifications.map((notif) => {
                       const isSystemNotif =
                         notif.type === 'rank_change' ||
+                        notif.type === 'mute' ||
                         notif.fromUsername.toLowerCase() === 'system';
                       const matchedUser = allUsersList.find(
                         (u) => u.username.toLowerCase() === notif.fromUsername.toLowerCase()
@@ -2424,46 +2762,54 @@ export default function App() {
 
             {/* CHAT INPUT BAR */}
             <div className="px-3 sm:px-4 py-2 bg-[#111114]">
-              <form
-                onSubmit={handleSendMessage}
-                className="bg-[#18181e] border border-[#24242d] rounded-2xl px-3.5 py-2 flex items-center gap-2 focus-within:border-cyan-500/60 transition-colors shadow-lg"
-              >
-                <input
-                  ref={chatInputRef}
-                  type="text"
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  placeholder={replyingTo ? `Reply to @${replyingTo.sender}...` : 'Type here...'}
-                  className="flex-1 bg-[#141419] border border-[#262630] rounded-xl px-3.5 py-2 text-white text-sm sm:text-base placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
-                />
-
-                <button
-                  type="button"
-                  onClick={handleToggleVoiceInput}
-                  aria-label="Voice input"
-                  title={isListeningVoice ? 'Listening... Click to stop' : 'Voice dictation'}
-                  className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-                    isListeningVoice
-                      ? 'text-rose-400 bg-rose-500/15 animate-pulse'
-                      : 'text-zinc-400 hover:text-white'
-                  }`}
+              {userProfile.mutedUntil && userProfile.mutedUntil > nowMs ? (
+                <div className="bg-[#18181e] border border-[#24242d] rounded-2xl px-4 py-3.5 flex items-center justify-center shadow-lg select-none">
+                  <span className="text-white font-extrabold italic text-sm sm:text-base tracking-wide">
+                    You have been muted.
+                  </span>
+                </div>
+              ) : (
+                <form
+                  onSubmit={handleSendMessage}
+                  className="bg-[#18181e] border border-[#24242d] rounded-2xl px-3.5 py-2 flex items-center gap-2 focus-within:border-cyan-500/60 transition-colors shadow-lg"
                 >
-                  <Mic className="w-5 h-5" />
-                </button>
+                  <input
+                    ref={chatInputRef}
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder={replyingTo ? `Reply to @${replyingTo.sender}...` : 'Type here...'}
+                    className="flex-1 bg-[#141419] border border-[#262630] rounded-xl px-3.5 py-2 text-white text-sm sm:text-base placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
+                  />
 
-                <button
-                  type="submit"
-                  disabled={!inputText.trim()}
-                  aria-label="Send message"
-                  className={`p-1.5 rounded-full transition-all cursor-pointer ${
-                    inputText.trim()
-                      ? 'text-white hover:text-cyan-300 hover:bg-cyan-500/10'
-                      : 'text-zinc-500'
-                  }`}
-                >
-                  <SendHorizontal className="w-5 h-5" />
-                </button>
-              </form>
+                  <button
+                    type="button"
+                    onClick={handleToggleVoiceInput}
+                    aria-label="Voice input"
+                    title={isListeningVoice ? 'Listening... Click to stop' : 'Voice dictation'}
+                    className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+                      isListeningVoice
+                        ? 'text-rose-400 bg-rose-500/15 animate-pulse'
+                        : 'text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    <Mic className="w-5 h-5" />
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={!inputText.trim()}
+                    aria-label="Send message"
+                    className={`p-1.5 rounded-full transition-all cursor-pointer ${
+                      inputText.trim()
+                        ? 'text-white hover:text-cyan-300 hover:bg-cyan-500/10'
+                        : 'text-zinc-500'
+                    }`}
+                  >
+                    <SendHorizontal className="w-5 h-5" />
+                  </button>
+                </form>
+              )}
             </div>
           </section>
 
@@ -2776,25 +3122,177 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={() => setActionModalOpen(false)}
+                  onClick={() => {
+                    const targetName = liveSelectedUser.username;
+                    setActionModalOpen(false);
+                    if (targetName && targetName.toLowerCase() !== 'system') {
+                      const targetKey = sanitizeDbKey(targetName);
+                      update(ref(rtdb, `users/${targetKey}`), {
+                        lastActionAt: Date.now()
+                      }).catch(() => {});
+                    }
+                  }}
                   className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
                 >
                   <i className="fa fa-exclamation-triangle warn text-amber-500 text-base w-5 text-center" aria-hidden="true" />
                   <span className="text-sm font-extrabold text-white">Warn</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => setActionModalOpen(false)}
-                  className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
-                >
-                  <i className="fa fa-microphone-slash error text-rose-500 text-base w-5 text-center" aria-hidden="true" />
-                  <span className="text-sm font-extrabold text-white">Mute</span>
-                </button>
+                {liveSelectedUser.mutedUntil && liveSelectedUser.mutedUntil > nowMs ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const targetName = liveSelectedUser.username;
+                      const targetNotifId = liveSelectedUser.muteNotificationId;
+                      setActionModalOpen(false);
+                      handleUnmuteTargetUser(targetName, targetNotifId);
+                    }}
+                    className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                  >
+                    <i className="fa fa-microphone-slash error text-rose-500 text-base w-5 text-center" aria-hidden="true" />
+                    <span className="text-sm font-extrabold text-white">Unmute</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionModalOpen(false);
+                      setMuteDurationId('5m');
+                      setMuteDropdownOpen(false);
+                      setMuteReason('');
+                      setMuteModalOpen(true);
+                    }}
+                    className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                  >
+                    <i className="fa fa-microphone-slash error text-rose-500 text-base w-5 text-center" aria-hidden="true" />
+                    <span className="text-sm font-extrabold text-white">Mute</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>
         )}
+
+        {/* ==================================================== */}
+        {/* MUTE MODAL (Duration Dropdown + Optional Reason)     */}
+        {/* ==================================================== */}
+        {muteModalOpen && liveSelectedUser && (() => {
+          const selectedDurationObj =
+            MUTE_DURATIONS.find((d) => d.id === muteDurationId) || MUTE_DURATIONS[3];
+
+          return (
+            <div
+              role="dialog"
+              aria-modal="true"
+              className="fixed inset-0 z-[75] bg-black/75 backdrop-blur-[2px] flex items-center justify-center p-4 animate-in fade-in duration-150"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) {
+                  setMuteDropdownOpen(false);
+                  setMuteModalOpen(false);
+                }
+              }}
+            >
+              <div
+                className="w-full max-w-[440px] bg-[#141414] border border-[#262626] rounded-[28px] p-6 shadow-2xl relative text-white animate-in zoom-in-95 duration-150"
+                onClick={() => {
+                  if (muteDropdownOpen) setMuteDropdownOpen(false);
+                }}
+              >
+                {/* Close button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMuteDropdownOpen(false);
+                    setMuteModalOpen(false);
+                  }}
+                  aria-label="Close"
+                  className="absolute top-5 right-5 text-white hover:text-zinc-300 p-1 rounded-lg transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5 stroke-[2.5]" />
+                </button>
+
+                {/* Duration Section */}
+                <div className="mb-4">
+                  <label className="block text-base font-black text-white mb-2 text-left">
+                    Duration
+                  </label>
+
+                  <div
+                    className="relative"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setMuteDropdownOpen((prev) => !prev)}
+                      className="w-full bg-[#141414] border border-[#242424] rounded-2xl px-4 py-3.5 text-white text-sm sm:text-base font-medium flex items-center justify-between cursor-pointer focus:outline-none"
+                    >
+                      <span>{selectedDurationObj.label}</span>
+                      <ChevronDown className="w-4 h-4 text-zinc-400 shrink-0" />
+                    </button>
+
+                    {muteDropdownOpen && (
+                      <div className="absolute left-0 right-0 top-full mt-1 max-h-52 overflow-y-auto bg-[#1b1b1b] border border-[#2a2a2a] rounded-xl shadow-2xl z-30 py-1">
+                        {MUTE_DURATIONS.map((dur) => {
+                          const isSelected = dur.id === muteDurationId;
+                          return (
+                            <button
+                              key={dur.id}
+                              type="button"
+                              onClick={() => {
+                                setMuteDurationId(dur.id);
+                                setMuteDropdownOpen(false);
+                              }}
+                              className={`w-full px-4 py-2.5 text-left text-sm sm:text-base transition-colors cursor-pointer ${
+                                isSelected
+                                  ? 'bg-[#2b2b2b] text-white font-semibold'
+                                  : 'text-zinc-400 hover:bg-[#252525] hover:text-white'
+                              }`}
+                            >
+                              {dur.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Reason (optional) Section */}
+                <div className="mb-5">
+                  <label className="block text-base font-black text-white mb-2 text-left">
+                    Reason <span className="text-zinc-400 font-bold text-sm">(optional)</span>
+                  </label>
+                  <textarea
+                    value={muteReason}
+                    onChange={(e) => setMuteReason(e.target.value)}
+                    className="w-full h-24 bg-[#141414] border border-[#242424] rounded-2xl p-3.5 text-white text-sm sm:text-base focus:outline-none focus:border-zinc-600 resize-none"
+                  />
+                </div>
+
+                {/* Mute & Cancel Buttons */}
+                <div className="flex items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleMuteTargetUser}
+                    className="bg-[#d90000] hover:bg-[#b80000] text-white font-extrabold text-sm sm:text-base py-3 px-9 rounded-2xl transition-colors cursor-pointer"
+                  >
+                    Mute
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMuteDropdownOpen(false);
+                      setMuteModalOpen(false);
+                    }}
+                    className="bg-[#2c2c2c] hover:bg-[#383838] text-white font-extrabold text-sm sm:text-base py-3 px-7 rounded-2xl transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ==================================================== */}
         {/* CHANGE RANK MODAL (Main Developer Rank Selector)     */}
