@@ -63,6 +63,7 @@ import {
 } from './ranks';
 import GlowModal from './components/GlowModal';
 import BorderModal from './components/BorderModal';
+import { MessagesView } from './MessagesView';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
 import { detectUserCountry, getInstantUserCountry } from './utils/countryDetect';
 import { uploadToCloudinary, deleteFromCloudinary } from './lib/cloudinary';
@@ -113,7 +114,7 @@ interface ChatMessage {
 
 interface AppNotification {
   id: string;
-  type: 'profile_visit' | 'rank_change' | 'mute';
+  type: 'profile_visit' | 'rank_change' | 'mute' | 'profile_like';
   fromUsername: string;
   fromAvatarUrl?: string | null;
   fromPfpBorderId?: string | null;
@@ -139,6 +140,7 @@ interface PmThread {
   peerUsername: string;
   peerAvatarUrl?: string | null;
   unread: boolean;
+  unreadCount?: number;
   updatedAt: number;
   messages: PmMessage[];
 }
@@ -707,6 +709,7 @@ export default function App() {
 
   const [rulesModalOpen, setRulesModalOpen] = useState(false);
   const [activeRulesTab, setActiveRulesTab] = useState<'user' | 'staff'>('user');
+  const [messagesViewActive, setMessagesViewActive] = useState(false);
 
   // Private Messages (PMs) State
   const [showPrivateMenu, setShowPrivateMenu] = useState(false);
@@ -917,7 +920,13 @@ export default function App() {
               const val = childSnap.val();
               const key = childSnap.key;
               if (!val || typeof val !== 'object') return;
-              if (key === '__system_news__' || key === '__system_bot__') return;
+              if (
+                key === '__system_news__' ||
+                key === '__system_bot__' ||
+                key === '__system_messenger__'
+              ) {
+                return;
+              }
 
               // Check if this node is a valid registered user (must have username string)
               if (typeof val.username !== 'string' || !val.username.trim()) {
@@ -1004,6 +1013,8 @@ export default function App() {
                   ? 'rank_change'
                   : val.type === 'mute'
                   ? 'mute'
+                  : val.type === 'profile_like'
+                  ? 'profile_like'
                   : 'profile_visit',
               fromUsername: val.fromUsername || 'System',
               fromAvatarUrl: sanitizeMediaUrl(val.fromAvatarUrl),
@@ -1105,6 +1116,7 @@ export default function App() {
               peerUsername: val.peerUsername || peerKey,
               peerAvatarUrl: sanitizeMediaUrl(val.peerAvatarUrl),
               unread: val.unread === true,
+              unreadCount: typeof val.unreadCount === 'number' ? val.unreadCount : val.unread ? 1 : 0,
               updatedAt: typeof val.updatedAt === 'number' ? val.updatedAt : lastMsgTime || Date.now(),
               messages: msgsList
             });
@@ -2308,6 +2320,22 @@ export default function App() {
         await remove(likeRef);
       } else {
         await set(likeRef, true);
+        // Send notification when someone likes your profile
+        if (
+          !isSystemTarget &&
+          targetUsername.trim().toLowerCase() !== currentUser.username.toLowerCase()
+        ) {
+          await push(ref(rtdb, `users/${targetKey}/notifications`), {
+            type: 'profile_like',
+            fromUsername: currentUser.username,
+            fromAvatarUrl: sanitizeMediaUrl(userProfile.avatarUrl) || null,
+            fromPfpBorderId: userProfile.pfpBorderId || 'pfp-default',
+            fromPfpBorderThickness: userProfile.pfpBorderThickness || 2,
+            text: 'Liked your profile!',
+            createdAt: Date.now(),
+            read: false
+          });
+        }
       }
     } catch (err) {
       console.warn('Error toggling profile like in RTDB:', err);
@@ -3497,6 +3525,36 @@ export default function App() {
                   <Scale className="w-4 h-4 text-[#00b4d8]" />
                   <span>Rules</span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowHamburgerMenu(false);
+                    setMessagesViewActive(true);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 text-sm font-extrabold rounded-xl transition-colors cursor-pointer text-left ${
+                    messagesViewActive
+                      ? 'bg-[#00d95f]/15 text-[#00d95f]'
+                      : 'text-white hover:bg-white/5'
+                  }`}
+                >
+                  <MessageSquare className="w-4 h-4 text-[#00d95f]" />
+                  <span>Messages</span>
+                </button>
+
+                {messagesViewActive && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowHamburgerMenu(false);
+                      setMessagesViewActive(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm font-extrabold text-cyan-400 hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                  >
+                    <Compass className="w-4 h-4 text-cyan-400" />
+                    <span>Public Chat</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -4274,7 +4332,17 @@ export default function App() {
             </aside>
           )}
 
-          {/* CHAT AREA */}
+          {/* CHAT AREA OR MESSAGES VIEW */}
+          {messagesViewActive ? (
+            <MessagesView
+              currentUser={currentUser}
+              userAvatarUrl={userProfile.avatarUrl}
+              allUsersList={allUsersList}
+              pmThreads={pmThreads}
+              onBackToPublicChat={() => setMessagesViewActive(false)}
+              onGenerateAiReply={generateAiBotReply}
+            />
+          ) : (
           <section className="flex-1 flex flex-col bg-[#111114] overflow-hidden relative">
             {/* MESSAGES LIST */}
             <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 space-y-4">
@@ -4680,6 +4748,7 @@ export default function App() {
               )}
             </div>
           </section>
+          )}
 
           {/* MOBILE BACKDROP WHEN PLAYERS ONLINE IS OPEN */}
           {sidebarOpen && (
