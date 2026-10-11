@@ -916,6 +916,13 @@ export default function App() {
   const [selectedUser, setSelectedUser] = useState<UserProfileData | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<UserProfileData[]>([]);
   const [systemBotLikes, setSystemBotLikes] = useState<Record<string, boolean>>({});
+  const [bannedFilters, setBannedFilters] = useState<{
+    id: string;
+    word: string;
+    muteDurationId: string;
+    muteDurationLabel: string;
+    muteDurationMs: number;
+  }[]>([]);
 
   // Top-left Hamburger Menu, News Drawer (pinned left), Staff Modal, and Rules Modal state
   const [showHamburgerMenu, setShowHamburgerMenu] = useState(false);
@@ -1380,6 +1387,32 @@ export default function App() {
             setCustomStickers(items.slice(0, MAX_CUSTOM_STICKERS));
           } else {
             setCustomStickers([]);
+          }
+        },
+        () => {}
+      );
+      return () => unsubscribe();
+    } catch (_) {}
+  }, []);
+
+  // Real-time listener for Banned Chat Filters (domain extensions e.g. .com, .co.uk, prohibited words)
+  useEffect(() => {
+    try {
+      const filtersRef = ref(rtdb, 'banned_filters');
+      const unsubscribe = onValue(
+        filtersRef,
+        (snapshot) => {
+          if (snapshot.exists() && typeof snapshot.val() === 'object') {
+            const items = Object.entries(snapshot.val()).map(([id, val]: [string, any]) => ({
+              id,
+              word: val.word || '',
+              muteDurationId: val.muteDurationId || '1h',
+              muteDurationLabel: val.muteDurationLabel || '1 hour',
+              muteDurationMs: typeof val.muteDurationMs === 'number' ? val.muteDurationMs : 3600000
+            }));
+            setBannedFilters(items);
+          } else {
+            setBannedFilters([]);
           }
         },
         () => {}
@@ -3182,6 +3215,80 @@ export default function App() {
 
     const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
     const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+
+    // Check against Banned Chat Filters (domain extensions e.g. .com, .co.uk, prohibited words)
+    const isSenderDev = Boolean(
+      activeSenderRank &&
+      (activeSenderRank.id === 'main_developer' || activeSenderRank.id === 'developer' || activeSenderRank.priority >= 90)
+    );
+
+    if (!isSenderDev && bannedFilters.length > 0) {
+      const lowerText = textToSend.toLowerCase();
+      const matchedFilter = bannedFilters.find((f) => {
+        const needle = (f.word || '').trim().toLowerCase();
+        if (!needle) return false;
+        return lowerText.includes(needle);
+      });
+
+      if (matchedFilter) {
+        // Message is blocked! Do NOT send and auto-mute the user
+        const muteDurMs = matchedFilter.muteDurationMs || 3600000;
+        const muteDurLabel = matchedFilter.muteDurationLabel || '1 hour';
+        const mutedUntil = muteDurMs === -1 ? -1 : Date.now() + muteDurMs;
+        const senderKey = sanitizeDbKey(currentUser.username);
+        const muteReasonText = `Violated banned filter: "${matchedFilter.word}"`;
+
+        try {
+          // 1. Mute user in RTDB
+          await update(ref(rtdb, `users/${senderKey}`), {
+            mutedUntil,
+            muteDuration: muteDurLabel,
+            muteReason: muteReasonText,
+            lastActionAt: Date.now(),
+            updatedAt: serverTimestamp()
+          });
+
+          // 2. Notification to user
+          await push(ref(rtdb, `users/${senderKey}/notifications`), {
+            type: 'mute',
+            fromUsername: SYSTEM_BOT_USERNAME,
+            fromAvatarUrl: SYSTEM_BOT_AVATAR,
+            text: `You have been muted for ${muteDurLabel} (${muteReasonText})`,
+            createdAt: Date.now(),
+            read: false
+          });
+
+          // 3. System bot message in chat
+          await sendSystemBotMessage(
+            'mute',
+            currentUser.username,
+            `${currentUser.username} has been muted!`
+          );
+          playAppSound(actionSoundUrl || '/action.mp3');
+
+          // 4. Record in Staff Console Logs
+          recordAuditLog(
+            'mute',
+            'System Filter',
+            'Auto Mod',
+            currentUser.username,
+            `Automated filter muted @${currentUser.username} for ${muteDurLabel}. Triggered banned filter "${matchedFilter.word}". Blocked message: "${textToSend.slice(0, 80)}"`,
+            'staff'
+          );
+
+          // Update local profile state immediately
+          setUserProfile((prev) => ({
+            ...prev,
+            mutedUntil,
+            muteDuration: muteDurLabel,
+            muteReason: muteReasonText
+          }));
+        } catch (filterErr) {
+          console.warn('Error applying filter auto-mute:', filterErr);
+        }
+        return; // Block message
+      }
+    }
 
     // Handle /clear command: Staff (priority >= 70 or isStaffRank) can clear all chat messages
     if (textToSend.toLowerCase() === '/clear' && !mediaUrlToSend) {

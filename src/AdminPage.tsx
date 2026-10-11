@@ -35,7 +35,17 @@ import {
   HelpCircle,
   ToggleLeft,
   LogOut,
-  SendHorizontal
+  SendHorizontal,
+  Trash2,
+  Plus,
+  Globe,
+  Calendar,
+  Heart,
+  Smile,
+  Volume2,
+  X,
+  ExternalLink,
+  Award
 } from 'lucide-react';
 import {
   rtdb,
@@ -51,11 +61,15 @@ import {
 import {
   getUserRank,
   RANKS,
+  ASSIGNABLE_RANKS,
   SYSTEM_BOT_USERNAME,
   SYSTEM_BOT_AVATAR,
   canBanRank,
-  canMuteRank
+  canMuteRank,
+  isStaffRank,
+  FILTER_MUTE_DURATIONS
 } from './ranks';
+import { getPfpBorder, getProfileBorder } from './borders';
 import { sanitizeDbKey, hashPassword } from './utils/auth';
 
 export interface AuditLogItem {
@@ -79,6 +93,16 @@ export interface AuditLogItem {
   details: string;
   category: 'staff' | 'general';
   timestamp: number;
+}
+
+export interface BannedFilterItem {
+  id: string;
+  word: string;
+  muteDurationId: string;
+  muteDurationLabel: string;
+  muteDurationMs: number;
+  createdAt?: number;
+  createdBy?: string;
 }
 
 interface AdminPageProps {
@@ -106,8 +130,8 @@ export default function AdminPage({
   onUnmuteUser,
   onUnbanUser
 }: AdminPageProps) {
-  // Navigation tabs: 'dashboard', 'manage_action', 'console_logs'
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'manage_action' | 'console_logs'>('dashboard');
+  // Navigation tabs: 'dashboard' | 'members' | 'manage_action' | 'filters' | 'console_logs'
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'members' | 'manage_action' | 'filters' | 'console_logs'>('dashboard');
 
   // Coming Soon collapsible accordion state in sidebar
   const [comingSoonOpen, setComingSoonOpen] = useState(false);
@@ -133,6 +157,7 @@ export default function AdminPage({
   const [messagesMap, setMessagesMap] = useState<Record<string, any>>({});
   const [newsPostsMap, setNewsPostsMap] = useState<Record<string, any>>({});
   const [auditLogsList, setAuditLogsList] = useState<AuditLogItem[]>([]);
+  const [bannedFiltersList, setBannedFiltersList] = useState<BannedFilterItem[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(true);
 
   // Action status banner
@@ -145,6 +170,26 @@ export default function AdminPage({
   // Filters for Console Logs
   const [logCategoryFilter, setLogCategoryFilter] = useState<'overall' | 'staff'>('overall');
   const [logSearchQuery, setLogSearchQuery] = useState('');
+
+  // State for FILTERS tab
+  const [newFilterWord, setNewFilterWord] = useState('');
+  const [newFilterDurationId, setNewFilterDurationId] = useState('1h');
+  const [filterSearchQuery, setFilterSearchQuery] = useState('');
+  const [isAddingFilter, setIsAddingFilter] = useState(false);
+
+  // State for MEMBERS tab
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
+  const [memberFilterTab, setMemberFilterTab] = useState<'all' | 'online' | 'staff' | 'punished'>('all');
+  // Selected member to show profile card in the middle
+  const [selectedMemberKey, setSelectedMemberKey] = useState<string | null>(null);
+
+  // Moderation state on selected member profile card
+  const [cardMuteDurationId, setCardMuteDurationId] = useState('1h');
+  const [cardMuteReason, setCardMuteReason] = useState('');
+  const [cardBanDurationId, setCardBanDurationId] = useState('1d');
+  const [cardBanReason, setCardBanReason] = useState('');
+  const [cardRankSelect, setCardRankSelect] = useState('none');
+  const [showCardActionDropdown, setShowCardActionDropdown] = useState<'none' | 'mute' | 'ban' | 'rank'>('none');
 
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
     setActionNotice({ text, type });
@@ -234,11 +279,34 @@ export default function AdminPage({
       (err) => console.warn('Admin audit logs read error:', err)
     );
 
+    const unsubFilters = onValue(
+      ref(rtdb, 'banned_filters'),
+      (snap) => {
+        if (snap.exists() && typeof snap.val() === 'object') {
+          const items: BannedFilterItem[] = Object.entries(snap.val()).map(([key, v]: [string, any]) => ({
+            id: key,
+            word: v.word || '',
+            muteDurationId: v.muteDurationId || '1h',
+            muteDurationLabel: v.muteDurationLabel || '1 hour',
+            muteDurationMs: typeof v.muteDurationMs === 'number' ? v.muteDurationMs : 3600000,
+            createdAt: v.createdAt || Date.now(),
+            createdBy: v.createdBy || 'System'
+          }));
+          items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          setBannedFiltersList(items);
+        } else {
+          setBannedFiltersList([]);
+        }
+      },
+      (err) => console.warn('Admin banned filters read error:', err)
+    );
+
     return () => {
       unsubUsers();
       unsubMessages();
       unsubNews();
       unsubAudit();
+      unsubFilters();
     };
   }, []);
 
@@ -284,7 +352,6 @@ export default function AdminPage({
         bannedCount++;
       }
 
-      // Count PMs stored on each user
       if (u.pms && typeof u.pms === 'object') {
         for (const peerData of Object.values(u.pms)) {
           if (peerData && typeof peerData === 'object' && (peerData as any).messages) {
@@ -294,16 +361,10 @@ export default function AdminPage({
       }
     }
 
-    // Account for bidirectional PM duplication: halve count or keep raw logs
     const estimatedPms = Math.ceil(totalPmsCount / 2);
-
-    // Chat logs: total messages in room
     const chatLogsCount = Object.keys(messagesMap || {}).length;
-
-    // News / Wall posts
     const wallPostsCount = Object.keys(newsPostsMap || {}).length;
 
-    // Chat Polls
     let pollsCount = 0;
     for (const m of Object.values(messagesMap || {})) {
       if (m && typeof m === 'object' && (m as any).poll) {
@@ -326,24 +387,101 @@ export default function AdminPage({
     };
   }, [usersMap, messagesMap, newsPostsMap]);
 
+  // Derive all member accounts for the MEMBERS tab
+  const allMembersList = useMemo(() => {
+    const list: any[] = [];
+    const now = Date.now();
+
+    for (const [key, val] of Object.entries(usersMap || {})) {
+      if (key.startsWith('__system_')) continue;
+      const u = val as any;
+      if (!u || typeof u !== 'object') continue;
+
+      const isMuted = Boolean(u.mutedUntil && Number(u.mutedUntil) > now);
+      const isBanned = Boolean(u.isBanned);
+      const rankObj = getUserRank(u.username, u.email, u.rank, u.customRankIcon, u.customRankName);
+
+      list.push({
+        key,
+        username: u.username || key,
+        email: u.email || '',
+        avatarUrl: u.avatarUrl || null,
+        bannerUrl: u.bannerUrl || null,
+        pfpBorderId: u.pfpBorderId || 'pfp-default',
+        pfpBorderThickness: u.pfpBorderThickness || 2,
+        profileBorderId: u.profileBorderId || 'pb-default',
+        profileBorderThickness: u.profileBorderThickness || 2,
+        rank: u.rank || 'none',
+        rankObj,
+        gender: u.gender || 'Rather not say',
+        age: u.age || '17',
+        relationship: u.relationship || 'Rather not say',
+        country: u.country || 'Global',
+        language: u.language || 'English',
+        bio: u.bio || '',
+        mood: u.mood || '',
+        isOnline: Boolean(u.isOnline),
+        lastSeen: u.lastSeen || null,
+        joinedAt: u.createdAt || null,
+        isMuted,
+        mutedUntil: u.mutedUntil || null,
+        muteDuration: u.muteDuration || null,
+        muteReason: u.muteReason || null,
+        isBanned,
+        bannedDuration: u.bannedDuration || null,
+        bannedReason: u.bannedReason || null,
+        bannedBy: u.bannedBy || null,
+        musicTrack: u.musicTrack || null
+      });
+    }
+
+    list.sort((a, b) => {
+      // Sort Online first, then Staff, then alphabetical
+      if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
+      const aPri = a.rankObj?.priority || 0;
+      const bPri = b.rankObj?.priority || 0;
+      if (aPri !== bPri) return bPri - aPri;
+      return a.username.localeCompare(b.username);
+    });
+
+    return list;
+  }, [usersMap]);
+
+  // Filtered members for MEMBERS tab
+  const filteredMembers = useMemo(() => {
+    let list = allMembersList;
+
+    if (memberFilterTab === 'online') {
+      list = list.filter((m) => m.isOnline);
+    } else if (memberFilterTab === 'staff') {
+      list = list.filter((m) => isStaffRank(m.rankObj));
+    } else if (memberFilterTab === 'punished') {
+      list = list.filter((m) => m.isMuted || m.isBanned);
+    }
+
+    if (memberSearchQuery.trim()) {
+      const q = memberSearchQuery.trim().toLowerCase();
+      list = list.filter(
+        (m) =>
+          m.username.toLowerCase().includes(q) ||
+          m.email.toLowerCase().includes(q) ||
+          (m.country && m.country.toLowerCase().includes(q)) ||
+          (m.rank && m.rank.toLowerCase().includes(q))
+      );
+    }
+
+    return list;
+  }, [allMembersList, memberFilterTab, memberSearchQuery]);
+
+  // Currently selected member object for the middle Profile Card
+  const selectedMemberData = useMemo(() => {
+    if (!selectedMemberKey) return null;
+    return allMembersList.find((m) => m.key === selectedMemberKey) || null;
+  }, [selectedMemberKey, allMembersList]);
+
   // Derive all currently muted or banned users for Manage Action
   const punishedUsers = useMemo(() => {
-    const list: {
-      key: string;
-      username: string;
-      avatarUrl?: string | null;
-      rank?: string | null;
-      isMuted: boolean;
-      mutedUntil?: number | null;
-      muteDuration?: string | null;
-      muteReason?: string | null;
-      isBanned: boolean;
-      bannedDuration?: string | null;
-      bannedReason?: string | null;
-      bannedBy?: string | null;
-      lastActionAt?: number | null;
-    }[] = [];
-
+    const list: any[] = [];
     const now = Date.now();
 
     for (const [key, val] of Object.entries(usersMap || {})) {
@@ -398,11 +536,21 @@ export default function AdminPage({
     return result;
   }, [punishedUsers, actionFilter, actionSearch]);
 
-  // Combined Console Logs: synthesize historical system bot messages with real-time audit logs
+  // Filtered Banned Filters
+  const filteredBannedFilters = useMemo(() => {
+    if (!filterSearchQuery.trim()) return bannedFiltersList;
+    const q = filterSearchQuery.trim().toLowerCase();
+    return bannedFiltersList.filter(
+      (f) =>
+        f.word.toLowerCase().includes(q) ||
+        f.muteDurationLabel.toLowerCase().includes(q)
+    );
+  }, [bannedFiltersList, filterSearchQuery]);
+
+  // Combined Console Logs
   const combinedConsoleLogs = useMemo(() => {
     const historicalItems: AuditLogItem[] = [];
 
-    // Parse historical system messages from messagesMap
     for (const [msgId, val] of Object.entries(messagesMap || {})) {
       const m = val as any;
       if (!m || typeof m !== 'object') continue;
@@ -450,7 +598,6 @@ export default function AdminPage({
       }
     }
 
-    // Merge auditLogsList and deduplicate
     const combined = [...auditLogsList];
     const seenSignatures = new Set(
       auditLogsList.map((l) => `${l.type}_${l.actor}_${l.details.slice(0, 30)}`)
@@ -468,7 +615,7 @@ export default function AdminPage({
     return combined;
   }, [auditLogsList, messagesMap]);
 
-  // Filtered Console Logs based on Staff vs Overall and search
+  // Filtered Console Logs
   const filteredConsoleLogs = useMemo(() => {
     let logs = combinedConsoleLogs;
 
@@ -490,7 +637,78 @@ export default function AdminPage({
     return logs;
   }, [combinedConsoleLogs, logCategoryFilter, logSearchQuery]);
 
-  // Unmute Handler
+  // -------------------------------------------------------------
+  // Filter Management Functions
+  // -------------------------------------------------------------
+  const handleAddBannedFilter = async (customWord?: string, customDurId?: string) => {
+    const rawWord = (customWord !== undefined ? customWord : newFilterWord).trim();
+    if (!rawWord) {
+      showNotification('Please enter a word, URL, or extension to ban', 'error');
+      return;
+    }
+
+    const durId = customDurId || newFilterDurationId;
+    const durObj = FILTER_MUTE_DURATIONS.find((d) => d.id === durId) || FILTER_MUTE_DURATIONS[2];
+
+    setIsAddingFilter(true);
+    try {
+      const cleanKey = rawWord.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+      const filterId = `filter_${cleanKey}_${Date.now()}`;
+
+      await set(ref(rtdb, `banned_filters/${filterId}`), {
+        word: rawWord,
+        muteDurationId: durObj.id,
+        muteDurationLabel: durObj.label,
+        muteDurationMs: durObj.ms,
+        createdAt: Date.now(),
+        createdBy: activeUser?.username || 'Developer'
+      });
+
+      // Record in audit log
+      await push(ref(rtdb, 'audit_logs'), {
+        type: 'change_rank',
+        actor: activeUser?.username || 'Developer',
+        actorRank: activeRank?.name || 'Developer',
+        target: rawWord,
+        details: `${activeUser?.username || 'Developer'} added banned filter "${rawWord}" (Auto-mute: ${durObj.label})`,
+        category: 'staff',
+        timestamp: Date.now()
+      });
+
+      if (!customWord) {
+        setNewFilterWord('');
+      }
+      showNotification(`Added banned filter for "${rawWord}" with ${durObj.label} mute penalty`, 'success');
+    } catch (err: any) {
+      showNotification(`Failed to save filter: ${err?.message || 'Error'}`, 'error');
+    } finally {
+      setIsAddingFilter(false);
+    }
+  };
+
+  const handleDeleteBannedFilter = async (filterItem: BannedFilterItem) => {
+    try {
+      await remove(ref(rtdb, `banned_filters/${filterItem.id}`));
+
+      await push(ref(rtdb, 'audit_logs'), {
+        type: 'change_rank',
+        actor: activeUser?.username || 'Developer',
+        actorRank: activeRank?.name || 'Developer',
+        target: filterItem.word,
+        details: `${activeUser?.username || 'Developer'} removed banned filter "${filterItem.word}"`,
+        category: 'staff',
+        timestamp: Date.now()
+      });
+
+      showNotification(`Removed filter "${filterItem.word}"`, 'success');
+    } catch (err: any) {
+      showNotification(`Failed to remove filter: ${err?.message || 'Error'}`, 'error');
+    }
+  };
+
+  // -------------------------------------------------------------
+  // Moderation Handlers (from Profile Card or Manage Action)
+  // -------------------------------------------------------------
   const handleAdminUnmute = async (username: string) => {
     if (!username) return;
     try {
@@ -498,7 +716,6 @@ export default function AdminPage({
         await onUnmuteUser(username);
       } else {
         const targetKey = sanitizeDbKey(username);
-        // Direct RTDB update
         await update(ref(rtdb, `users/${targetKey}`), {
           mutedUntil: null,
           muteDuration: null,
@@ -508,7 +725,6 @@ export default function AdminPage({
           updatedAt: serverTimestamp()
         });
 
-        // Add to audit_logs
         await push(ref(rtdb, 'audit_logs'), {
           type: 'unmute',
           actor: activeUser?.username || 'Developer',
@@ -519,7 +735,6 @@ export default function AdminPage({
           timestamp: Date.now()
         });
 
-        // Send chat notification
         await push(ref(rtdb, 'messages'), {
           sender: SYSTEM_BOT_USERNAME,
           senderKey: 'system_bot',
@@ -539,7 +754,63 @@ export default function AdminPage({
     }
   };
 
-  // Unban Handler
+  const handleAdminMuteMember = async (username: string, durationId: string, reason?: string) => {
+    if (!username) return;
+    const dur = FILTER_MUTE_DURATIONS.find((d) => d.id === durationId) || FILTER_MUTE_DURATIONS[2];
+    const mutedUntil = Date.now() + dur.ms;
+    const targetKey = sanitizeDbKey(username);
+    const cleanReason = (reason || '').trim();
+
+    try {
+      await update(ref(rtdb, `users/${targetKey}`), {
+        mutedUntil,
+        muteDuration: dur.label,
+        muteReason: cleanReason || 'Staff moderation',
+        lastActionAt: Date.now(),
+        updatedAt: serverTimestamp()
+      });
+
+      await push(ref(rtdb, `users/${targetKey}/notifications`), {
+        type: 'mute',
+        fromUsername: SYSTEM_BOT_USERNAME,
+        fromAvatarUrl: SYSTEM_BOT_AVATAR,
+        text: cleanReason
+          ? `You have been muted for ${dur.label} (${cleanReason})`
+          : `You have been muted for ${dur.label}`,
+        createdAt: Date.now(),
+        read: false
+      });
+
+      await push(ref(rtdb, 'audit_logs'), {
+        type: 'mute',
+        actor: activeUser?.username || 'Developer',
+        actorRank: activeRank?.name || 'Developer',
+        target: username,
+        details: `${activeUser?.username || 'Developer'} muted ${username} for ${dur.label}${cleanReason ? `: ${cleanReason}` : ''}`,
+        category: 'staff',
+        timestamp: Date.now()
+      });
+
+      await push(ref(rtdb, 'messages'), {
+        sender: SYSTEM_BOT_USERNAME,
+        senderKey: 'system_bot',
+        avatarUrl: SYSTEM_BOT_AVATAR,
+        text: `${username} has been muted!`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt: serverTimestamp(),
+        isSystem: true,
+        systemType: 'mute',
+        targetUsername: username
+      });
+
+      setShowCardActionDropdown('none');
+      setCardMuteReason('');
+      showNotification(`Muted ${username} for ${dur.label}`, 'success');
+    } catch (err: any) {
+      showNotification(`Failed to mute user: ${err?.message || 'Error'}`, 'error');
+    }
+  };
+
   const handleAdminUnban = async (username: string) => {
     if (!username) return;
     try {
@@ -566,7 +837,6 @@ export default function AdminPage({
           await remove(ref(rtdb, `banned_devices/${targetFp}`)).catch(() => {});
         }
 
-        // Add to audit_logs
         await push(ref(rtdb, 'audit_logs'), {
           type: 'unban',
           actor: activeUser?.username || 'Developer',
@@ -577,7 +847,6 @@ export default function AdminPage({
           timestamp: Date.now()
         });
 
-        // Send chat notification
         await push(ref(rtdb, 'messages'), {
           sender: SYSTEM_BOT_USERNAME,
           senderKey: 'system_bot',
@@ -594,6 +863,103 @@ export default function AdminPage({
       showNotification(`Successfully unbanned ${username}`, 'success');
     } catch (err: any) {
       showNotification(`Failed to unban: ${err?.message || 'Error'}`, 'error');
+    }
+  };
+
+  const handleAdminBanMember = async (username: string, durationLabel: string, reason?: string) => {
+    if (!username) return;
+    const targetKey = sanitizeDbKey(username);
+    const cleanReason = (reason || '').trim();
+
+    try {
+      await update(ref(rtdb, `users/${targetKey}`), {
+        isBanned: true,
+        bannedUntil: -1,
+        bannedDuration: durationLabel,
+        bannedReason: cleanReason || 'Violation of community rules',
+        bannedAt: Date.now(),
+        bannedBy: activeUser?.username || 'Developer',
+        isOnline: false,
+        lastActionAt: Date.now(),
+        updatedAt: serverTimestamp()
+      });
+
+      await push(ref(rtdb, `users/${targetKey}/notifications`), {
+        type: 'ban',
+        fromUsername: SYSTEM_BOT_USERNAME,
+        fromAvatarUrl: SYSTEM_BOT_AVATAR,
+        text: cleanReason
+          ? `You have been banned (${cleanReason})`
+          : `You have been banned from Teenverse`,
+        createdAt: Date.now(),
+        read: false
+      });
+
+      await push(ref(rtdb, 'audit_logs'), {
+        type: 'ban',
+        actor: activeUser?.username || 'Developer',
+        actorRank: activeRank?.name || 'Developer',
+        target: username,
+        details: `${activeUser?.username || 'Developer'} banned ${username}${cleanReason ? `: ${cleanReason}` : ''}`,
+        category: 'staff',
+        timestamp: Date.now()
+      });
+
+      await push(ref(rtdb, 'messages'), {
+        sender: SYSTEM_BOT_USERNAME,
+        senderKey: 'system_bot',
+        avatarUrl: SYSTEM_BOT_AVATAR,
+        text: `${username} has been banned!`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt: serverTimestamp(),
+        isSystem: true,
+        systemType: 'ban',
+        targetUsername: username
+      });
+
+      setShowCardActionDropdown('none');
+      setCardBanReason('');
+      showNotification(`Banned ${username}`, 'success');
+    } catch (err: any) {
+      showNotification(`Failed to ban user: ${err?.message || 'Error'}`, 'error');
+    }
+  };
+
+  const handleAdminChangeMemberRank = async (username: string, newRankId: string) => {
+    if (!username) return;
+    const targetKey = sanitizeDbKey(username);
+    const rankObj = ASSIGNABLE_RANKS.find((r) => r.id === newRankId) || ASSIGNABLE_RANKS[0];
+
+    try {
+      await update(ref(rtdb, `users/${targetKey}`), {
+        rank: newRankId === 'none' ? null : newRankId,
+        rankUpdatedAt: Date.now(),
+        updatedAt: serverTimestamp()
+      });
+
+      await push(ref(rtdb, `users/${targetKey}/notifications`), {
+        type: 'rank_change',
+        fromUsername: SYSTEM_BOT_USERNAME,
+        fromAvatarUrl: SYSTEM_BOT_AVATAR,
+        text: `Your rank has been updated to ${rankObj.name}`,
+        createdAt: Date.now(),
+        read: false
+      });
+
+      await push(ref(rtdb, 'audit_logs'), {
+        type: 'change_rank',
+        actor: activeUser?.username || 'Developer',
+        actorRank: activeRank?.name || 'Developer',
+        target: username,
+        details: `${activeUser?.username || 'Developer'} changed ${username}'s rank to ${rankObj.name}`,
+        category: 'staff',
+        timestamp: Date.now()
+      });
+
+      setShowCardActionDropdown('none');
+      showNotification(`Changed ${username}'s rank to ${rankObj.name}`, 'success');
+    } catch (err: any) {
+      showNotification(`Failed to change rank: ${err?.message || 'Error'}`, 'error');
     }
   };
 
@@ -759,7 +1125,7 @@ export default function AdminPage({
 
         {/* Sidebar Nav Items */}
         <div className="flex-1 py-3 px-2.5 space-y-1 overflow-y-auto">
-          {/* 1. Dashboard (Active / Tab) */}
+          {/* 1. Dashboard */}
           <button
             type="button"
             onClick={() => setActiveTab('dashboard')}
@@ -773,7 +1139,24 @@ export default function AdminPage({
             <span>Dashboard</span>
           </button>
 
-          {/* 2. Manage Action (Working) */}
+          {/* 2. Members (Working!) */}
+          <button
+            type="button"
+            onClick={() => setActiveTab('members')}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
+              activeTab === 'members'
+                ? 'text-[#00a8e8] bg-[#00a8e8]/10'
+                : 'text-zinc-300 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <Users className={`w-4 h-4 shrink-0 ${activeTab === 'members' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
+            <span className="flex-1">Members</span>
+            <span className="text-[11px] text-zinc-500 font-semibold px-1.5 py-0.2 rounded bg-white/5">
+              {allMembersList.length}
+            </span>
+          </button>
+
+          {/* 3. Manage Action (Working!) */}
           <button
             type="button"
             onClick={() => setActiveTab('manage_action')}
@@ -792,7 +1175,26 @@ export default function AdminPage({
             )}
           </button>
 
-          {/* 3. Console Logs (Working) */}
+          {/* 4. Filters (Working!) */}
+          <button
+            type="button"
+            onClick={() => setActiveTab('filters')}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
+              activeTab === 'filters'
+                ? 'text-[#00a8e8] bg-[#00a8e8]/10'
+                : 'text-zinc-300 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <Filter className={`w-4 h-4 shrink-0 ${activeTab === 'filters' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
+            <span className="flex-1">Filters</span>
+            {bannedFiltersList.length > 0 && (
+              <span className="text-[11px] text-cyan-400 font-semibold px-1.5 py-0.2 rounded bg-[#00a8e8]/15">
+                {bannedFiltersList.length}
+              </span>
+            )}
+          </button>
+
+          {/* 5. Console Logs (Working!) */}
           <button
             type="button"
             onClick={() => setActiveTab('console_logs')}
@@ -807,7 +1209,7 @@ export default function AdminPage({
           </button>
 
           {/* ======================================================== */}
-          {/* COMING SOON DROPDOWN ACCORDION (Arrow that opens/closes) */}
+          {/* COMING SOON DROPDOWN ACCORDION                           */}
           {/* ======================================================== */}
           <div className="pt-2">
             <button
@@ -837,17 +1239,6 @@ export default function AdminPage({
                 >
                   <Settings className="w-3.5 h-3.5 text-zinc-500" />
                   <span>System settings</span>
-                </button>
-
-                {/* Members */}
-                <button
-                  type="button"
-                  onClick={(e) => e.preventDefault()}
-                  className="w-full flex items-center gap-2.5 px-2.5 py-1.5 text-xs text-zinc-400 hover:text-zinc-300 rounded cursor-not-allowed text-left opacity-70 hover:opacity-100 transition-opacity"
-                  title="Coming soon"
-                >
-                  <Users className="w-3.5 h-3.5 text-zinc-500" />
-                  <span>Members</span>
                 </button>
 
                 {/* Permissions */}
@@ -894,7 +1285,7 @@ export default function AdminPage({
                   <span>Rooms</span>
                 </button>
 
-                {/* Custom Addon Maker (Replaced Contacts per requirement!) */}
+                {/* Custom Addon Maker */}
                 <button
                   type="button"
                   onClick={(e) => e.preventDefault()}
@@ -927,17 +1318,6 @@ export default function AdminPage({
                   <span>System tools</span>
                 </button>
 
-                {/* Filters */}
-                <button
-                  type="button"
-                  onClick={(e) => e.preventDefault()}
-                  className="w-full flex items-center gap-2.5 px-2.5 py-1.5 text-xs text-zinc-400 hover:text-zinc-300 rounded cursor-not-allowed text-left opacity-70 hover:opacity-100 transition-opacity"
-                  title="Coming soon"
-                >
-                  <Filter className="w-3.5 h-3.5 text-zinc-500" />
-                  <span>Filters</span>
-                </button>
-
                 {/* Music players */}
                 <button
                   type="button"
@@ -953,7 +1333,7 @@ export default function AdminPage({
           </div>
         </div>
 
-        {/* Sidebar Footer: Developer info */}
+        {/* Sidebar Footer */}
         <div className="p-3 border-t border-[#1c1d26] bg-[#0a0b0e] flex items-center justify-between">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-full bg-[#1b1d25] border border-white/10 flex items-center justify-center font-bold text-xs text-[#00a8e8] shrink-0">
@@ -983,15 +1363,19 @@ export default function AdminPage({
       {/* ======================================================== */}
       {/* MAIN CONTENT AREA                                        */}
       {/* ======================================================== */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto">
+      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto relative">
         {/* Top Header Bar with Breadcrumb */}
         <header className="px-6 py-4 border-b border-[#1c1d26] bg-[#141519] flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm">
             <span className="text-zinc-400 font-normal">
               {activeTab === 'dashboard'
                 ? '> Dashboard'
+                : activeTab === 'members'
+                ? '> Members'
                 : activeTab === 'manage_action'
                 ? '> Manage action'
+                : activeTab === 'filters'
+                ? '> Filters'
                 : '> Console logs'}
             </span>
           </div>
@@ -1021,7 +1405,7 @@ export default function AdminPage({
         {/* Tab Content */}
         <div className="flex-1 p-6">
           {/* ======================================================== */}
-          {/* TAB 1: DASHBOARD (Matching identical aesthetic)          */}
+          {/* TAB 1: DASHBOARD                                         */}
           {/* ======================================================== */}
           {activeTab === 'dashboard' && (
             <div>
@@ -1173,7 +1557,162 @@ export default function AdminPage({
           )}
 
           {/* ======================================================== */}
-          {/* TAB 2: MANAGE ACTION (Muted and Banned Users)            */}
+          {/* TAB 2: MEMBERS (Shows all users, profile in middle)      */}
+          {/* ======================================================== */}
+          {activeTab === 'members' && (
+            <div className="space-y-4">
+              {/* Header and Controls */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#16171b] p-3.5 rounded-lg border border-[#23252d]">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    onClick={() => setMemberFilterTab('all')}
+                    className={`px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer ${
+                      memberFilterTab === 'all'
+                        ? 'bg-[#00a8e8] text-white'
+                        : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    All ({allMembersList.length})
+                  </button>
+                  <button
+                    onClick={() => setMemberFilterTab('online')}
+                    className={`px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer ${
+                      memberFilterTab === 'online'
+                        ? 'bg-[#00a8e8] text-white'
+                        : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Online ({allMembersList.filter((m) => m.isOnline).length})
+                  </button>
+                  <button
+                    onClick={() => setMemberFilterTab('staff')}
+                    className={`px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer ${
+                      memberFilterTab === 'staff'
+                        ? 'bg-[#00a8e8] text-white'
+                        : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Staff ({allMembersList.filter((m) => isStaffRank(m.rankObj)).length})
+                  </button>
+                  <button
+                    onClick={() => setMemberFilterTab('punished')}
+                    className={`px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer ${
+                      memberFilterTab === 'punished'
+                        ? 'bg-[#00a8e8] text-white'
+                        : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Punished ({allMembersList.filter((m) => m.isMuted || m.isBanned).length})
+                  </button>
+                </div>
+
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={memberSearchQuery}
+                    onChange={(e) => setMemberSearchQuery(e.target.value)}
+                    placeholder="Search username, email, country..."
+                    className="w-full sm:w-64 pl-8 pr-3 py-1.5 text-xs bg-[#0e0f12] border border-[#2a2c36] rounded text-white focus:outline-none focus:border-[#00a8e8]"
+                  />
+                </div>
+              </div>
+
+              {/* Members Grid */}
+              {filteredMembers.length === 0 ? (
+                <div className="bg-[#16171b] border border-[#23252d] rounded-lg p-12 text-center">
+                  <Users className="w-8 h-8 text-zinc-500 mx-auto mb-2" />
+                  <p className="text-white text-sm font-medium">No members found matching your search.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {filteredMembers.map((member) => {
+                    const pfpBorder = getPfpBorder(member.pfpBorderId);
+                    return (
+                      <div
+                        key={member.key}
+                        onClick={() => {
+                          setSelectedMemberKey(member.key);
+                          setCardRankSelect(member.rank || 'none');
+                          setShowCardActionDropdown('none');
+                        }}
+                        className="bg-[#16171b] border border-[#23252d] hover:border-[#00a8e8]/50 rounded-lg p-3.5 flex items-center justify-between gap-3 cursor-pointer transition-all hover:bg-[#1a1c22] group shadow-sm"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          {/* Avatar with ring */}
+                          <div
+                            className={`w-11 h-11 rounded-full overflow-hidden bg-[#24252e] shrink-0 relative ${
+                              pfpBorder.pfpBorderClass || ''
+                            }`}
+                            style={{ borderWidth: `${member.pfpBorderThickness || 2}px` }}
+                          >
+                            {member.avatarUrl ? (
+                              <img src={member.avatarUrl} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center font-bold text-xs text-zinc-400">
+                                {member.username.slice(0, 2).toUpperCase()}
+                              </div>
+                            )}
+                            {/* Online dot */}
+                            <span
+                              className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border border-black ${
+                                member.isOnline ? 'bg-emerald-400' : 'bg-zinc-500'
+                              }`}
+                            />
+                          </div>
+
+                          {/* Member info */}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-semibold text-white text-sm truncate group-hover:text-[#00a8e8] transition-colors">
+                                {member.username}
+                              </span>
+                              {member.rankObj?.icon && (
+                                <img
+                                  src={member.rankObj.icon}
+                                  alt=""
+                                  className="w-3.5 h-3.5 object-contain shrink-0"
+                                />
+                              )}
+                            </div>
+
+                            <p className="text-xs text-zinc-400 truncate">
+                              {member.gender} · {member.age} yrs · {member.country}
+                            </p>
+
+                            <div className="flex items-center gap-1.5 mt-1">
+                              {member.isBanned && (
+                                <span className="px-1.5 py-0.2 text-[9px] font-bold rounded bg-red-500/20 text-red-400 border border-red-500/30 uppercase">
+                                  Banned
+                                </span>
+                              )}
+                              {member.isMuted && (
+                                <span className="px-1.5 py-0.2 text-[9px] font-bold rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 uppercase">
+                                  Muted
+                                </span>
+                              )}
+                              {member.rankObj && member.rankObj.id !== 'none' && (
+                                <span className="px-1.5 py-0.2 text-[9px] font-medium rounded bg-blue-500/15 text-blue-300 border border-blue-500/20 truncate max-w-[120px]">
+                                  {member.rankObj.name}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <span className="text-xs text-[#00a8e8] opacity-0 group-hover:opacity-100 transition-opacity font-medium shrink-0">
+                          View &rarr;
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ======================================================== */}
+          {/* TAB 3: MANAGE ACTION (Punished Users)                    */}
           {/* ======================================================== */}
           {activeTab === 'manage_action' && (
             <div className="space-y-4">
@@ -1245,7 +1784,6 @@ export default function AdminPage({
                       className="bg-[#16171b] border border-[#23252d] rounded-lg p-4 flex flex-col justify-between gap-3 shadow-sm hover:border-[#2f313c] transition-colors"
                     >
                       <div className="flex items-start gap-3.5">
-                        {/* Avatar */}
                         <div className="w-12 h-12 rounded-full bg-[#20222a] border border-white/10 shrink-0 overflow-hidden flex items-center justify-center text-sm font-bold text-zinc-300">
                           {item.avatarUrl ? (
                             <img
@@ -1261,7 +1799,6 @@ export default function AdminPage({
                           )}
                         </div>
 
-                        {/* Details */}
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-sm font-semibold text-white truncate">{item.username}</span>
@@ -1277,7 +1814,6 @@ export default function AdminPage({
                             )}
                           </div>
 
-                          {/* Reason and Duration */}
                           <div className="mt-1 space-y-0.5 text-xs text-zinc-400">
                             {item.isBanned && (
                               <p className="truncate">
@@ -1295,7 +1831,6 @@ export default function AdminPage({
                         </div>
                       </div>
 
-                      {/* Action Buttons */}
                       <div className="flex items-center gap-2 pt-2 border-t border-[#20222a] justify-end">
                         {item.isMuted && (
                           <button
@@ -1327,11 +1862,168 @@ export default function AdminPage({
           )}
 
           {/* ======================================================== */}
-          {/* TAB 3: CONSOLE LOGS (Overall vs Staff Logs)               */}
+          {/* TAB 4: FILTERS (Banned Words, Extensions & Auto-Mutes)   */}
+          {/* ======================================================== */}
+          {activeTab === 'filters' && (
+            <div className="space-y-5">
+              {/* Info banner */}
+              <div className="bg-[#16171b] border border-[#23252d] rounded-lg p-4 flex items-start gap-3">
+                <Filter className="w-5 h-5 text-[#00a8e8] shrink-0 mt-0.5" />
+                <div className="text-xs text-zinc-300 leading-relaxed">
+                  <p className="font-semibold text-white text-sm mb-0.5">Automated Chat Filter & Auto-Mute</p>
+                  <p>
+                    Configure prohibited words, URLs, or domain extensions (like <code className="bg-[#0e0f12] px-1 py-0.5 rounded text-cyan-300">.com</code>, <code className="bg-[#0e0f12] px-1 py-0.5 rounded text-cyan-300">.co.uk</code>, <code className="bg-[#0e0f12] px-1 py-0.5 rounded text-cyan-300">discord.gg</code>). When any user posts a message containing these terms, the message is blocked and they are immediately muted for the chosen duration. Violations are logged under Staff Logs for follow-up bans.
+                  </p>
+                </div>
+              </div>
+
+              {/* Add Filter Form */}
+              <div className="bg-[#16171b] border border-[#23252d] rounded-lg p-4">
+                <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+                  <Plus className="w-4 h-4 text-[#00a8e8]" />
+                  <span>Add New Banned Filter</span>
+                </h3>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleAddBannedFilter();
+                  }}
+                  className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3"
+                >
+                  <div className="flex-1">
+                    <label className="block text-xs font-medium text-zinc-400 mb-1">
+                      Banned Word, URL or Extension
+                    </label>
+                    <input
+                      type="text"
+                      value={newFilterWord}
+                      onChange={(e) => setNewFilterWord(e.target.value)}
+                      placeholder="e.g. .com, .co.uk, discord.gg, http"
+                      className="w-full px-3 py-2 text-xs bg-[#0e0f12] border border-[#2a2c36] rounded text-white focus:outline-none focus:border-[#00a8e8]"
+                    />
+                  </div>
+
+                  <div className="w-full sm:w-48">
+                    <label className="block text-xs font-medium text-zinc-400 mb-1">
+                      Auto-Mute Penalty
+                    </label>
+                    <select
+                      value={newFilterDurationId}
+                      onChange={(e) => setNewFilterDurationId(e.target.value)}
+                      className="w-full px-3 py-2 text-xs bg-[#0e0f12] border border-[#2a2c36] rounded text-white focus:outline-none focus:border-[#00a8e8] cursor-pointer"
+                    >
+                      {FILTER_MUTE_DURATIONS.map((dur) => (
+                        <option key={dur.id} value={dur.id}>
+                          {dur.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isAddingFilter}
+                    className="px-4 py-2 bg-[#00a8e8] hover:bg-[#0092ca] text-white text-xs font-medium rounded transition-colors cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Filter</span>
+                  </button>
+                </form>
+
+                {/* Quick Add Presets */}
+                <div className="mt-4 pt-3 border-t border-[#23252d] flex items-center gap-2 flex-wrap text-xs text-zinc-400">
+                  <span className="text-[11px] font-semibold text-zinc-500 uppercase">Quick presets:</span>
+                  {[
+                    { word: '.com', dur: '1h' },
+                    { word: '.co.uk', dur: '1h' },
+                    { word: '.net', dur: '1h' },
+                    { word: '.org', dur: '1h' },
+                    { word: 'discord.gg', dur: '6h' },
+                    { word: 't.me', dur: '6h' }
+                  ].map((preset) => (
+                    <button
+                      key={preset.word}
+                      type="button"
+                      onClick={() => handleAddBannedFilter(preset.word, preset.dur)}
+                      className="px-2 py-1 rounded bg-[#0e0f12] hover:bg-[#20222b] text-zinc-300 border border-[#2b2d38] text-[11px] transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <Plus className="w-2.5 h-2.5 text-cyan-400" />
+                      <span>{preset.word}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Filters List */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-white">
+                    Active Filters ({bannedFiltersList.length})
+                  </h3>
+
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={filterSearchQuery}
+                      onChange={(e) => setFilterSearchQuery(e.target.value)}
+                      placeholder="Search active filters..."
+                      className="w-48 pl-8 pr-3 py-1 text-xs bg-[#16171b] border border-[#2a2c36] rounded text-white focus:outline-none focus:border-[#00a8e8]"
+                    />
+                  </div>
+                </div>
+
+                {filteredBannedFilters.length === 0 ? (
+                  <div className="bg-[#16171b] border border-[#23252d] rounded-lg p-10 text-center">
+                    <Filter className="w-7 h-7 text-zinc-500 mx-auto mb-2" />
+                    <p className="text-white text-sm font-medium">No banned filters configured.</p>
+                    <p className="text-zinc-500 text-xs mt-0.5">
+                      Add banned words, domain extensions (.com, .co.uk), or advertisement links using the form above.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {filteredBannedFilters.map((f) => (
+                      <div
+                        key={f.id}
+                        className="bg-[#16171b] border border-[#23252d] rounded-lg p-3.5 flex items-center justify-between gap-3 shadow-sm hover:border-[#2b2d38] transition-colors"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-white text-sm tracking-wide bg-[#0e0f12] px-2 py-0.5 rounded border border-white/5 truncate">
+                              {f.word}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 mt-1.5 text-xs">
+                            <span className="px-2 py-0.5 text-[10px] font-semibold rounded bg-[#00a8e8]/15 text-[#00a8e8] border border-[#00a8e8]/30">
+                              Mute: {f.muteDurationLabel}
+                            </span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteBannedFilter(f)}
+                          title="Remove filter"
+                          className="p-2 text-zinc-500 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-colors cursor-pointer shrink-0"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ======================================================== */}
+          {/* TAB 5: CONSOLE LOGS (Overall vs Staff Logs)               */}
           {/* ======================================================== */}
           {activeTab === 'console_logs' && (
             <div className="space-y-4">
-              {/* Filter controls */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#16171b] p-3.5 rounded-lg border border-[#23252d]">
                 <div className="flex items-center gap-1.5">
                   <button
@@ -1369,17 +2061,15 @@ export default function AdminPage({
                 </div>
               </div>
 
-              {/* Log explanation note */}
               <div className="text-xs text-zinc-400 px-1 flex items-center gap-2">
                 <Terminal className="w-3.5 h-3.5 text-[#00a8e8]" />
                 <span>
                   {logCategoryFilter === 'staff'
-                    ? 'Showing staff moderation actions: /clear chat, rank updates, mutes, unbans, and warnings.'
-                    : 'Showing comprehensive audit logs: message deletions, poll creations, staff actions, and registrations.'}
+                    ? 'Showing staff moderation & auto-filter alerts: /clear chat, filter triggers, rank updates, mutes, unbans, and warnings.'
+                    : 'Showing comprehensive audit logs: message deletions, poll creations, filter events, staff actions, and registrations.'}
                 </span>
               </div>
 
-              {/* Log stream list */}
               {filteredConsoleLogs.length === 0 ? (
                 <div className="bg-[#16171b] border border-[#23252d] rounded-lg p-12 text-center">
                   <Terminal className="w-8 h-8 text-zinc-500 mx-auto mb-2" />
@@ -1404,7 +2094,6 @@ export default function AdminPage({
                       day: 'numeric'
                     });
 
-                    // Badge color and title based on action
                     let badgeBg = 'bg-blue-500/15 text-blue-400 border-blue-500/30';
                     let badgeLabel = log.type.toUpperCase();
 
@@ -1437,20 +2126,17 @@ export default function AdminPage({
                         className="px-4 py-3 flex items-start sm:items-center justify-between gap-3 text-xs hover:bg-[#181a20] transition-colors"
                       >
                         <div className="flex items-start sm:items-center gap-3 min-w-0">
-                          {/* Timestamp */}
                           <div className="text-zinc-500 font-mono text-[11px] shrink-0 w-24">
                             <span>{formattedDate} </span>
                             <span className="text-zinc-400">{formattedTime}</span>
                           </div>
 
-                          {/* Action Badge */}
                           <span
                             className={`px-2 py-0.5 text-[10px] font-bold rounded border shrink-0 uppercase tracking-wide ${badgeBg}`}
                           >
                             {badgeLabel}
                           </span>
 
-                          {/* Details */}
                           <div className="min-w-0">
                             <span className="text-zinc-200 font-medium">{log.details}</span>
                             {log.actorRank && (
@@ -1459,7 +2145,6 @@ export default function AdminPage({
                           </div>
                         </div>
 
-                        {/* Category Tag */}
                         <div className="shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">
                           {log.category === 'staff' ? (
                             <span className="text-amber-500/80 font-bold">STAFF</span>
@@ -1475,6 +2160,351 @@ export default function AdminPage({
             </div>
           )}
         </div>
+
+        {/* ======================================================== */}
+        {/* CENTERED PROFILE CARD MODAL FOR SELECTED MEMBER          */}
+        {/* ======================================================== */}
+        {selectedMemberData && (
+          <div
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setSelectedMemberKey(null);
+                setShowCardActionDropdown('none');
+              }
+            }}
+          >
+            <div className="w-full max-w-[440px] bg-[#141419] border border-[#282834] rounded-2xl shadow-2xl overflow-hidden relative flex flex-col text-white animate-in zoom-in-95 duration-150">
+              {/* Close Button Top Right */}
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedMemberKey(null);
+                  setShowCardActionDropdown('none');
+                }}
+                className="absolute top-3 right-3 z-30 p-1.5 rounded-full bg-black/60 hover:bg-black/80 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                title="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+
+              {/* Profile Card Banner Top Section */}
+              <div className="relative w-full overflow-hidden flex flex-col items-center pt-6 pb-4 px-4 text-center shrink-0">
+                {/* Banner background */}
+                {selectedMemberData.bannerUrl ? (
+                  <img
+                    src={selectedMemberData.bannerUrl}
+                    alt="Banner"
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="absolute inset-0 w-full h-full bg-gradient-to-b from-[#2a2b38] via-[#1b1c24] to-[#141419]" />
+                )}
+
+                {/* Scrim Overlay */}
+                <div className="absolute inset-0 bg-gradient-to-b from-black/25 via-black/40 to-black/85 pointer-events-none" />
+
+                {/* Avatar with custom ring */}
+                <div
+                  className={`w-20 h-20 rounded-full overflow-hidden bg-[#24252e] shadow-2xl relative shrink-0 z-10 transition-all ${
+                    getPfpBorder(selectedMemberData.pfpBorderId).pfpBorderClass || ''
+                  }`}
+                  style={{ borderWidth: `${selectedMemberData.pfpBorderThickness || 2}px` }}
+                >
+                  {selectedMemberData.avatarUrl ? (
+                    <img
+                      src={selectedMemberData.avatarUrl}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center font-bold text-lg text-zinc-300">
+                      {selectedMemberData.username.slice(0, 2).toUpperCase()}
+                    </div>
+                  )}
+                </div>
+
+                {/* User Details over Banner */}
+                <div className="relative z-10 mt-2.5 flex flex-col items-center max-w-full px-2">
+                  {selectedMemberData.rankObj && (
+                    <div className="flex items-center justify-center gap-1.5 mb-0.5">
+                      {selectedMemberData.rankObj.icon && (
+                        <img
+                          src={selectedMemberData.rankObj.icon}
+                          alt=""
+                          className="w-4 h-4 object-contain shrink-0"
+                        />
+                      )}
+                      <span className="text-xs font-bold text-white drop-shadow-md">
+                        {selectedMemberData.rankObj.name}
+                      </span>
+                    </div>
+                  )}
+
+                  <h3 className="font-extrabold text-white text-lg tracking-wide drop-shadow-md truncate flex items-center gap-1.5">
+                    <span>{selectedMemberData.username}</span>
+                  </h3>
+
+                  <p className="text-xs text-zinc-300 font-medium mt-0.5 drop-shadow-sm truncate">
+                    {selectedMemberData.age} years · {selectedMemberData.gender} · {selectedMemberData.country}
+                  </p>
+                </div>
+              </div>
+
+              {/* Bio & Details Section */}
+              <div className="px-5 py-3 space-y-2.5 text-xs text-zinc-300 bg-[#121217] border-t border-[#23232c]">
+                {selectedMemberData.mood && (
+                  <div className="flex items-center gap-2 text-cyan-300 bg-cyan-950/30 px-2.5 py-1.5 rounded-lg border border-cyan-800/30">
+                    <Smile className="w-3.5 h-3.5 shrink-0" />
+                    <span className="italic truncate">&ldquo;{selectedMemberData.mood}&rdquo;</span>
+                  </div>
+                )}
+
+                {selectedMemberData.bio && (
+                  <p className="text-zinc-300 leading-relaxed max-h-20 overflow-y-auto">
+                    {selectedMemberData.bio}
+                  </p>
+                )}
+
+                {/* Account Status Badges */}
+                <div className="flex items-center gap-2 pt-1 flex-wrap">
+                  <span
+                    className={`px-2 py-0.5 text-[10px] font-semibold rounded ${
+                      selectedMemberData.isOnline
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-zinc-700/30 text-zinc-400 border border-zinc-700/30'
+                    }`}
+                  >
+                    {selectedMemberData.isOnline ? 'Online now' : 'Offline'}
+                  </span>
+
+                  {selectedMemberData.isMuted && (
+                    <span className="px-2 py-0.5 text-[10px] font-bold uppercase rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                      Muted ({selectedMemberData.muteDuration || 'Active'})
+                    </span>
+                  )}
+
+                  {selectedMemberData.isBanned && (
+                    <span className="px-2 py-0.5 text-[10px] font-bold uppercase rounded bg-red-500/20 text-red-400 border border-red-500/30">
+                      Banned ({selectedMemberData.bannedDuration || 'Active'})
+                    </span>
+                  )}
+                </div>
+
+                {/* Show mute/ban reason if active */}
+                {(selectedMemberData.muteReason || selectedMemberData.bannedReason) && (
+                  <div className="p-2 bg-black/40 rounded border border-white/5 text-[11px] text-zinc-400 space-y-0.5">
+                    {selectedMemberData.muteReason && (
+                      <p>
+                        <span className="text-amber-400 font-semibold">Mute Reason:</span>{' '}
+                        {selectedMemberData.muteReason}
+                      </p>
+                    )}
+                    {selectedMemberData.bannedReason && (
+                      <p>
+                        <span className="text-red-400 font-semibold">Ban Reason:</span>{' '}
+                        {selectedMemberData.bannedReason}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Action Modals / Dropdowns within Card */}
+              {showCardActionDropdown === 'mute' && (
+                <div className="p-3 bg-[#181820] border-t border-[#23232c] space-y-2 animate-in fade-in">
+                  <p className="text-xs font-semibold text-white">Mute {selectedMemberData.username}</p>
+                  <div className="flex gap-2">
+                    <select
+                      value={cardMuteDurationId}
+                      onChange={(e) => setCardMuteDurationId(e.target.value)}
+                      className="px-2 py-1.5 text-xs bg-[#0e0f12] border border-[#2b2d38] rounded text-white flex-1"
+                    >
+                      {FILTER_MUTE_DURATIONS.map((dur) => (
+                        <option key={dur.id} value={dur.id}>
+                          {dur.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    <input
+                      type="text"
+                      placeholder="Reason (optional)"
+                      value={cardMuteReason}
+                      onChange={(e) => setCardMuteReason(e.target.value)}
+                      className="px-2 py-1.5 text-xs bg-[#0e0f12] border border-[#2b2d38] rounded text-white flex-1"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowCardActionDropdown('none')}
+                      className="px-2.5 py-1 text-xs text-zinc-400 hover:text-white rounded"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleAdminMuteMember(
+                          selectedMemberData.username,
+                          cardMuteDurationId,
+                          cardMuteReason
+                        )
+                      }
+                      className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium rounded"
+                    >
+                      Confirm Mute
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showCardActionDropdown === 'ban' && (
+                <div className="p-3 bg-[#181820] border-t border-[#23232c] space-y-2 animate-in fade-in">
+                  <p className="text-xs font-semibold text-white">Ban {selectedMemberData.username}</p>
+                  <input
+                    type="text"
+                    placeholder="Ban Reason (e.g. Advertising, Harassment)"
+                    value={cardBanReason}
+                    onChange={(e) => setCardBanReason(e.target.value)}
+                    className="w-full px-2 py-1.5 text-xs bg-[#0e0f12] border border-[#2b2d38] rounded text-white"
+                  />
+
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowCardActionDropdown('none')}
+                      className="px-2.5 py-1 text-xs text-zinc-400 hover:text-white rounded"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleAdminBanMember(
+                          selectedMemberData.username,
+                          'Permanent',
+                          cardBanReason
+                        )
+                      }
+                      className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white text-xs font-medium rounded"
+                    >
+                      Confirm Ban
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showCardActionDropdown === 'rank' && (
+                <div className="p-3 bg-[#181820] border-t border-[#23232c] space-y-2 animate-in fade-in">
+                  <p className="text-xs font-semibold text-white">Assign Rank to {selectedMemberData.username}</p>
+                  <select
+                    value={cardRankSelect}
+                    onChange={(e) => setCardRankSelect(e.target.value)}
+                    className="w-full px-2 py-1.5 text-xs bg-[#0e0f12] border border-[#2b2d38] rounded text-white"
+                  >
+                    {ASSIGNABLE_RANKS.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowCardActionDropdown('none')}
+                      className="px-2.5 py-1 text-xs text-zinc-400 hover:text-white rounded"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleAdminChangeMemberRank(
+                          selectedMemberData.username,
+                          cardRankSelect
+                        )
+                      }
+                      className="px-3 py-1 bg-[#00a8e8] hover:bg-[#0092ca] text-white text-xs font-medium rounded"
+                    >
+                      Save Rank
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Bottom Action Section on Profile Card */}
+              {showCardActionDropdown === 'none' && (
+                <div className="p-3 border-t border-[#23232c] bg-[#0f0f14] flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {/* Mute / Unmute Button */}
+                    {selectedMemberData.isMuted ? (
+                      <button
+                        type="button"
+                        onClick={() => handleAdminUnmute(selectedMemberData.username)}
+                        className="px-2.5 py-1.5 bg-[#00a8e8] hover:bg-[#0092ca] text-white text-xs font-medium rounded transition-colors flex items-center gap-1"
+                      >
+                        <UserCheck className="w-3.5 h-3.5" />
+                        <span>Unmute</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowCardActionDropdown('mute')}
+                        className="px-2.5 py-1.5 bg-amber-600/80 hover:bg-amber-600 text-white text-xs font-medium rounded transition-colors flex items-center gap-1"
+                      >
+                        <MicOff className="w-3.5 h-3.5" />
+                        <span>Mute</span>
+                      </button>
+                    )}
+
+                    {/* Ban / Unban Button */}
+                    {selectedMemberData.isBanned ? (
+                      <button
+                        type="button"
+                        onClick={() => handleAdminUnban(selectedMemberData.username)}
+                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-colors flex items-center gap-1"
+                      >
+                        <Shield className="w-3.5 h-3.5" />
+                        <span>Unban</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowCardActionDropdown('ban')}
+                        className="px-2.5 py-1.5 bg-red-600/80 hover:bg-red-600 text-white text-xs font-medium rounded transition-colors flex items-center gap-1"
+                      >
+                        <Ban className="w-3.5 h-3.5" />
+                        <span>Ban</span>
+                      </button>
+                    )}
+
+                    {/* Change Rank Button */}
+                    <button
+                      type="button"
+                      onClick={() => setShowCardActionDropdown('rank')}
+                      className="px-2.5 py-1.5 bg-[#1f212a] hover:bg-[#282a36] text-zinc-300 hover:text-white border border-white/5 text-xs font-medium rounded transition-colors flex items-center gap-1"
+                    >
+                      <Award className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Rank</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMemberKey(null)}
+                    className="px-3 py-1.5 text-xs text-zinc-400 hover:text-white rounded hover:bg-white/5 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
