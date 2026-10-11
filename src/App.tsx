@@ -99,6 +99,7 @@ import BorderModal from './components/BorderModal';
 import { MessagesView } from './MessagesView';
 import DatabaseMonitorModal from './components/DatabaseMonitorModal';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
+import AdminPage from './AdminPage';
 import { detectUserCountry, getInstantUserCountry } from './utils/countryDetect';
 import { uploadToCloudinary, deleteFromCloudinary } from './lib/cloudinary';
 import { compressAvatar, compressBanner } from './utils/imageCompressor';
@@ -210,6 +211,30 @@ async function sendSystemBotMessage(
     await push(messagesRef, newMsgData);
   } catch (err) {
     console.warn('Error posting system bot message:', err);
+  }
+}
+
+async function recordAuditLog(
+  type: string,
+  actor: string,
+  actorRank: string | null,
+  target: string | null,
+  details: string,
+  category: 'staff' | 'general'
+) {
+  try {
+    const auditRef = ref(rtdb, 'audit_logs');
+    await push(auditRef, {
+      type,
+      actor,
+      actorRank,
+      target,
+      details,
+      category,
+      timestamp: Date.now()
+    });
+  } catch (err) {
+    console.warn('Failed to record audit log:', err);
   }
 }
 
@@ -637,6 +662,17 @@ export default function App() {
       return null;
     }
   });
+
+  // Client-side route path (/admin vs /)
+  const [currentPath, setCurrentPath] = useState(() => window.location.pathname);
+
+  useEffect(() => {
+    const handleLocationChange = () => {
+      setCurrentPath(window.location.pathname);
+    };
+    window.addEventListener('popstate', handleLocationChange);
+    return () => window.removeEventListener('popstate', handleLocationChange);
+  }, []);
 
   // Default Profile Configuration
   const initialProfile = useMemo<UserProfileState>(() => ({
@@ -2941,6 +2977,14 @@ export default function App() {
 
     try {
       await push(ref(rtdb, 'messages'), newMsgData);
+      recordAuditLog(
+        'create_poll',
+        currentUser.username,
+        activeSenderRank?.name || null,
+        null,
+        `${currentUser.username} created a poll: "${question}"`,
+        'general'
+      );
     } catch (err) {
       console.warn('Error creating poll in RTDB:', err);
     }
@@ -3153,6 +3197,14 @@ export default function App() {
             currentUser.username,
             `${currentUser.username} has cleared the room`
           );
+          recordAuditLog(
+            'clear_chat',
+            currentUser.username,
+            activeSenderRank?.name || null,
+            null,
+            `${currentUser.username} cleared all room chat messages`,
+            'staff'
+          );
         } catch (err) {
           console.warn('Error clearing messages in RTDB:', err);
           localStorage.removeItem('chat_community_messages');
@@ -3162,6 +3214,14 @@ export default function App() {
             'clear',
             currentUser.username,
             `${currentUser.username} has cleared the room`
+          );
+          recordAuditLog(
+            'clear_chat',
+            currentUser.username,
+            activeSenderRank?.name || null,
+            null,
+            `${currentUser.username} cleared all room chat messages`,
+            'staff'
           );
         }
       }
@@ -3312,9 +3372,24 @@ export default function App() {
 
   // Delete a specific chat message (own message or Owner and above) from Realtime Database
   const handleDeleteMessage = async (msgId: string) => {
+    const targetMsg = messages.find((m) => m.id === msgId);
     setMessages((prev) => prev.filter((m) => m.id !== msgId));
     try {
       await remove(ref(rtdb, `messages/${msgId}`));
+      if (currentUser?.username) {
+        const isStaffDelete = Boolean(
+          targetMsg &&
+          targetMsg.sender.toLowerCase() !== currentUser.username.toLowerCase()
+        );
+        recordAuditLog(
+          'delete_message',
+          currentUser.username,
+          userProfile.rank || null,
+          targetMsg?.sender || null,
+          `${currentUser.username} deleted ${isStaffDelete ? `${targetMsg?.sender}'s` : 'their own'} message${targetMsg?.text ? `: "${targetMsg.text.slice(0, 40)}"` : ''}`,
+          isStaffDelete ? 'staff' : 'general'
+        );
+      }
     } catch (err) {
       console.warn('Error deleting message:', err);
     }
@@ -3993,6 +4068,15 @@ export default function App() {
           await update(msgsRef, msgUpdates);
         }
       }
+
+      recordAuditLog(
+        'change_rank',
+        currentUser.username,
+        myRank?.name || null,
+        targetUsername,
+        `${currentUser.username} changed ${targetUsername}'s rank to ${newRankDisplayName}`,
+        'staff'
+      );
     } catch (err) {
       console.warn('Error updating user rank in RTDB:', err);
     }
@@ -4057,6 +4141,14 @@ export default function App() {
           `${targetUsername} has been unmuted!`
         );
         playAppSound(actionSoundUrl || '/action.mp3');
+        recordAuditLog(
+          'unmute',
+          currentUser?.username || 'Staff',
+          null,
+          targetUsername,
+          `${currentUser?.username || 'Staff'} unmuted ${targetUsername}`,
+          'staff'
+        );
       } catch (err) {
         console.warn('Error unmuting user in RTDB:', err);
       }
@@ -4129,6 +4221,14 @@ export default function App() {
         `${targetUsername} has been muted!`
       );
       playAppSound(actionSoundUrl || '/action.mp3');
+      recordAuditLog(
+        'mute',
+        currentUser.username,
+        myRank?.name || null,
+        targetUsername,
+        `${currentUser.username} muted ${targetUsername} for ${selectedDur.label}${cleanReason ? `: ${cleanReason}` : ''}`,
+        'staff'
+      );
     } catch (err) {
       console.warn('Error muting user in RTDB:', err);
     }
@@ -4217,6 +4317,14 @@ export default function App() {
         `${targetUsername} has been banned!`
       );
       playAppSound(actionSoundUrl || '/action.mp3');
+      recordAuditLog(
+        'ban',
+        currentUser.username,
+        myRank?.name || null,
+        targetUsername,
+        `${currentUser.username} banned ${targetUsername} for ${selectedDur.label}${cleanReason ? `: ${cleanReason}` : ''}`,
+        'staff'
+      );
     } catch (err) {
       console.warn('Error banning user in RTDB:', err);
     }
@@ -4270,6 +4378,14 @@ export default function App() {
           `${targetUsername} has been unbanned!`
         );
         playAppSound(actionSoundUrl || '/action.mp3');
+        recordAuditLog(
+          'unban',
+          currentUser?.username || 'Staff',
+          null,
+          targetUsername,
+          `${currentUser?.username || 'Staff'} unbanned ${targetUsername}`,
+          'staff'
+        );
       } catch (err) {
         console.warn('Error unbanning user in RTDB:', err);
       }
@@ -4302,6 +4418,14 @@ export default function App() {
         `${targetUsername} has been warned!`
       );
       playAppSound(actionSoundUrl || '/action.mp3');
+      recordAuditLog(
+        'warn',
+        currentUser?.username || 'Staff',
+        null,
+        targetUsername,
+        `${currentUser?.username || 'Staff'} warned ${targetUsername}`,
+        'staff'
+      );
     } catch (err) {
       console.warn('Error warning user in RTDB:', err);
     }
@@ -4644,6 +4768,24 @@ export default function App() {
   };
 
   // ==========================================
+  // VIEW 0: ADMIN PANEL (/admin)
+  // ==========================================
+  if (currentPath === '/admin' || currentPath.startsWith('/admin')) {
+    return (
+      <AdminPage
+        currentUser={currentUser}
+        userProfile={userProfile}
+        onBackToChat={() => {
+          window.history.pushState({}, '', '/');
+          setCurrentPath('/');
+        }}
+        onUnmuteUser={handleUnmuteTargetUser}
+        onUnbanUser={handleUnbanTargetUser}
+      />
+    );
+  }
+
+  // ==========================================
   // VIEW 1: CHAT UI (After Sign up / Login)
   // ==========================================
   if (currentUser) {
@@ -4742,6 +4884,12 @@ export default function App() {
       currentUser.username.trim().toLowerCase() === 'null' ||
       currentUser.email?.trim().toLowerCase() === 'null@gmail.com' ||
       currentUser.email?.trim().toLowerCase() === 'null@gmai.com';
+    const isCurrentUserDevPlus = Boolean(
+      isMainDeveloper ||
+      currentUserRank?.id === 'developer' ||
+      currentUserRank?.id === 'main_developer' ||
+      (currentUserRank?.priority ?? 0) >= 90
+    );
     const isDevOrAbove = (currentUserRank?.priority ?? 0) >= 80;
     const isOwnerOrAbove = (currentUserRank?.priority ?? 0) >= 90;
     const hasUnreadNotifications = notifications.some((n) => !n.read);
@@ -4995,15 +5143,18 @@ export default function App() {
             )}
           </button>
 
-          {/* Flag icon: only visible if current user is Staff */}
-          {isCurrentUserStaff && (
-            <button
-              type="button"
-              aria-label="Staff Reports"
+          {/* White Flag icon: only visible for Dev+ (developer, main_developer, or priority >= 90) */}
+          {isCurrentUserDevPlus && (
+            <a
+              href="/admin"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Admin Dashboard"
+              title="Admin Dashboard (Dev+)"
               className="bcell_mid text-white hover:text-zinc-300 p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-center"
             >
               <i className="fa fa-flag text-white text-lg" aria-hidden="true" />
-            </button>
+            </a>
           )}
 
           {/* RED FLAG ICON: Exclusively for Null (null@gmail.com / Main Dev) to monitor RTDB & manage database */}
