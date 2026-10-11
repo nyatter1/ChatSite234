@@ -24,7 +24,31 @@ export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
-// Validate username (3 to 20 chars, allowed characters)
+// Generate persistent browser/hardware device fingerprint for moderation enforcement
+export function getDeviceFingerprint(): string {
+  try {
+    const nav = typeof window !== 'undefined' ? window.navigator : ({} as any);
+    const screen = typeof window !== 'undefined' ? window.screen : ({} as any);
+    const parts = [
+      nav.userAgent || '',
+      nav.language || '',
+      screen.width || '',
+      screen.height || '',
+      screen.colorDepth || '',
+      nav.hardwareConcurrency || '',
+      Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+    ];
+    let hash = 0;
+    const str = parts.join('###');
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return 'fp_' + Math.abs(hash).toString(36);
+  } catch (_) {
+    return 'fp_default';
+  }
+}
 export function isValidUsername(username: string): { valid: boolean; message?: string } {
   const trimmed = username.trim();
   if (trimmed.length < 3) {

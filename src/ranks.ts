@@ -289,3 +289,19 @@ export function isStaffRank(rank: RankDefinition | null | undefined): boolean {
   if (!rank) return false;
   return rank.priority >= 40;
 }
+
+/**
+ * Returns true if the user's rank can ban users (Super Admin or higher: priority >= 60).
+ */
+export function canBanRank(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 60;
+}
+
+/**
+ * Returns true if the user's rank can mute users (Moderator or higher: priority >= 40).
+ */
+export function canMuteRank(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 40;
+}

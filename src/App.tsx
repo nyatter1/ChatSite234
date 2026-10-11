@@ -76,6 +76,8 @@ import {
   RANKS,
   getUserRank,
   isStaffRank,
+  canBanRank,
+  canMuteRank,
   ASSIGNABLE_RANKS,
   CUSTOM_RANK_ICONS,
   SYSTEM_BOT_USERNAME,
@@ -104,7 +106,8 @@ import {
   hashPassword,
   sanitizeDbKey,
   isValidEmail,
-  isValidUsername
+  isValidUsername,
+  getDeviceFingerprint
 } from './utils/auth';
 import {
   rtdb,
@@ -721,6 +724,38 @@ export default function App() {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const isUnmutingRef = useRef(false);
   const isUnbanningRef = useRef(false);
+  const [deviceBannedInfo, setDeviceBannedInfo] = useState<{
+    isBanned: boolean;
+    reason?: string | null;
+    duration?: string | null;
+    bannedBy?: string | null;
+  } | null>(null);
+
+  // Enforce device ban listener across cookie/storage clearing
+  useEffect(() => {
+    const fp = getDeviceFingerprint();
+    const devBanRef = ref(rtdb, `banned_devices/${fp}`);
+    const unsub = onValue(devBanRef, (snap) => {
+      if (snap.exists()) {
+        const val = snap.val();
+        if (
+          val &&
+          val.isBanned === true &&
+          (!val.bannedUntil || val.bannedUntil === -1 || val.bannedUntil > Date.now())
+        ) {
+          setDeviceBannedInfo({
+            isBanned: true,
+            reason: val.reason || val.bannedReason || 'Violation of community guidelines',
+            duration: val.duration || val.bannedDuration || 'Permanent',
+            bannedBy: val.bannedBy || null
+          });
+          return;
+        }
+      }
+      setDeviceBannedInfo(null);
+    });
+    return () => unsub();
+  }, []);
 
   // Sub-modal state for Edit actions (info, username, bio, mood, glow, profileBorder, pfpBorder, music)
   const [activeEditSubModal, setActiveEditSubModal] = useState<
@@ -1917,6 +1952,14 @@ export default function App() {
       connectedUnsub = onValue(connectedRef, (snap) => {
         if (isAccountDeletingRef.current || isRenamingRef.current || !isSessionVerifiedRef.current) return;
         if (snap.val() === true) {
+          const amBanned = Boolean(
+            userProfile.isBanned &&
+            (!userProfile.bannedUntil || userProfile.bannedUntil === -1 || userProfile.bannedUntil > Date.now())
+          );
+          if (amBanned) {
+            update(userRef, { isOnline: false }).catch(() => {});
+            return;
+          }
           onDisconnect(userOnlineRef).set(false);
           onDisconnect(userLastSeenRef).set(serverTimestamp());
 
@@ -2037,6 +2080,24 @@ export default function App() {
             likes: val.likes && typeof val.likes === 'object' ? val.likes : {}
           };
 
+          if (val.isBanned === true && (!val.bannedUntil || val.bannedUntil === -1 || val.bannedUntil > Date.now())) {
+            update(userRef, { isOnline: false }).catch(() => {});
+            const myFp = getDeviceFingerprint();
+            update(ref(rtdb, `banned_devices/${myFp}`), {
+              isBanned: true,
+              username: val.username || currentUser.username,
+              reason: val.bannedReason || 'Violation of community guidelines',
+              bannedUntil: val.bannedUntil || -1,
+              bannedDuration: val.bannedDuration || 'Permanent',
+              bannedBy: val.bannedBy || null
+            }).catch(() => {});
+          } else {
+            const myFp = getDeviceFingerprint();
+            if (val.deviceFingerprint !== myFp) {
+              update(userRef, { deviceFingerprint: myFp }).catch(() => {});
+            }
+          }
+
           if (JSON.stringify(prev) === JSON.stringify(nextState)) {
             return prev;
           }
@@ -2059,17 +2120,28 @@ export default function App() {
     const map = new Map<string, UserProfileData>();
     registeredUsers.forEach((u) => {
       if (u.username && u.username.toLowerCase() !== 'system') {
-        map.set(u.username.toLowerCase(), u);
+        const isBanned = Boolean(
+          u.isBanned === true &&
+          (!u.bannedUntil || u.bannedUntil === -1 || u.bannedUntil > Date.now())
+        );
+        map.set(u.username.toLowerCase(), {
+          ...u,
+          isOnline: isBanned ? false : u.isOnline
+        });
       }
     });
     if (currentUser && currentUser.username) {
       const existingMe = map.get(currentUser.username.toLowerCase());
+      const isMeBanned = Boolean(
+        userProfile.isBanned &&
+        (!userProfile.bannedUntil || userProfile.bannedUntil === -1 || userProfile.bannedUntil > Date.now())
+      );
       map.set(currentUser.username.toLowerCase(), {
         username: currentUser.username,
         email: currentUser.email,
         ...userProfile,
         likes: userProfile.likes || existingMe?.likes || {},
-        isOnline: true
+        isOnline: isMeBanned ? false : true
       });
     }
     // Always online System bot (below Moderator in hierarchy: priority 35)
@@ -2268,6 +2340,28 @@ export default function App() {
     setRegLoading(true);
 
     try {
+      // Check if this device is banned in RTDB (prevents banned user from creating an account even after clearing cookies)
+      const currentFp = getDeviceFingerprint();
+      const bannedDevSnap = await get(ref(rtdb, `banned_devices/${currentFp}`));
+      if (bannedDevSnap.exists()) {
+        const bVal = bannedDevSnap.val();
+        if (
+          bVal &&
+          bVal.isBanned === true &&
+          (!bVal.bannedUntil || bVal.bannedUntil === -1 || bVal.bannedUntil > Date.now())
+        ) {
+          setDeviceBannedInfo({
+            isBanned: true,
+            reason: bVal.reason || bVal.bannedReason || 'Violation of community guidelines',
+            duration: bVal.duration || bVal.bannedDuration || 'Permanent',
+            bannedBy: bVal.bannedBy || null
+          });
+          setRegError('You have been banned from this community and cannot create a new account.');
+          setRegLoading(false);
+          return;
+        }
+      }
+
       const sanitizedKey = sanitizeDbKey(trimmedUser);
 
       // 4. Query Firebase Realtime Database to guarantee unique username, key, and email
@@ -2337,6 +2431,7 @@ export default function App() {
         email: trimmedEmail,
         emailLower: trimmedEmail.toLowerCase(),
         passwordHash: pwdHash,
+        deviceFingerprint: currentFp,
         ...newProfileState,
         isOnline: true,
         createdAt: serverTimestamp(),
@@ -2447,6 +2542,35 @@ export default function App() {
 
       if (!isPasswordValid) {
         setLoginError('Incorrect username/email or password. Please verify your details.');
+        setLoginLoading(false);
+        return;
+      }
+
+      // Check if this account is banned
+      const isAccountBanned = Boolean(
+        matchedUser.isBanned === true &&
+        (!matchedUser.bannedUntil || matchedUser.bannedUntil === -1 || matchedUser.bannedUntil > Date.now())
+      );
+
+      if (isAccountBanned) {
+        const myFp = getDeviceFingerprint();
+        update(ref(rtdb, `banned_devices/${myFp}`), {
+          isBanned: true,
+          username: matchedUser.username,
+          reason: matchedUser.bannedReason || 'Violation of community guidelines',
+          bannedUntil: matchedUser.bannedUntil || -1,
+          bannedDuration: matchedUser.bannedDuration || 'Permanent',
+          bannedBy: matchedUser.bannedBy || null
+        }).catch(() => {});
+
+        setDeviceBannedInfo({
+          isBanned: true,
+          reason: matchedUser.bannedReason || 'Violation of community guidelines',
+          duration: matchedUser.bannedDuration || 'Permanent',
+          bannedBy: matchedUser.bannedBy || null
+        });
+
+        setLoginError(`You have been banned: ${matchedUser.bannedReason || 'Violation of community guidelines'}`);
         setLoginLoading(false);
         return;
       }
@@ -2711,9 +2835,78 @@ export default function App() {
   );
 
   const isCurrentUserBanned = Boolean(
-    userProfile.isBanned ||
-    (userProfile.bannedUntil && (userProfile.bannedUntil === -1 || userProfile.bannedUntil > nowMs))
+    (
+      (currentUser && userProfile.isBanned) ||
+      deviceBannedInfo?.isBanned
+    ) &&
+    (
+      !userProfile.bannedUntil ||
+      userProfile.bannedUntil === -1 ||
+      userProfile.bannedUntil > nowMs ||
+      deviceBannedInfo?.isBanned
+    )
   );
+
+  // Fullscreen Black Banned Screen (Blocks everything, shows in center)
+  const renderBannedOverlay = () => {
+    if (!isCurrentUserBanned) return null;
+    const reasonText =
+      userProfile.bannedReason ||
+      deviceBannedInfo?.reason ||
+      'Violation of community guidelines';
+    const durationText =
+      userProfile.bannedDuration ||
+      deviceBannedInfo?.duration ||
+      'Permanent';
+    const bannedByText =
+      userProfile.bannedBy ||
+      deviceBannedInfo?.bannedBy ||
+      null;
+
+    return (
+      <div
+        role="alert"
+        className="fixed inset-0 z-[999999] bg-black flex flex-col items-center justify-center p-6 text-center select-none"
+      >
+        <div className="max-w-md w-full flex flex-col items-center animate-in fade-in zoom-in-95 duration-200">
+          <div className="w-20 h-20 rounded-full bg-red-950/70 border-2 border-red-600 flex items-center justify-center mb-6 shadow-2xl shadow-red-950/80">
+            <i className="fa fa-ban text-red-500 text-4xl" aria-hidden="true" />
+          </div>
+
+          <h1 className="text-2xl sm:text-3xl font-black text-red-500 tracking-wider uppercase mb-3">
+            You Have Been Banned
+          </h1>
+
+          <div className="w-full bg-[#111116] border border-[#262630] rounded-2xl p-5 mb-5 text-left shadow-2xl">
+            <div className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-1.5">
+              Reason:
+            </div>
+            <div className="text-sm sm:text-base font-semibold text-white break-words leading-relaxed">
+              {reasonText}
+            </div>
+
+            {durationText && (
+              <div className="mt-3 pt-3 border-t border-[#1e1e28] flex items-center justify-between text-xs">
+                <span className="text-zinc-500 font-medium">Duration</span>
+                <span className="text-red-400 font-bold">{durationText}</span>
+              </div>
+            )}
+
+            {bannedByText && (
+              <div className="mt-2 flex items-center justify-between text-xs">
+                <span className="text-zinc-500 font-medium">Action by</span>
+                <span className="text-zinc-300 font-semibold">@{bannedByText}</span>
+              </div>
+            )}
+          </div>
+
+          <p className="text-xs sm:text-sm text-zinc-500 max-w-sm leading-relaxed">
+            Your access has been suspended. You cannot create an account, send messages, or participate in the chat until an administrator unbans you.
+          </p>
+        </div>
+      </div>
+    );
+  };
 
   // Create and post a live interactive Poll in chat
   const handleCreatePoll = async (question: string, options: string[], allowMultiple: boolean) => {
@@ -3877,7 +4070,22 @@ export default function App() {
     const targetUsername = liveSelectedUser.username;
     if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
     const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
-    if (!myRank || (myRank.id !== 'main_developer' && myRank.priority < 40)) return;
+    if (!myRank || !canMuteRank(myRank)) {
+      alert('Only staff members can mute users.');
+      return;
+    }
+
+    const targetRank = getUserRank(
+      targetUsername,
+      liveSelectedUser.email,
+      liveSelectedUser.rank,
+      liveSelectedUser.customRankIcon,
+      liveSelectedUser.customRankName
+    );
+    if (myRank.id !== 'main_developer' && (targetRank?.priority ?? 0) >= myRank.priority) {
+      alert('You cannot mute someone with an equal or higher rank.');
+      return;
+    }
 
     const selectedDur = MUTE_DURATIONS.find((d) => d.id === muteDurationId) || MUTE_DURATIONS[3];
     const mutedUntil = Date.now() + selectedDur.ms;
@@ -3926,13 +4134,28 @@ export default function App() {
     }
   };
 
-  // Ban target user (Staff / Main Developer) for the selected duration
+  // Ban target user (Superadmin and above / Main Developer) for the selected duration
   const handleBanTargetUser = async () => {
     if (!currentUser || !liveSelectedUser) return;
     const targetUsername = liveSelectedUser.username;
     if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
     const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
-    if (!myRank || (myRank.id !== 'main_developer' && myRank.priority < 40)) return;
+    if (!myRank || !canBanRank(myRank)) {
+      alert('Only Super Admin and above can ban users. Moderators can only mute.');
+      return;
+    }
+
+    const targetRank = getUserRank(
+      targetUsername,
+      liveSelectedUser.email,
+      liveSelectedUser.rank,
+      liveSelectedUser.customRankIcon,
+      liveSelectedUser.customRankName
+    );
+    if (myRank.id !== 'main_developer' && (targetRank?.priority ?? 0) >= myRank.priority) {
+      alert('You cannot ban someone with an equal or higher rank.');
+      return;
+    }
 
     const selectedDur = BAN_DURATIONS.find((d) => d.id === banDurationId) || BAN_DURATIONS[1];
     const bannedUntil = selectedDur.ms === -1 ? -1 : Date.now() + selectedDur.ms;
@@ -3965,9 +4188,28 @@ export default function App() {
         bannedReason: cleanReason || 'Violation of rules',
         bannedAt: Date.now(),
         bannedBy: currentUser.username,
+        isOnline: false,
         lastActionAt: Date.now(),
         updatedAt: serverTimestamp()
       });
+
+      // Also register target device fingerprint to banned_devices table
+      try {
+        const targetSnap = await get(ref(rtdb, `users/${targetKey}`));
+        const targetVal = targetSnap.val() || {};
+        const targetFp = targetVal.deviceFingerprint;
+        if (targetFp) {
+          await update(ref(rtdb, `banned_devices/${targetFp}`), {
+            isBanned: true,
+            username: targetUsername,
+            reason: cleanReason || 'Violation of rules',
+            bannedUntil,
+            bannedDuration: selectedDur.label,
+            bannedAt: Date.now(),
+            bannedBy: currentUser.username
+          });
+        }
+      } catch (_) {}
 
       await sendSystemBotMessage(
         'ban',
@@ -3980,10 +4222,16 @@ export default function App() {
     }
   };
 
-  // Unban target user
+  // Unban target user (Superadmin and above / Main Developer)
   const handleUnbanTargetUser = useCallback(
     async (targetUsername: string) => {
       if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
+      if (!currentUser) return;
+      const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+      if (!myRank || !canBanRank(myRank)) {
+        alert('Only Super Admin and above can unban users.');
+        return;
+      }
       const targetKey = sanitizeDbKey(targetUsername);
       try {
         await push(ref(rtdb, `users/${targetKey}/notifications`), {
@@ -4006,6 +4254,16 @@ export default function App() {
           updatedAt: serverTimestamp()
         });
 
+        // Also remove from banned_devices
+        try {
+          const targetSnap = await get(ref(rtdb, `users/${targetKey}`));
+          const targetVal = targetSnap.val() || {};
+          const targetFp = targetVal.deviceFingerprint;
+          if (targetFp) {
+            await remove(ref(rtdb, `banned_devices/${targetFp}`));
+          }
+        } catch (_) {}
+
         await sendSystemBotMessage(
           'unban',
           targetUsername,
@@ -4016,7 +4274,7 @@ export default function App() {
         console.warn('Error unbanning user in RTDB:', err);
       }
     },
-    []
+    [currentUser, userProfile.rank]
   );
 
   // Warn target user
@@ -6559,65 +6817,69 @@ export default function App() {
                   <span className="text-sm font-extrabold text-white">Warn</span>
                 </button>
 
-                {liveSelectedUser.mutedUntil && liveSelectedUser.mutedUntil > nowMs ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const targetName = liveSelectedUser.username;
-                      const targetNotifId = liveSelectedUser.muteNotificationId;
-                      setActionModalOpen(false);
-                      handleUnmuteTargetUser(targetName, targetNotifId);
-                    }}
-                    className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
-                  >
-                    <i className="fa fa-microphone-slash error text-rose-500 text-base w-5 text-center" aria-hidden="true" />
-                    <span className="text-sm font-extrabold text-white">Unmute</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActionModalOpen(false);
-                      setMuteDurationId('5m');
-                      setMuteDropdownOpen(false);
-                      setMuteReason('');
-                      setMuteModalOpen(true);
-                    }}
-                    className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
-                  >
-                    <i className="fa fa-microphone-slash error text-rose-500 text-base w-5 text-center" aria-hidden="true" />
-                    <span className="text-sm font-extrabold text-white">Mute</span>
-                  </button>
+                {canMuteRank(currentUserRank) && (
+                  liveSelectedUser.mutedUntil && liveSelectedUser.mutedUntil > nowMs ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetName = liveSelectedUser.username;
+                        const targetNotifId = liveSelectedUser.muteNotificationId;
+                        setActionModalOpen(false);
+                        handleUnmuteTargetUser(targetName, targetNotifId);
+                      }}
+                      className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                    >
+                      <i className="fa fa-microphone-slash error text-rose-500 text-base w-5 text-center" aria-hidden="true" />
+                      <span className="text-sm font-extrabold text-white">Unmute</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActionModalOpen(false);
+                        setMuteDurationId('5m');
+                        setMuteDropdownOpen(false);
+                        setMuteReason('');
+                        setMuteModalOpen(true);
+                      }}
+                      className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                    >
+                      <i className="fa fa-microphone-slash error text-rose-500 text-base w-5 text-center" aria-hidden="true" />
+                      <span className="text-sm font-extrabold text-white">Mute</span>
+                    </button>
+                  )
                 )}
 
-                {liveSelectedUser.isBanned || (liveSelectedUser.bannedUntil && (liveSelectedUser.bannedUntil === -1 || liveSelectedUser.bannedUntil > nowMs)) ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const targetName = liveSelectedUser.username;
-                      setActionModalOpen(false);
-                      handleUnbanTargetUser(targetName);
-                    }}
-                    className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
-                  >
-                    <i className="fa fa-ban text-emerald-400 text-base w-5 text-center" aria-hidden="true" />
-                    <span className="text-sm font-extrabold text-white">Unban</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActionModalOpen(false);
-                      setBanDurationId('1d');
-                      setBanDropdownOpen(false);
-                      setBanReason('');
-                      setBanModalOpen(true);
-                    }}
-                    className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
-                  >
-                    <i className="fa fa-ban error text-rose-600 text-base w-5 text-center" aria-hidden="true" />
-                    <span className="text-sm font-extrabold text-white">Ban</span>
-                  </button>
+                {canBanRank(currentUserRank) && (
+                  (liveSelectedUser.isBanned || (liveSelectedUser.bannedUntil && (liveSelectedUser.bannedUntil === -1 || liveSelectedUser.bannedUntil > nowMs))) ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetName = liveSelectedUser.username;
+                        setActionModalOpen(false);
+                        handleUnbanTargetUser(targetName);
+                      }}
+                      className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                    >
+                      <i className="fa fa-ban text-emerald-400 text-base w-5 text-center" aria-hidden="true" />
+                      <span className="text-sm font-extrabold text-white">Unban</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActionModalOpen(false);
+                        setBanDurationId('1d');
+                        setBanDropdownOpen(false);
+                        setBanReason('');
+                        setBanModalOpen(true);
+                      }}
+                      className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                    >
+                      <i className="fa fa-ban error text-rose-600 text-base w-5 text-center" aria-hidden="true" />
+                      <span className="text-sm font-extrabold text-white">Ban</span>
+                    </button>
+                  )
                 )}
               </div>
             </div>
@@ -7473,9 +7735,27 @@ export default function App() {
                 {effectiveProfileViewMode === 'view' && (() => {
                   const isSystemProfile = usernameToShow.toLowerCase() === 'system';
                   const activeTab = isSystemProfile ? 'info' : publicProfileTab;
+                  const isTargetUserBanned = Boolean(
+                    (isViewingSelf ? userProfile.isBanned : activeModalUser.isBanned) &&
+                    (
+                      (isViewingSelf ? userProfile.bannedUntil : activeModalUser.bannedUntil) === -1 ||
+                      !((isViewingSelf ? userProfile.bannedUntil : activeModalUser.bannedUntil)) ||
+                      ((isViewingSelf ? userProfile.bannedUntil : activeModalUser.bannedUntil)! > nowMs)
+                    )
+                  );
 
                   return (
                     <div className="p-5 pt-2 overflow-y-auto flex-1 flex flex-col">
+                      {/* BANNED BANNER ABOVE INFO AND ABOUT ME */}
+                      {isTargetUserBanned && (
+                        <div className="mb-4 bg-red-600 border border-red-500 text-white px-4 py-3 rounded-2xl flex items-center justify-center gap-2.5 shadow-lg shadow-red-950/40 text-center animate-in fade-in shrink-0">
+                          <i className="fa fa-ban text-white text-base shrink-0" aria-hidden="true" />
+                          <span className="font-black text-xs sm:text-sm tracking-wider uppercase">
+                            THIS USER HAS BEEN BANNED
+                          </span>
+                        </div>
+                      )}
+
                       {/* Tabs: Info (and About me for non-System users) */}
                       <div className="flex items-center gap-2 border-b border-[#22222a] pb-3 mb-4">
                         <button
@@ -9181,6 +9461,9 @@ export default function App() {
             currentUsername={currentUser.username}
           />
         )}
+
+        {/* FULLSCREEN BLACK BANNED SCREEN OVERLAY */}
+        {renderBannedOverlay()}
       </div>
     );
   }
@@ -9775,6 +10058,9 @@ export default function App() {
           )}
         </div>
       )}
+
+      {/* FULLSCREEN BLACK BANNED SCREEN OVERLAY */}
+      {renderBannedOverlay()}
     </div>
   );
 }
