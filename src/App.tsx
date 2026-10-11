@@ -91,6 +91,8 @@ const privateSoundUrl = '/private.mp3';
 const quoteSoundUrl = '/quote.mp3';
 const notifySoundUrl = '/notify.mp3';
 const clearSoundUrl = '/clear.mp3';
+const joinSoundUrl = '/join.mp3';
+const actionSoundUrl = '/action.mp3';
 import BorderModal from './components/BorderModal';
 import { MessagesView } from './MessagesView';
 import DatabaseMonitorModal from './components/DatabaseMonitorModal';
@@ -164,29 +166,31 @@ interface ChatMessage {
   reactions?: Record<string, Record<string, boolean>> | null;
   pinned?: boolean;
   isSystem?: boolean;
-  systemType?: 'join' | 'mute' | 'clear' | null;
+  systemType?: 'join' | 'mute' | 'clear' | 'rename' | null;
   targetUsername?: string | null;
+  oldUsername?: string | null;
 }
 
 const lastSystemMsgTimeMap = new Map<string, number>();
 
 async function sendSystemBotMessage(
-  systemType: 'join' | 'mute' | 'clear',
+  systemType: 'join' | 'mute' | 'clear' | 'rename',
   targetUsername: string,
-  text: string
+  text: string,
+  oldUsername?: string
 ) {
   try {
     const key = `${systemType}:${targetUsername.toLowerCase()}`;
     const now = Date.now();
     const lastTime = lastSystemMsgTimeMap.get(key) || 0;
-    // Prevent duplicate system message within 30 seconds
-    if (now - lastTime < 30000 && systemType !== 'clear') {
+    // Prevent duplicate system message within 15 seconds
+    if (now - lastTime < 15000 && systemType !== 'clear') {
       return;
     }
     lastSystemMsgTimeMap.set(key, now);
 
     const messagesRef = ref(rtdb, 'messages');
-    const newMsgData = {
+    const newMsgData: any = {
       sender: SYSTEM_BOT_USERNAME,
       senderKey: 'system_bot',
       avatarUrl: SYSTEM_BOT_AVATAR,
@@ -197,6 +201,9 @@ async function sendSystemBotMessage(
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       createdAt: serverTimestamp()
     };
+    if (oldUsername) {
+      newMsgData.oldUsername = oldUsername;
+    }
     await push(messagesRef, newMsgData);
   } catch (err) {
     console.warn('Error posting system bot message:', err);
@@ -1018,16 +1025,17 @@ export default function App() {
                 pinned: data.pinned === true,
                 isSystem: Boolean(data.isSystem),
                 systemType: data.systemType || null,
-                targetUsername: data.targetUsername || null
+                targetUsername: data.targetUsername || null,
+                oldUsername: data.oldUsername || null
               };
 
-              // Deduplicate consecutive identical system join messages & auto-purge spam from RTDB
-              if (newMsgItem.isSystem && newMsgItem.systemType === 'join') {
+              // Deduplicate consecutive identical system join / rename messages & auto-purge spam from RTDB
+              if (newMsgItem.isSystem && (newMsgItem.systemType === 'join' || newMsgItem.systemType === 'rename')) {
                 const prevMsg = liveMsgs[liveMsgs.length - 1];
                 if (
                   prevMsg &&
                   prevMsg.isSystem &&
-                  prevMsg.systemType === 'join' &&
+                  prevMsg.systemType === newMsgItem.systemType &&
                   (prevMsg.targetUsername === newMsgItem.targetUsername || prevMsg.text === newMsgItem.text)
                 ) {
                   if (childSnap.key) {
@@ -1057,6 +1065,12 @@ export default function App() {
                   : newlyAddedMsgs;
 
                 if (otherUserMsgs.length > 0) {
+                  const hasJoinMsg = otherUserMsgs.some(
+                    (m) => m.isSystem && m.systemType === 'join'
+                  );
+                  const hasActionMsg = otherUserMsgs.some(
+                    (m) => m.isSystem && (m.systemType === 'mute' || m.systemType === 'rename')
+                  );
                   const isReplyToMe = Boolean(
                     myName &&
                       otherUserMsgs.some(
@@ -1074,7 +1088,11 @@ export default function App() {
                     tagRegex && otherUserMsgs.some((m) => tagRegex.test(m.text || ''))
                   );
 
-                  if (isReplyToMe) {
+                  if (hasJoinMsg) {
+                    playAppSound(joinSoundUrl || '/join.mp3');
+                  } else if (hasActionMsg) {
+                    playAppSound(actionSoundUrl || '/action.mp3');
+                  } else if (isReplyToMe) {
                     playAppSound(quoteSoundUrl || '/quote.mp3');
                   } else if (isTaggedMe) {
                     playAppSound(usernameSoundUrl || '/username.mp3');
@@ -3841,6 +3859,7 @@ export default function App() {
         targetUsername,
         `${targetUsername} has been muted!`
       );
+      playAppSound(actionSoundUrl || '/action.mp3');
     } catch (err) {
       console.warn('Error muting user in RTDB:', err);
     }
@@ -5244,7 +5263,8 @@ export default function App() {
                       msg.systemType ||
                       msg.text?.includes('has joined the room') ||
                       msg.text?.includes('has cleared the room') ||
-                      msg.text?.includes('been muted')
+                      msg.text?.includes('been muted') ||
+                      msg.text?.includes('is now known as')
                     ))
                   );
 
@@ -5252,8 +5272,20 @@ export default function App() {
                     const rawText = msg.text || '';
                     let targetName = msg.targetUsername || '';
                     let actionText = '';
+                    const isRename = msg.systemType === 'rename' || rawText.includes('is now known as');
+                    let renameOld = msg.oldUsername || '';
+                    let renameNew = targetName || '';
 
-                    if (msg.systemType === 'join' || rawText.includes('has joined the room')) {
+                    if (isRename) {
+                      if (!renameOld || !renameNew) {
+                        const match = rawText.match(/(.+?)\s+is now known as\s+(.+)/i);
+                        if (match) {
+                          renameOld = match[1].trim();
+                          renameNew = match[2].trim();
+                        }
+                      }
+                      actionText = 'is now known as';
+                    } else if (msg.systemType === 'join' || rawText.includes('has joined the room')) {
                       if (!targetName) {
                         targetName = rawText.replace(/\s*has joined the room\s*/i, '').trim();
                       }
@@ -5272,24 +5304,25 @@ export default function App() {
                       actionText = rawText;
                     }
 
-                    const handleOpenTargetProfile = () => {
-                      if (!targetName) return;
+                    const handleOpenTargetProfile = (nameToOpen?: string) => {
+                      const finalName = nameToOpen || targetName;
+                      if (!finalName) return;
                       const found = allUsersList.find(
-                        (u) => u.username.toLowerCase() === targetName.toLowerCase()
+                        (u) => u.username.toLowerCase() === finalName.toLowerCase()
                       );
                       if (found) {
                         setSelectedUser(found);
                         recordProfileVisitNotification(found.username);
                       } else {
                         setSelectedUser({
-                          username: targetName,
+                          username: finalName,
                           avatarUrl: null,
                           pfpBorderId: null,
                           pfpBorderThickness: 2,
                           rank: null,
                           isOnline: false
                         });
-                        recordProfileVisitNotification(targetName);
+                        recordProfileVisitNotification(finalName);
                       }
                       setPublicProfileTab('info');
                       setProfileViewMode('view');
@@ -5312,19 +5345,40 @@ export default function App() {
                           />
                         </div>
                         <div className="flex-1 min-w-0 text-xs sm:text-sm leading-tight flex items-center gap-1.5 flex-wrap">
-                          {targetName ? (
-                            <button
-                              type="button"
-                              onClick={handleOpenTargetProfile}
-                              className="font-bold text-white hover:text-cyan-300 transition-colors cursor-pointer text-left focus:outline-none"
-                              title={`View ${targetName}'s profile`}
-                            >
-                              {targetName}
-                            </button>
-                          ) : null}
-                          <span className="text-zinc-400 font-normal select-text">
-                            {actionText}
-                          </span>
+                          {isRename ? (
+                            <>
+                              <span className="font-bold text-white tracking-wide">
+                                {renameOld}
+                              </span>
+                              <span className="text-zinc-400 font-normal select-text">
+                                is now known as
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenTargetProfile(renameNew)}
+                                className="font-bold text-white hover:text-cyan-300 transition-colors cursor-pointer text-left focus:outline-none"
+                                title={`View ${renameNew}'s profile`}
+                              >
+                                {renameNew}
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              {targetName ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenTargetProfile(targetName)}
+                                  className="font-bold text-white hover:text-cyan-300 transition-colors cursor-pointer text-left focus:outline-none"
+                                  title={`View ${targetName}'s profile`}
+                                >
+                                  {targetName}
+                                </button>
+                              ) : null}
+                              <span className="text-zinc-400 font-normal select-text">
+                                {actionText}
+                              </span>
+                            </>
+                          )}
                         </div>
                         <span className="text-[10px] text-zinc-600 shrink-0 select-none hidden sm:inline-block">
                           {msg.timestamp}
@@ -7465,6 +7519,15 @@ export default function App() {
                           setCurrentUser(updated);
                           localStorage.setItem('chat_community_user', JSON.stringify(updated));
                           setActiveEditSubModal(null);
+
+                          // Post action message in chat: System pfp: [old username] is now known as [new username]
+                          await sendSystemBotMessage(
+                            'rename',
+                            newName,
+                            `${oldName} is now known as ${newName}`,
+                            oldName
+                          );
+                          playAppSound(actionSoundUrl || '/action.mp3');
                         } catch (err: any) {
                           setUsernameEditError(err.message || 'Failed to update username.');
                         } finally {
