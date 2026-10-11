@@ -2292,7 +2292,11 @@ export default function App() {
       };
 
       isSessionVerifiedRef.current = true;
-      await set(ref(rtdb, `users/${sanitizedKey}`), newUserRecord);
+      await set(ref(rtdb, `users/${sanitizedKey}`), {
+        ...newUserRecord,
+        lastJoinAnnouncedAt: Date.now()
+      });
+      await sendSystemBotMessage('join', trimmedUser, `${trimmedUser} has joined the room`);
 
       // 8. Save user details in localStorage & state
       const userObj = {
@@ -2436,7 +2440,8 @@ export default function App() {
       isSessionVerifiedRef.current = true;
       const loginRtdbUpdate: Record<string, any> = {
         isOnline: true,
-        lastSeen: serverTimestamp()
+        lastSeen: serverTimestamp(),
+        lastJoinAnnouncedAt: Date.now()
       };
       if (resolvedRankObj && matchedUser.rank !== resolvedRankObj.id) {
         loginRtdbUpdate.rank = resolvedRankObj.id;
@@ -2444,6 +2449,9 @@ export default function App() {
       await update(ref(rtdb, `users/${matchedKey}`), loginRtdbUpdate).catch((e) =>
         console.warn('Online status update notice:', e)
       );
+
+      // Announce in chat that the user joined the room
+      await sendSystemBotMessage('join', matchedUser.username, `${matchedUser.username} has joined the room`);
 
       // 6. Set app state
       setUserProfile(loadedProfile);
@@ -2470,7 +2478,8 @@ export default function App() {
         await onDisconnect(ref(rtdb, `users/${key}/lastSeen`)).cancel();
         await update(ref(rtdb, `users/${key}`), {
           isOnline: false,
-          lastSeen: serverTimestamp()
+          lastSeen: serverTimestamp(),
+          lastJoinAnnouncedAt: null
         });
       } catch (_) {}
     }
@@ -5755,9 +5764,9 @@ export default function App() {
             <TypingIndicatorBanner typingUsernames={typingUsernames} />
 
             {/* CHAT INPUT BAR */}
-            <div className="w-full bg-[#0d1017] border-t border-[#1b2230] px-3 sm:px-4 py-2 sm:py-2.5 mt-auto">
+            <div className="w-full bg-[#141418] border-t border-[#202026] px-3 sm:px-4 py-2 sm:py-2.5 mt-auto">
               {userProfile.mutedUntil && userProfile.mutedUntil > nowMs ? (
-                <div className="bg-[#151922] border border-[#232936] rounded-xl px-4 py-2.5 flex items-center justify-center select-none shadow-sm">
+                <div className="bg-[#181820] border border-[#262630] rounded-xl px-4 py-2.5 flex items-center justify-center select-none shadow-sm">
                   <span className="text-white font-extrabold italic text-sm tracking-wide">
                     You have been muted.
                   </span>
@@ -5769,7 +5778,7 @@ export default function App() {
                 >
                   <div className="relative shrink-0" ref={plusMenuRef}>
                     {showPlusMenu && (
-                      <div className="absolute bottom-full left-0 mb-2.5 bg-[#141822] border border-[#232b3b] rounded-2xl p-1.5 flex flex-col items-center gap-1.5 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-100">
+                      <div className="absolute bottom-full left-0 mb-2.5 bg-[#181820] border border-[#262630] rounded-2xl p-1.5 flex flex-col items-center gap-1.5 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-100">
                         <button
                           type="button"
                           onClick={() => {
@@ -5778,7 +5787,7 @@ export default function App() {
                           }}
                           aria-label="Upload image"
                           title="Upload media"
-                          className="w-10 h-10 rounded-xl bg-[#1d2433] hover:bg-cyan-500/20 text-zinc-200 hover:text-cyan-300 flex items-center justify-center transition-colors cursor-pointer"
+                          className="w-10 h-10 rounded-xl bg-[#22222c] hover:bg-cyan-500/20 text-zinc-200 hover:text-cyan-300 flex items-center justify-center transition-colors cursor-pointer"
                         >
                           <ImageIcon className="w-5 h-5" />
                         </button>
@@ -5790,7 +5799,7 @@ export default function App() {
                           }}
                           aria-label="Create poll"
                           title="Create Poll"
-                          className="w-10 h-10 rounded-xl bg-[#1d2433] hover:bg-emerald-500/20 text-zinc-200 hover:text-emerald-300 flex items-center justify-center transition-colors cursor-pointer"
+                          className="w-10 h-10 rounded-xl bg-[#22222c] hover:bg-emerald-500/20 text-zinc-200 hover:text-emerald-300 flex items-center justify-center transition-colors cursor-pointer"
                         >
                           <BarChart3 className="w-5 h-5" />
                         </button>
@@ -5802,7 +5811,7 @@ export default function App() {
                           }}
                           aria-label="Roll dice & flip coin"
                           title="Roll 1-100 Dice & Coin Flip"
-                          className="w-10 h-10 rounded-xl bg-[#1d2433] hover:bg-purple-500/20 text-zinc-200 hover:text-purple-300 flex items-center justify-center transition-colors cursor-pointer"
+                          className="w-10 h-10 rounded-xl bg-[#22222c] hover:bg-purple-500/20 text-zinc-200 hover:text-purple-300 flex items-center justify-center transition-colors cursor-pointer"
                         >
                           <Dices className="w-5 h-5" />
                         </button>
@@ -5818,7 +5827,7 @@ export default function App() {
                           }}
                           aria-label="Custom rank"
                           title="Custom rank"
-                          className="w-10 h-10 rounded-xl bg-[#1d2433] hover:bg-amber-500/20 text-zinc-200 hover:text-amber-300 flex items-center justify-center transition-colors cursor-pointer"
+                          className="w-10 h-10 rounded-xl bg-[#22222c] hover:bg-amber-500/20 text-zinc-200 hover:text-amber-300 flex items-center justify-center transition-colors cursor-pointer"
                         >
                           <Award className="w-5 h-5" />
                         </button>
@@ -5874,8 +5883,8 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* Input box matching site palette, NO green outline, Send button on right */}
-                  <div className="flex-1 min-w-0 flex items-center bg-[#151922] border border-[#232a38] rounded-xl px-3.5 py-1.5 focus-within:border-[#333d50] transition-colors">
+                  {/* Input box matching site palette (#181820 & #262630), NO green outline, Send button on right */}
+                  <div className="flex-1 min-w-0 flex items-center bg-[#181820] border border-[#262630] rounded-xl px-3.5 py-1.5 focus-within:border-[#3a3a48] transition-colors">
                     <input
                       ref={chatInputRef}
                       type="text"
