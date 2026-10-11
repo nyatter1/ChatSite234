@@ -66,7 +66,18 @@ import {
   SYSTEM_BOT_AVATAR,
   canBanRank,
   canMuteRank,
+  canWarnRank,
+  canChangeRank,
   isStaffRank,
+  canAccessAdminPanel,
+  canAccessDashboard,
+  canAccessManageAction,
+  canAccessConsoleLogs,
+  canAccessStaffLogs,
+  canAccessMembers,
+  canAccessFilters,
+  canActionTarget,
+  canAssignRank,
   FILTER_MUTE_DURATIONS
 } from './ranks';
 import { getPfpBorder, getProfileBorder } from './borders';
@@ -209,9 +220,45 @@ export default function AdminPage({
     );
   }, [activeUser, usersMap, initialUserProfile]);
 
-  const isDevPlus = Boolean(
-    activeRank && (activeRank.priority >= 90 || activeRank.id === 'developer' || activeRank.id === 'main_developer')
+  const isStaffAuthorized = Boolean(
+    activeRank && canAccessAdminPanel(activeRank)
   );
+
+  // Check tab access permissions for current staff rank
+  const hasAccessToTab = useCallback(
+    (tab: 'dashboard' | 'members' | 'manage_action' | 'filters' | 'console_logs') => {
+      if (!activeRank) return false;
+      switch (tab) {
+        case 'dashboard':
+          return canAccessDashboard(activeRank);
+        case 'manage_action':
+          return canAccessManageAction(activeRank);
+        case 'console_logs':
+          return canAccessConsoleLogs(activeRank);
+        case 'members':
+          return canAccessMembers(activeRank);
+        case 'filters':
+          return canAccessFilters(activeRank);
+        default:
+          return false;
+      }
+    },
+    [activeRank]
+  );
+
+  // Automatically switch back to Dashboard if the active tab is not permitted
+  useEffect(() => {
+    if (activeRank && !hasAccessToTab(activeTab)) {
+      setActiveTab('dashboard');
+    }
+  }, [activeRank, activeTab, hasAccessToTab]);
+
+  // Ensure Admin rank (which does not have access to staff logs) defaults to overall logs
+  useEffect(() => {
+    if (!canAccessStaffLogs(activeRank) && logCategoryFilter === 'staff') {
+      setLogCategoryFilter('overall');
+    }
+  }, [activeRank, logCategoryFilter]);
 
   // Live Firebase Realtime Database listeners
   useEffect(() => {
@@ -994,8 +1041,8 @@ export default function AdminPage({
       }
 
       const rank = getUserRank(data.username, data.email, data.rank);
-      if (!rank || (rank.priority < 90 && rank.id !== 'developer' && rank.id !== 'main_developer')) {
-        setLoginError('Access denied: Developer privileges (Dev+) required');
+      if (!rank || !canAccessAdminPanel(rank)) {
+        setLoginError('Access denied: Staff privileges (Moderator or higher) required');
         setIsLoggingIn(false);
         return;
       }
@@ -1015,8 +1062,8 @@ export default function AdminPage({
     }
   };
 
-  // Render Access Denied / Developer Sign-in if not authorized
-  if (!isDevPlus) {
+  // Render Access Denied / Staff Sign-in if not authorized
+  if (!isStaffAuthorized) {
     return (
       <div className="min-h-screen bg-[#0e0f12] text-white flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-md bg-[#16171b] border border-[#262832] rounded-xl p-8 shadow-2xl">
@@ -1026,7 +1073,7 @@ export default function AdminPage({
 
           <h1 className="text-2xl font-bold text-center text-white mb-2">Teenverse Admin Portal</h1>
           <p className="text-zinc-400 text-sm text-center mb-6">
-            Developer authorization (Dev+) is required to access the administrative dashboard.
+            Staff authorization (Moderator or higher) is required to access the administrative dashboard.
           </p>
 
           {loginError && (
@@ -1038,12 +1085,12 @@ export default function AdminPage({
 
           <form onSubmit={handleDevLogin} className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1.5">Developer Username</label>
+              <label className="block text-xs font-medium text-zinc-300 mb-1.5">Staff Username</label>
               <input
                 type="text"
                 value={devLoginUser}
                 onChange={(e) => setDevLoginUser(e.target.value)}
-                placeholder="e.g. org or null"
+                placeholder="Enter staff username"
                 className="w-full px-3.5 py-2.5 bg-[#0e0f12] border border-[#2b2d38] rounded-lg text-white text-sm focus:outline-none focus:border-[#00a8e8] transition-colors"
               />
             </div>
@@ -1069,7 +1116,7 @@ export default function AdminPage({
               ) : (
                 <>
                   <Shield className="w-4 h-4" />
-                  <span>Log In as Developer</span>
+                  <span>Log In as Staff Member</span>
                 </>
               )}
             </button>
@@ -1125,88 +1172,98 @@ export default function AdminPage({
 
         {/* Sidebar Nav Items */}
         <div className="flex-1 py-3 px-2.5 space-y-1 overflow-y-auto">
-          {/* 1. Dashboard */}
-          <button
-            type="button"
-            onClick={() => setActiveTab('dashboard')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
-              activeTab === 'dashboard'
-                ? 'text-[#00a8e8] bg-[#00a8e8]/10'
-                : 'text-zinc-300 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <LayoutDashboard className={`w-4 h-4 shrink-0 ${activeTab === 'dashboard' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
-            <span>Dashboard</span>
-          </button>
+          {/* 1. Dashboard (All staff: Moderator and above) */}
+          {canAccessDashboard(activeRank) && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('dashboard')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
+                activeTab === 'dashboard'
+                  ? 'text-[#00a8e8] bg-[#00a8e8]/10'
+                  : 'text-zinc-300 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <LayoutDashboard className={`w-4 h-4 shrink-0 ${activeTab === 'dashboard' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
+              <span>Dashboard</span>
+            </button>
+          )}
 
-          {/* 2. Members (Working!) */}
-          <button
-            type="button"
-            onClick={() => setActiveTab('members')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
-              activeTab === 'members'
-                ? 'text-[#00a8e8] bg-[#00a8e8]/10'
-                : 'text-zinc-300 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <Users className={`w-4 h-4 shrink-0 ${activeTab === 'members' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
-            <span className="flex-1">Members</span>
-            <span className="text-[11px] text-zinc-500 font-semibold px-1.5 py-0.2 rounded bg-white/5">
-              {allMembersList.length}
-            </span>
-          </button>
-
-          {/* 3. Manage Action (Working!) */}
-          <button
-            type="button"
-            onClick={() => setActiveTab('manage_action')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
-              activeTab === 'manage_action'
-                ? 'text-[#00a8e8] bg-[#00a8e8]/10'
-                : 'text-zinc-300 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <Shield className={`w-4 h-4 shrink-0 ${activeTab === 'manage_action' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
-            <span className="flex-1">Manage action</span>
-            {punishedUsers.length > 0 && (
-              <span className="bg-red-500/80 text-white text-[11px] font-semibold px-1.5 py-0.2 rounded-full">
-                {punishedUsers.length}
+          {/* 2. Members (Main Admin and above) */}
+          {canAccessMembers(activeRank) && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('members')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
+                activeTab === 'members'
+                  ? 'text-[#00a8e8] bg-[#00a8e8]/10'
+                  : 'text-zinc-300 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Users className={`w-4 h-4 shrink-0 ${activeTab === 'members' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
+              <span className="flex-1">Members</span>
+              <span className="text-[11px] text-zinc-500 font-semibold px-1.5 py-0.2 rounded bg-white/5">
+                {allMembersList.length}
               </span>
-            )}
-          </button>
+            </button>
+          )}
 
-          {/* 4. Filters (Working!) */}
-          <button
-            type="button"
-            onClick={() => setActiveTab('filters')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
-              activeTab === 'filters'
-                ? 'text-[#00a8e8] bg-[#00a8e8]/10'
-                : 'text-zinc-300 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <Filter className={`w-4 h-4 shrink-0 ${activeTab === 'filters' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
-            <span className="flex-1">Filters</span>
-            {bannedFiltersList.length > 0 && (
-              <span className="text-[11px] text-cyan-400 font-semibold px-1.5 py-0.2 rounded bg-[#00a8e8]/15">
-                {bannedFiltersList.length}
-              </span>
-            )}
-          </button>
+          {/* 3. Manage Action (Moderators and above) */}
+          {canAccessManageAction(activeRank) && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('manage_action')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
+                activeTab === 'manage_action'
+                  ? 'text-[#00a8e8] bg-[#00a8e8]/10'
+                  : 'text-zinc-300 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Shield className={`w-4 h-4 shrink-0 ${activeTab === 'manage_action' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
+              <span className="flex-1">Manage action</span>
+              {punishedUsers.length > 0 && (
+                <span className="bg-red-500/80 text-white text-[11px] font-semibold px-1.5 py-0.2 rounded-full">
+                  {punishedUsers.length}
+                </span>
+              )}
+            </button>
+          )}
 
-          {/* 5. Console Logs (Working!) */}
-          <button
-            type="button"
-            onClick={() => setActiveTab('console_logs')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
-              activeTab === 'console_logs'
-                ? 'text-[#00a8e8] bg-[#00a8e8]/10'
-                : 'text-zinc-300 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <Terminal className={`w-4 h-4 shrink-0 ${activeTab === 'console_logs' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
-            <span>Console logs</span>
-          </button>
+          {/* 4. Filters (Ranks strictly after Main Admin: Owner, Founder, Devs) */}
+          {canAccessFilters(activeRank) && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('filters')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
+                activeTab === 'filters'
+                  ? 'text-[#00a8e8] bg-[#00a8e8]/10'
+                  : 'text-zinc-300 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Filter className={`w-4 h-4 shrink-0 ${activeTab === 'filters' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
+              <span className="flex-1">Filters</span>
+              {bannedFiltersList.length > 0 && (
+                <span className="text-[11px] text-cyan-400 font-semibold px-1.5 py-0.2 rounded bg-[#00a8e8]/15">
+                  {bannedFiltersList.length}
+                </span>
+              )}
+            </button>
+          )}
+
+          {/* 5. Console Logs (Admin and above) */}
+          {canAccessConsoleLogs(activeRank) && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('console_logs')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer text-left ${
+                activeTab === 'console_logs'
+                  ? 'text-[#00a8e8] bg-[#00a8e8]/10'
+                  : 'text-zinc-300 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Terminal className={`w-4 h-4 shrink-0 ${activeTab === 'console_logs' ? 'text-[#00a8e8]' : 'text-zinc-400'}`} />
+              <span>Console logs</span>
+            </button>
+          )}
 
           {/* ======================================================== */}
           {/* COMING SOON DROPDOWN ACCORDION                           */}
@@ -1832,7 +1889,7 @@ export default function AdminPage({
                       </div>
 
                       <div className="flex items-center gap-2 pt-2 border-t border-[#20222a] justify-end">
-                        {item.isMuted && (
+                        {item.isMuted && canMuteRank(activeRank) && canActionTarget(activeRank, item.rankObj) && (
                           <button
                             type="button"
                             onClick={() => handleAdminUnmute(item.username)}
@@ -1843,7 +1900,7 @@ export default function AdminPage({
                           </button>
                         )}
 
-                        {item.isBanned && (
+                        {item.isBanned && canBanRank(activeRank) && canActionTarget(activeRank, item.rankObj) && (
                           <button
                             type="button"
                             onClick={() => handleAdminUnban(item.username)}
@@ -1852,6 +1909,12 @@ export default function AdminPage({
                             <Shield className="w-3.5 h-3.5" />
                             <span>Unban</span>
                           </button>
+                        )}
+
+                        {!canActionTarget(activeRank, item.rankObj) && (
+                          <span className="text-[11px] text-zinc-500 italic">
+                            Equal or higher rank (Protected)
+                          </span>
                         )}
                       </div>
                     </div>
@@ -2037,16 +2100,18 @@ export default function AdminPage({
                     Overall Logs ({combinedConsoleLogs.length})
                   </button>
 
-                  <button
-                    onClick={() => setLogCategoryFilter('staff')}
-                    className={`px-3.5 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer ${
-                      logCategoryFilter === 'staff'
-                        ? 'bg-[#00a8e8] text-white shadow-sm'
-                        : 'text-zinc-400 hover:text-white hover:bg-white/5'
-                    }`}
-                  >
-                    Staff Logs ({combinedConsoleLogs.filter((l) => l.category === 'staff').length})
-                  </button>
+                  {canAccessStaffLogs(activeRank) && (
+                    <button
+                      onClick={() => setLogCategoryFilter('staff')}
+                      className={`px-3.5 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer ${
+                        logCategoryFilter === 'staff'
+                          ? 'bg-[#00a8e8] text-white shadow-sm'
+                          : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                      }`}
+                    >
+                      Staff Logs ({combinedConsoleLogs.filter((l) => l.category === 'staff').length})
+                    </button>
+                  )}
                 </div>
 
                 <div className="relative">
@@ -2405,7 +2470,7 @@ export default function AdminPage({
                     onChange={(e) => setCardRankSelect(e.target.value)}
                     className="w-full px-2 py-1.5 text-xs bg-[#0e0f12] border border-[#2b2d38] rounded text-white"
                   >
-                    {ASSIGNABLE_RANKS.map((r) => (
+                    {ASSIGNABLE_RANKS.filter((r) => canAssignRank(activeRank, r.priority)).map((r) => (
                       <option key={r.id} value={r.id}>
                         {r.name}
                       </option>
@@ -2437,71 +2502,86 @@ export default function AdminPage({
               )}
 
               {/* Bottom Action Section on Profile Card */}
-              {showCardActionDropdown === 'none' && (
-                <div className="p-3 border-t border-[#23232c] bg-[#0f0f14] flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {/* Mute / Unmute Button */}
-                    {selectedMemberData.isMuted ? (
-                      <button
-                        type="button"
-                        onClick={() => handleAdminUnmute(selectedMemberData.username)}
-                        className="px-2.5 py-1.5 bg-[#00a8e8] hover:bg-[#0092ca] text-white text-xs font-medium rounded transition-colors flex items-center gap-1"
-                      >
-                        <UserCheck className="w-3.5 h-3.5" />
-                        <span>Unmute</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setShowCardActionDropdown('mute')}
-                        className="px-2.5 py-1.5 bg-amber-600/80 hover:bg-amber-600 text-white text-xs font-medium rounded transition-colors flex items-center gap-1"
-                      >
-                        <MicOff className="w-3.5 h-3.5" />
-                        <span>Mute</span>
-                      </button>
-                    )}
+              {showCardActionDropdown === 'none' && (() => {
+                const canActionThisMember = canActionTarget(activeRank, selectedMemberData.rankObj);
+                return (
+                  <div className="p-3 border-t border-[#23232c] bg-[#0f0f14] flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Mute / Unmute Button */}
+                      {canMuteRank(activeRank) && canActionThisMember && (
+                        selectedMemberData.isMuted ? (
+                          <button
+                            type="button"
+                            onClick={() => handleAdminUnmute(selectedMemberData.username)}
+                            className="px-2.5 py-1.5 bg-[#00a8e8] hover:bg-[#0092ca] text-white text-xs font-medium rounded transition-colors flex items-center gap-1 cursor-pointer"
+                          >
+                            <UserCheck className="w-3.5 h-3.5" />
+                            <span>Unmute</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setShowCardActionDropdown('mute')}
+                            className="px-2.5 py-1.5 bg-amber-600/80 hover:bg-amber-600 text-white text-xs font-medium rounded transition-colors flex items-center gap-1 cursor-pointer"
+                          >
+                            <MicOff className="w-3.5 h-3.5" />
+                            <span>Mute</span>
+                          </button>
+                        )
+                      )}
 
-                    {/* Ban / Unban Button */}
-                    {selectedMemberData.isBanned ? (
-                      <button
-                        type="button"
-                        onClick={() => handleAdminUnban(selectedMemberData.username)}
-                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-colors flex items-center gap-1"
-                      >
-                        <Shield className="w-3.5 h-3.5" />
-                        <span>Unban</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setShowCardActionDropdown('ban')}
-                        className="px-2.5 py-1.5 bg-red-600/80 hover:bg-red-600 text-white text-xs font-medium rounded transition-colors flex items-center gap-1"
-                      >
-                        <Ban className="w-3.5 h-3.5" />
-                        <span>Ban</span>
-                      </button>
-                    )}
+                      {/* Ban / Unban Button (Super Admin and above) */}
+                      {canBanRank(activeRank) && canActionThisMember && (
+                        selectedMemberData.isBanned ? (
+                          <button
+                            type="button"
+                            onClick={() => handleAdminUnban(selectedMemberData.username)}
+                            className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition-colors flex items-center gap-1 cursor-pointer"
+                          >
+                            <Shield className="w-3.5 h-3.5" />
+                            <span>Unban</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setShowCardActionDropdown('ban')}
+                            className="px-2.5 py-1.5 bg-red-600/80 hover:bg-red-600 text-white text-xs font-medium rounded transition-colors flex items-center gap-1 cursor-pointer"
+                          >
+                            <Ban className="w-3.5 h-3.5" />
+                            <span>Ban</span>
+                          </button>
+                        )
+                      )}
 
-                    {/* Change Rank Button */}
+                      {/* Change Rank Button */}
+                      {canChangeRank(activeRank) && canActionThisMember && (
+                        <button
+                          type="button"
+                          onClick={() => setShowCardActionDropdown('rank')}
+                          className="px-2.5 py-1.5 bg-[#1f212a] hover:bg-[#282a36] text-zinc-300 hover:text-white border border-white/5 text-xs font-medium rounded transition-colors flex items-center gap-1 cursor-pointer"
+                        >
+                          <Award className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Rank</span>
+                        </button>
+                      )}
+
+                      {!canActionThisMember && (
+                        <span className="text-[11px] text-zinc-500 italic">
+                          Equal or higher rank (Protected)
+                        </span>
+                      )}
+                    </div>
+
                     <button
                       type="button"
-                      onClick={() => setShowCardActionDropdown('rank')}
-                      className="px-2.5 py-1.5 bg-[#1f212a] hover:bg-[#282a36] text-zinc-300 hover:text-white border border-white/5 text-xs font-medium rounded transition-colors flex items-center gap-1"
+                      onClick={() => setSelectedMemberKey(null)}
+                      className="px-3 py-1.5 text-xs text-zinc-400 hover:text-white rounded hover:bg-white/5 transition-colors cursor-pointer"
                     >
-                      <Award className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>Rank</span>
+                      Close
                     </button>
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setSelectedMemberKey(null)}
-                    className="px-3 py-1.5 text-xs text-zinc-400 hover:text-white rounded hover:bg-white/5 transition-colors"
-                  >
-                    Close
-                  </button>
-                </div>
-              )}
+                );
+              })()}
             </div>
           </div>
         )}

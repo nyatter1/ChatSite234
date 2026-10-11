@@ -78,6 +78,11 @@ import {
   isStaffRank,
   canBanRank,
   canMuteRank,
+  canWarnRank,
+  canChangeRank,
+  canAccessAdminPanel,
+  canActionTarget,
+  canAssignRank,
   ASSIGNABLE_RANKS,
   CUSTOM_RANK_ICONS,
   SYSTEM_BOT_USERNAME,
@@ -4118,19 +4123,34 @@ export default function App() {
     [currentUser?.username]
   );
 
-  // Change another user's rank in Realtime Database (Main Developer only)
+  // Change another user's rank in Realtime Database (Staff - ranks below them; Main Dev - all ranks)
   const handleChangeTargetUserRank = async (targetUsername: string, newRankId: string) => {
     if (!currentUser || !targetUsername) return;
     if (targetUsername.toLowerCase() === 'system') return;
     const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
-    if (!myRank || myRank.id !== 'main_developer') return;
+    if (!myRank || !canChangeRank(myRank)) return;
+
+    const targetKey = sanitizeDbKey(targetUsername);
+    const targetSnap = await get(ref(rtdb, `users/${targetKey}`));
+    const targetVal = targetSnap.exists() ? targetSnap.val() : null;
+    const targetRank = getUserRank(targetUsername, targetVal?.email, targetVal?.rank);
+
+    if (!canActionTarget(myRank, targetRank)) {
+      alert('You cannot change the rank of someone with an equal or higher rank.');
+      return;
+    }
+
+    const dbRankVal = !newRankId || newRankId === 'none' ? 'none' : newRankId;
+    const newRankDef = ASSIGNABLE_RANKS.find((r) => r.id === dbRankVal);
+    if (newRankDef && !canAssignRank(myRank, newRankDef.priority)) {
+      alert('You can only assign ranks that are lower than your own rank.');
+      return;
+    }
 
     // Close the dropdown menu modal immediately upon selecting a rank
     setChangeRankModalOpen(false);
     setActionModalOpen(false);
 
-    const targetKey = sanitizeDbKey(targetUsername);
-    const dbRankVal = !newRankId || newRankId === 'none' ? 'none' : newRankId;
     const newRankDisplayName =
       ASSIGNABLE_RANKS.find((r) => r.id === dbRankVal)?.name || 'User';
 
@@ -4500,10 +4520,22 @@ export default function App() {
     [currentUser, userProfile.rank]
   );
 
-  // Warn target user
+  // Warn target user (Super Admin and above)
   const handleWarnTargetUser = async (targetUsername: string) => {
     if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
+    const myRank = getUserRank(currentUser?.username, currentUser?.email, userProfile.rank);
+    if (!myRank || !canWarnRank(myRank)) {
+      alert('Only Super Admin and above can issue warnings.');
+      return;
+    }
     const targetKey = sanitizeDbKey(targetUsername);
+    const targetSnap = await get(ref(rtdb, `users/${targetKey}`));
+    const targetVal = targetSnap.exists() ? targetSnap.val() : null;
+    const targetRank = getUserRank(targetUsername, targetVal?.email, targetVal?.rank);
+    if (!canActionTarget(myRank, targetRank)) {
+      alert('You cannot warn someone with an equal or higher rank.');
+      return;
+    }
     try {
       await push(ref(rtdb, `users/${targetKey}/notifications`), {
         type: 'warn',
@@ -5250,14 +5282,14 @@ export default function App() {
             )}
           </button>
 
-          {/* White Flag icon: only visible for Dev+ (developer, main_developer, or priority >= 90) */}
-          {isCurrentUserDevPlus && (
+          {/* White Flag icon: visible for all staff (Moderator and above) */}
+          {(isCurrentUserStaff || canAccessAdminPanel(currentUserRank)) && (
             <a
               href="/admin"
               target="_blank"
               rel="noopener noreferrer"
               aria-label="Admin Dashboard"
-              title="Admin Dashboard (Dev+)"
+              title="Admin Dashboard (Staff Only)"
               className="bcell_mid text-white hover:text-zinc-300 p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-center"
             >
               <i className="fa fa-flag text-white text-lg" aria-hidden="true" />
@@ -7048,7 +7080,7 @@ export default function App() {
 
               {/* Action Buttons (Change rank, Warn, Mute/Unmute, Ban/Unban) */}
               <div className="mt-3.5 space-y-2">
-                {currentUserRank?.id === 'main_developer' && (
+                {canChangeRank(currentUserRank) && (
                   <button
                     type="button"
                     onClick={() => {
@@ -7062,18 +7094,20 @@ export default function App() {
                   </button>
                 )}
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    const targetName = liveSelectedUser.username;
-                    setActionModalOpen(false);
-                    handleWarnTargetUser(targetName);
-                  }}
-                  className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
-                >
-                  <i className="fa fa-exclamation-triangle warn text-amber-500 text-base w-5 text-center" aria-hidden="true" />
-                  <span className="text-sm font-extrabold text-white">Warn</span>
-                </button>
+                {canWarnRank(currentUserRank) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const targetName = liveSelectedUser.username;
+                      setActionModalOpen(false);
+                      handleWarnTargetUser(targetName);
+                    }}
+                    className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                  >
+                    <i className="fa fa-exclamation-triangle warn text-amber-500 text-base w-5 text-center" aria-hidden="true" />
+                    <span className="text-sm font-extrabold text-white">Warn</span>
+                  </button>
+                )}
 
                 {canMuteRank(currentUserRank) && (
                   liveSelectedUser.mutedUntil && liveSelectedUser.mutedUntil > nowMs ? (
@@ -7433,7 +7467,7 @@ export default function App() {
           );
           const currentRankValue = targetCurrentRank?.id || 'none';
           const allowedRanks = ASSIGNABLE_RANKS.filter(
-            (r) => r.priority < (currentUserRank?.priority ?? 0)
+            (r) => currentUserRank?.id === 'main_developer' || r.priority < (currentUserRank?.priority ?? 0)
           );
 
           return (

@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
@@ -177,11 +178,15 @@ async function startServer() {
     }
   });
 
-  if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+  const distPath = path.resolve(__dirname, 'dist');
+  const hasDist = fs.existsSync(distPath);
+
+  if (process.env.NODE_ENV === 'production' || hasDist) {
+    app.use(express.static(distPath));
     app.use(express.static(path.resolve(__dirname, 'public')));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist/index.html'));
+    app.get('*', (req, res, next) => {
+      if (req.originalUrl.startsWith('/api')) return next();
+      res.sendFile(path.resolve(distPath, 'index.html'));
     });
   } else {
     const vite = await createViteServer({
@@ -189,6 +194,17 @@ async function startServer() {
       appType: 'spa',
     });
     app.use(vite.middlewares);
+    app.get('*', async (req, res, next) => {
+      if (req.originalUrl.startsWith('/api')) return next();
+      try {
+        const indexPath = path.resolve(__dirname, 'index.html');
+        let html = fs.readFileSync(indexPath, 'utf-8');
+        html = await vite.transformIndexHtml(req.originalUrl, html);
+        res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
+      } catch (e) {
+        next(e);
+      }
+    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {

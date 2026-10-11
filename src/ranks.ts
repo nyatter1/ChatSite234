@@ -306,6 +306,80 @@ export function canMuteRank(rank: RankDefinition | null | undefined): boolean {
   return rank.id === 'main_developer' || rank.priority >= 40;
 }
 
+export function canWarnRank(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 60;
+}
+
+export function canChangeRank(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 40;
+}
+
+export function canAccessAdminPanel(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 40;
+}
+
+export function canAccessDashboard(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 40;
+}
+
+export function canAccessManageAction(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 40;
+}
+
+export function canAccessConsoleLogs(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 50;
+}
+
+export function canAccessStaffLogs(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 60;
+}
+
+export function canAccessMembers(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 65;
+}
+
+export function canAccessFilters(rank: RankDefinition | null | undefined): boolean {
+  if (!rank) return false;
+  return rank.id === 'main_developer' || rank.priority >= 70;
+}
+
+/**
+ * Returns true if the staff member can take moderation action on the target user.
+ * Staff cannot action other users who have equal or higher rank (unless main_developer).
+ */
+export function canActionTarget(
+  staffRank: RankDefinition | null | undefined,
+  targetRank: RankDefinition | null | undefined
+): boolean {
+  if (!staffRank) return false;
+  if (staffRank.id === 'main_developer') return true;
+  if (staffRank.priority < 40) return false;
+  const targetPri = targetRank?.priority ?? 0;
+  return staffRank.priority > targetPri;
+}
+
+/**
+ * Returns true if the staff member is permitted to assign a given rank to someone.
+ * Can only change ranks to ranks below them (cannot rank to own rank or above).
+ */
+export function canAssignRank(
+  staffRank: RankDefinition | null | undefined,
+  rankToAssignPriority: number
+): boolean {
+  if (!staffRank) return false;
+  if (staffRank.id === 'main_developer') return true;
+  if (staffRank.priority < 40) return false;
+  return staffRank.priority > rankToAssignPriority;
+}
+
 export const FILTER_MUTE_DURATIONS = [
   { id: '15m', label: '15 minutes', ms: 15 * 60 * 1000 },
   { id: '30m', label: '30 minutes', ms: 30 * 60 * 1000 },
