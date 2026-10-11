@@ -46,8 +46,25 @@ import {
   Maximize2,
   Minimize2,
   Minus,
-  Award
+  Award,
+  BarChart3,
+  Sticker as StickerIcon,
+  SmilePlus,
+  Pin,
+  Dices
 } from 'lucide-react';
+import {
+  CreatePollModal,
+  ChatPollCard,
+  StickerPickerPopover,
+  MessageReactionBar,
+  PinnedMessagesModal,
+  TypingIndicatorBanner,
+  ChatPollData,
+  CustomStickerItem,
+  MAX_CUSTOM_STICKERS,
+  QUICK_REACTION_EMOJIS
+} from './components/ChatExtras';
 import {
   PROFILE_BORDERS,
   PFP_BORDERS,
@@ -140,6 +157,11 @@ interface ChatMessage {
   mediaUrl?: string | null;
   mediaType?: 'image' | 'audio' | 'video' | null;
   mediaName?: string | null;
+  poll?: ChatPollData | null;
+  stickerUrl?: string | null;
+  stickerName?: string | null;
+  reactions?: Record<string, Record<string, boolean>> | null;
+  pinned?: boolean;
 }
 
 interface AppNotification {
@@ -497,6 +519,7 @@ interface UserProfileData {
   msgFollowing?: Record<string, boolean>;
   msgFavorites?: Record<string, boolean>;
   isOnline?: boolean;
+  typingAt?: number | null;
   lastSeen?: any;
   updatedAt?: any;
 }
@@ -721,6 +744,16 @@ export default function App() {
   const [customRankModalOpen, setCustomRankModalOpen] = useState(false);
   const [customRankIconIndex, setCustomRankIconIndex] = useState(0);
   const [customRankNameInput, setCustomRankNameInput] = useState('');
+  const [createPollModalOpen, setCreatePollModalOpen] = useState(false);
+  const [showStickerPicker, setShowStickerPicker] = useState(false);
+  const stickerPickerRef = useRef<HTMLDivElement>(null);
+  const [customStickers, setCustomStickers] = useState<CustomStickerItem[]>([]);
+  const [isUploadingSticker, setIsUploadingSticker] = useState(false);
+  const [pinnedModalOpen, setPinnedModalOpen] = useState(false);
+  const [activeReactionMsgId, setActiveReactionMsgId] = useState<string | null>(null);
+  const [typingClockMs, setTypingClockMs] = useState<number>(() => Date.now());
+  const lastTypingBroadcastRef = useRef<number>(0);
+  const typingClearTimeoutRef = useRef<any>(null);
   const [isListeningVoice, setIsListeningVoice] = useState(false);
   const recognitionRef = useRef<any>(null);
 
@@ -899,7 +932,15 @@ export default function App() {
             const liveMsgs: ChatMessage[] = [];
             snapshot.forEach((childSnap) => {
               const data = childSnap.val();
-              if (!data || (typeof data.text !== 'string' && typeof data.mediaUrl !== 'string')) return;
+              if (
+                !data ||
+                (typeof data.text !== 'string' &&
+                  typeof data.mediaUrl !== 'string' &&
+                  typeof data.stickerUrl !== 'string' &&
+                  !data.poll)
+              ) {
+                return;
+              }
               let ts = 'Just now';
               const createdNum = typeof data.createdAt === 'number' ? data.createdAt : undefined;
               if (createdNum) {
@@ -930,7 +971,12 @@ export default function App() {
                 replyTo: data.replyTo || null,
                 mediaUrl: cleanMediaUrl,
                 mediaType: resolvedMediaType,
-                mediaName: data.mediaName || null
+                mediaName: data.mediaName || null,
+                poll: data.poll && typeof data.poll === 'object' ? data.poll : null,
+                stickerUrl: sanitizeMediaUrl(data.stickerUrl) || (typeof data.stickerUrl === 'string' && data.stickerUrl.startsWith('data:image/') ? data.stickerUrl : null),
+                stickerName: data.stickerName || null,
+                reactions: data.reactions && typeof data.reactions === 'object' ? data.reactions : null,
+                pinned: data.pinned === true
               });
             });
 
@@ -1106,6 +1152,7 @@ export default function App() {
                 msgFollowing: val.msgFollowing && typeof val.msgFollowing === 'object' ? val.msgFollowing : undefined,
                 msgFavorites: val.msgFavorites && typeof val.msgFavorites === 'object' ? val.msgFavorites : undefined,
                 isOnline: val.isOnline === true,
+                typingAt: typeof val.typingAt === 'number' ? val.typingAt : null,
                 lastSeen: val.lastSeen || null,
                 updatedAt: val.updatedAt || null
               });
@@ -1123,6 +1170,49 @@ export default function App() {
     } catch (err) {
       console.warn('Realtime Database users listener initialization notice:', err);
     }
+  }, []);
+
+  // Real-time listener for custom uploaded Discord-style stickers (stored under users/__system_messenger__/stickers)
+  useEffect(() => {
+    try {
+      const stickersRef = query(
+        ref(rtdb, 'users/__system_messenger__/stickers'),
+        limitToLast(MAX_CUSTOM_STICKERS)
+      );
+      const unsubscribe = onValue(
+        stickersRef,
+        (snapshot) => {
+          if (snapshot.exists()) {
+            const items: CustomStickerItem[] = [];
+            snapshot.forEach((childSnap) => {
+              const val = childSnap.val();
+              if (!val || typeof val !== 'object' || typeof val.url !== 'string') return;
+              items.push({
+                id: childSnap.key || String(Date.now()),
+                name: val.name || 'Sticker',
+                url: val.url,
+                uploadedBy: val.uploadedBy || 'User',
+                createdAt: typeof val.createdAt === 'number' ? val.createdAt : Date.now()
+              });
+            });
+            items.sort((a, b) => b.createdAt - a.createdAt);
+            setCustomStickers(items.slice(0, MAX_CUSTOM_STICKERS));
+          } else {
+            setCustomStickers([]);
+          }
+        },
+        () => {}
+      );
+      return () => unsubscribe();
+    } catch (_) {}
+  }, []);
+
+  // Periodic clock tick so real-time typing indicators cleanly expire after 4.5s of inactivity
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTypingClockMs(Date.now());
+    }, 1500);
+    return () => clearInterval(timer);
   }, []);
 
   // Real-time listener for current user's notifications in Firebase Realtime Database
@@ -1970,6 +2060,9 @@ export default function App() {
       if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
         setShowPlusMenu(false);
       }
+      if (stickerPickerRef.current && !stickerPickerRef.current.contains(e.target as Node)) {
+        setShowStickerPicker(false);
+      }
       if (
         playerPopoverRef.current &&
         !playerPopoverRef.current.contains(e.target as Node) &&
@@ -1980,6 +2073,9 @@ export default function App() {
       const targetEl = e.target as HTMLElement | null;
       if (targetEl && !targetEl.closest('[data-msg-menu]')) {
         setActiveMsgMenuId(null);
+      }
+      if (targetEl && !targetEl.closest('[data-reaction-menu]')) {
+        setActiveReactionMsgId(null);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
@@ -2446,6 +2542,247 @@ export default function App() {
     }
   };
 
+  // Broadcast typing state in main chat (throttled to once every 2 seconds, auto-cleared after 3.5s)
+  const broadcastTypingInChat = useCallback(
+    (textVal: string) => {
+      if (!currentUser?.username) return;
+      const myKey = sanitizeDbKey(currentUser.username);
+      if (!textVal.trim()) {
+        if (typingClearTimeoutRef.current) {
+          clearTimeout(typingClearTimeoutRef.current);
+          typingClearTimeoutRef.current = null;
+        }
+        lastTypingBroadcastRef.current = 0;
+        update(ref(rtdb, `users/${myKey}`), { typingAt: null }).catch(() => {});
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastTypingBroadcastRef.current >= 2000) {
+        lastTypingBroadcastRef.current = now;
+        update(ref(rtdb, `users/${myKey}`), { typingAt: now }).catch(() => {});
+      }
+
+      if (typingClearTimeoutRef.current) {
+        clearTimeout(typingClearTimeoutRef.current);
+      }
+      typingClearTimeoutRef.current = setTimeout(() => {
+        lastTypingBroadcastRef.current = 0;
+        update(ref(rtdb, `users/${myKey}`), { typingAt: null }).catch(() => {});
+      }, 3500);
+    },
+    [currentUser?.username]
+  );
+
+  // Create and post a live interactive Poll in chat
+  const handleCreatePoll = async (question: string, options: string[], allowMultiple: boolean) => {
+    if (!currentUser?.username) return;
+    if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
+
+    const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
+    const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    const pollData: ChatPollData = {
+      question,
+      allowMultiple,
+      createdBy: currentUser.username,
+      options: options.map((optText, idx) => ({
+        id: `opt-${idx}-${Date.now()}`,
+        text: optText,
+        votes: {}
+      }))
+    };
+
+    const newMsgData = {
+      sender: currentUser.username,
+      senderKey: sanitizeDbKey(currentUser.username),
+      text: '',
+      avatarUrl: cleanAvatar,
+      pfpBorderId: userProfile.pfpBorderId || 'pfp-default',
+      pfpBorderThickness: userProfile.pfpBorderThickness || 2,
+      rank: activeSenderRank?.id || null,
+      poll: pollData,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      createdAt: serverTimestamp()
+    };
+
+    try {
+      await push(ref(rtdb, 'messages'), newMsgData);
+    } catch (err) {
+      console.warn('Error creating poll in RTDB:', err);
+    }
+  };
+
+  // Toggle vote on a live chat poll option
+  const handleVotePoll = async (msgId: string, optionId: string) => {
+    if (!currentUser?.username) return;
+    const myKey = sanitizeDbKey(currentUser.username);
+    const targetMsg = messages.find((m) => m.id === msgId);
+    if (!targetMsg?.poll) return;
+
+    const poll = targetMsg.poll;
+    const updatedOptions = (poll.options || []).map((opt) => {
+      const currentVotes = { ...(opt.votes || {}) };
+      if (opt.id === optionId) {
+        if (currentVotes[myKey]) {
+          delete currentVotes[myKey];
+        } else {
+          currentVotes[myKey] = true;
+        }
+      } else if (!poll.allowMultiple) {
+        delete currentVotes[myKey];
+      }
+      return {
+        ...opt,
+        votes: currentVotes
+      };
+    });
+
+    try {
+      await update(ref(rtdb, `messages/${msgId}/poll`), {
+        options: updatedOptions
+      });
+    } catch (err) {
+      console.warn('Error voting on poll:', err);
+    }
+  };
+
+  // Send a Discord-style Sticker in chat
+  const handleSendSticker = async (sticker: CustomStickerItem) => {
+    if (!currentUser?.username) return;
+    if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
+
+    const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
+    const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+
+    const newMsgData = {
+      sender: currentUser.username,
+      senderKey: sanitizeDbKey(currentUser.username),
+      text: '',
+      avatarUrl: cleanAvatar,
+      pfpBorderId: userProfile.pfpBorderId || 'pfp-default',
+      pfpBorderThickness: userProfile.pfpBorderThickness || 2,
+      rank: activeSenderRank?.id || null,
+      stickerUrl: sticker.url,
+      stickerName: sticker.name,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      createdAt: serverTimestamp()
+    };
+
+    try {
+      await push(ref(rtdb, 'messages'), newMsgData);
+    } catch (err) {
+      console.warn('Error sending sticker in RTDB:', err);
+    }
+  };
+
+  // Upload a custom sticker (Developer+ only, up to MAX_CUSTOM_STICKERS)
+  const handleUploadCustomSticker = async (file: File, stickerName: string) => {
+    if (!currentUser?.username || customStickers.length >= MAX_CUSTOM_STICKERS) return;
+    const activeRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    if ((activeRank?.priority ?? 0) < 80) return;
+    setIsUploadingSticker(true);
+    try {
+      let uploadFile = file;
+      const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+      if (!isGif && file.type.startsWith('image/')) {
+        try {
+          const comp = await compressAvatar(file);
+          uploadFile = comp.file;
+        } catch (_) {}
+      }
+
+      let finalUrl = '';
+      try {
+        const res = await uploadToCloudinary(uploadFile, 'image', 'stickers');
+        finalUrl = res.secure_url || res.url;
+      } catch (_) {
+        finalUrl = await fileToDataUrl(uploadFile);
+      }
+
+      if (finalUrl) {
+        await push(ref(rtdb, 'users/__system_messenger__/stickers'), {
+          name: stickerName.slice(0, 22),
+          url: finalUrl,
+          uploadedBy: currentUser.username,
+          createdAt: Date.now()
+        });
+      }
+    } catch (err) {
+      console.warn('Error uploading custom sticker:', err);
+    } finally {
+      setIsUploadingSticker(false);
+    }
+  };
+
+  // Delete a custom uploaded sticker (Developer+ only)
+  const handleDeleteCustomSticker = async (stickerId: string) => {
+    if (!currentUser?.username) return;
+    const activeRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    if ((activeRank?.priority ?? 0) < 80) return;
+    try {
+      await remove(ref(rtdb, `users/__system_messenger__/stickers/${stickerId}`));
+    } catch (err) {
+      console.warn('Error deleting custom sticker:', err);
+    }
+  };
+
+  // Toggle an emoji reaction on a chat message
+  const handleToggleMessageReaction = async (msgId: string, emoji: string) => {
+    if (!currentUser?.username) return;
+    const myKey = sanitizeDbKey(currentUser.username);
+    const targetMsg = messages.find((m) => m.id === msgId);
+    const alreadyReacted = Boolean(targetMsg?.reactions?.[emoji]?.[myKey]);
+
+    try {
+      const reactRef = ref(rtdb, `messages/${msgId}/reactions/${emoji}/${myKey}`);
+      if (alreadyReacted) {
+        await remove(reactRef);
+      } else {
+        await set(reactRef, true);
+      }
+    } catch (err) {
+      console.warn('Error toggling message reaction:', err);
+    }
+  };
+
+  // Toggle Pin / Unpin on a chat message (Developer+ only)
+  const handleTogglePinMessage = async (msgId: string, currentPinned?: boolean) => {
+    if (!currentUser?.username) return;
+    const activeRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    if ((activeRank?.priority ?? 0) < 80) return;
+    try {
+      await update(ref(rtdb, `messages/${msgId}`), {
+        pinned: !currentPinned
+      });
+    } catch (err) {
+      console.warn('Error toggling pin on message:', err);
+    }
+  };
+
+  // Bonus Feature: Quick Dice Roll / Coin Flip in chat
+  const handleSendDiceRoll = async () => {
+    if (!currentUser?.username) return;
+    if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
+    const roll = Math.floor(Math.random() * 100) + 1;
+    const coin = Math.random() < 0.5 ? 'Heads 🪙' : 'Tails 🪙';
+    const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
+    const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+
+    try {
+      await push(ref(rtdb, 'messages'), {
+        sender: currentUser.username,
+        senderKey: sanitizeDbKey(currentUser.username),
+        text: `🎲 Rolled a ${roll}/100 • Coin Flip: ${coin}`,
+        avatarUrl: cleanAvatar,
+        pfpBorderId: userProfile.pfpBorderId || 'pfp-default',
+        pfpBorderThickness: userProfile.pfpBorderThickness || 2,
+        rank: activeSenderRank?.id || null,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt: serverTimestamp()
+      });
+    } catch (_) {}
+  };
+
   // Send message in chat (Saved to Realtime Database for live real-time synchronization)
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -2459,6 +2796,7 @@ export default function App() {
     const mediaNameToSend = mediaUrlToSend ? chatMediaName : null;
 
     setInputText('');
+    broadcastTypingInChat('');
     setReplyingTo(null);
     setChatMediaUrl(null);
     setChatMediaType(null);
@@ -3842,6 +4180,15 @@ export default function App() {
     const isOwnerOrAbove = (currentUserRank?.priority ?? 0) >= 90;
     const hasUnreadNotifications = notifications.some((n) => !n.read);
     const hasUnreadPms = pmThreads.some((t) => t.unread);
+    const pinnedMessagesList = messages.filter((m) => m.pinned);
+    const typingUsernames = onlineUsersList
+      .filter(
+        (u) =>
+          u.username.toLowerCase() !== currentUser.username.toLowerCase() &&
+          typeof u.typingAt === 'number' &&
+          typingClockMs - u.typingAt < 4500
+      )
+      .map((u) => u.username);
 
     return (
       <div className="h-[100dvh] w-screen bg-[#111114] text-white flex flex-col font-sans overflow-hidden select-none relative">
@@ -4065,6 +4412,22 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Pinned Messages Button */}
+          <button
+            type="button"
+            onClick={() => setPinnedModalOpen(true)}
+            aria-label="Pinned messages"
+            title="Pinned Messages"
+            className="bcell_mid relative text-white hover:text-amber-300 p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-center"
+          >
+            <Pin className="w-5 h-5" />
+            {pinnedMessagesList.length > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 bg-amber-400 text-black font-black text-[10px] rounded-full flex items-center justify-center pointer-events-none">
+                {pinnedMessagesList.length}
+              </span>
+            )}
+          </button>
 
           {/* Flag icon: only visible if current user is Staff */}
           {isCurrentUserStaff && (
@@ -4879,7 +5242,52 @@ export default function App() {
                           </div>
 
                           <div className="flex items-center gap-1.5 text-zinc-500 text-xs shrink-0">
+                            {msg.pinned && (
+                              <span
+                                title="Pinned message"
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-400/15 border border-amber-400/30 text-amber-300 text-[10px] font-extrabold"
+                              >
+                                <Pin className="w-2.5 h-2.5" />
+                                <span>Pinned</span>
+                              </span>
+                            )}
                             <span>{msg.timestamp}</span>
+
+                            {/* Quick Emoji Reaction Picker Button */}
+                            <div className="relative" data-reaction-menu>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveReactionMsgId(
+                                    activeReactionMsgId === msg.id ? null : msg.id
+                                  );
+                                }}
+                                aria-label="Add reaction"
+                                title="Add reaction"
+                                className="p-1 rounded-md text-zinc-500 hover:text-amber-300 hover:bg-white/10 transition-colors cursor-pointer flex items-center justify-center"
+                              >
+                                <SmilePlus className="w-4 h-4" />
+                              </button>
+
+                              {activeReactionMsgId === msg.id && (
+                                <div className="absolute right-0 top-full mt-1 bg-[#1b1b24] border border-[#2c2c3a] rounded-2xl px-2 py-1.5 flex items-center gap-1 shadow-2xl z-40 animate-in fade-in zoom-in-95 duration-100">
+                                  {QUICK_REACTION_EMOJIS.map((emoji) => (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      onClick={() => {
+                                        setActiveReactionMsgId(null);
+                                        handleToggleMessageReaction(msg.id, emoji);
+                                      }}
+                                      className="w-7 h-7 rounded-lg hover:bg-white/10 flex items-center justify-center text-base transition-transform hover:scale-125 cursor-pointer"
+                                    >
+                                      {emoji}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
 
                             {/* "..." options button next to the time on the right */}
                             <div className="relative" data-msg-menu>
@@ -4905,7 +5313,13 @@ export default function App() {
                                       setReplyingTo({
                                         id: msg.id,
                                         sender: displaySenderName,
-                                        text: msg.text
+                                        text:
+                                          msg.text ||
+                                          (msg.poll
+                                            ? `Poll: ${msg.poll.question}`
+                                            : msg.stickerName
+                                            ? `Sticker: ${msg.stickerName}`
+                                            : 'Attachment')
                                       });
                                       chatInputRef.current?.focus();
                                     }}
@@ -4921,6 +5335,27 @@ export default function App() {
                                       </div>
                                     </div>
                                   </button>
+
+                                  {isDevOrAbove && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setActiveMsgMenuId(null);
+                                        handleTogglePinMessage(msg.id, msg.pinned);
+                                      }}
+                                      className="w-full px-4 py-3 flex items-center gap-3.5 hover:bg-white/[0.06] transition-colors cursor-pointer text-left border-b border-[#262630] last:border-b-0"
+                                    >
+                                      <Pin className="w-5 h-5 text-amber-400 shrink-0" />
+                                      <div>
+                                        <div className="text-sm font-black text-white leading-tight">
+                                          {msg.pinned ? 'Unpin' : 'Pin Message'}
+                                        </div>
+                                        <div className="text-xs text-zinc-400 font-normal mt-0.5">
+                                          {msg.pinned ? 'Remove from pinned' : 'Pin to top drawer'}
+                                        </div>
+                                      </div>
+                                    </button>
+                                  )}
 
                                   {(isSenderMe || isOwnerOrAbove) && (
                                     <button
@@ -4962,6 +5397,27 @@ export default function App() {
                           </p>
                         )}
 
+                        {/* Discord-style Sticker Display */}
+                        {msg.stickerUrl && (
+                          <div className="mt-1.5 inline-block">
+                            <img
+                              src={msg.stickerUrl}
+                              alt={msg.stickerName || 'Sticker'}
+                              title={msg.stickerName || 'Sticker'}
+                              className="w-32 h-32 sm:w-36 sm:h-36 object-contain select-none hover:scale-105 transition-transform drop-shadow-md"
+                            />
+                          </div>
+                        )}
+
+                        {/* Interactive Live Poll Display */}
+                        {msg.poll && (
+                          <ChatPollCard
+                            poll={msg.poll}
+                            myUserKey={sanitizeDbKey(currentUser.username)}
+                            onVote={(optId) => handleVotePoll(msg.id, optId)}
+                          />
+                        )}
+
                         {/* Uploaded Chat Media (Image, MP3/Audio, or Video) */}
                         {msg.mediaUrl && (
                           <div className="mt-2">
@@ -4995,6 +5451,13 @@ export default function App() {
                             )}
                           </div>
                         )}
+
+                        {/* Live Emoji Reaction Pills */}
+                        <MessageReactionBar
+                          reactions={msg.reactions}
+                          myUserKey={sanitizeDbKey(currentUser.username)}
+                          onToggleReaction={(emoji) => handleToggleMessageReaction(msg.id, emoji)}
+                        />
                       </div>
                     </div>
                   );
@@ -5110,6 +5573,9 @@ export default function App() {
               onChange={handleChatMediaUpload}
             />
 
+            {/* REAL-TIME TYPING INDICATOR BANNER */}
+            <TypingIndicatorBanner typingUsernames={typingUsernames} />
+
             {/* CHAT INPUT BAR */}
             <div className="px-3 sm:px-4 py-2 bg-[#111114]">
               {userProfile.mutedUntil && userProfile.mutedUntil > nowMs ? (
@@ -5133,10 +5599,34 @@ export default function App() {
                             chatMediaInputRef.current?.click();
                           }}
                           aria-label="Upload image"
-                          title="Upload image"
+                          title="Upload media"
                           className="w-10 h-10 rounded-xl bg-[#23232f] hover:bg-cyan-500/20 text-zinc-200 hover:text-cyan-300 flex items-center justify-center transition-colors cursor-pointer"
                         >
                           <ImageIcon className="w-5 h-5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowPlusMenu(false);
+                            setCreatePollModalOpen(true);
+                          }}
+                          aria-label="Create poll"
+                          title="Create Poll"
+                          className="w-10 h-10 rounded-xl bg-[#23232f] hover:bg-emerald-500/20 text-zinc-200 hover:text-emerald-300 flex items-center justify-center transition-colors cursor-pointer"
+                        >
+                          <BarChart3 className="w-5 h-5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowPlusMenu(false);
+                            handleSendDiceRoll();
+                          }}
+                          aria-label="Roll dice & flip coin"
+                          title="Roll 1-100 Dice & Coin Flip"
+                          className="w-10 h-10 rounded-xl bg-[#23232f] hover:bg-purple-500/20 text-zinc-200 hover:text-purple-300 flex items-center justify-center transition-colors cursor-pointer"
+                        >
+                          <Dices className="w-5 h-5" />
                         </button>
                         <button
                           type="button"
@@ -5180,10 +5670,43 @@ export default function App() {
                     ref={chatInputRef}
                     type="text"
                     value={inputText}
-                    onChange={(e) => setInputText(e.target.value)}
+                    onChange={(e) => {
+                      setInputText(e.target.value);
+                      broadcastTypingInChat(e.target.value);
+                    }}
                     placeholder={replyingTo ? `Reply to @${replyingTo.sender}...` : 'Type here...'}
                     className="flex-1 bg-[#141419] border border-[#262630] rounded-xl px-3.5 py-2 text-white text-sm sm:text-base placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
                   />
+
+                  {/* Chat Stickers Picker Button */}
+                  <div className="relative shrink-0" ref={stickerPickerRef}>
+                    {showStickerPicker && (
+                      <div className="absolute bottom-full right-0 mb-2.5 z-50">
+                        <StickerPickerPopover
+                          customStickers={customStickers}
+                          isDevOrAbove={isDevOrAbove}
+                          isUploadingSticker={isUploadingSticker}
+                          onSelectSticker={handleSendSticker}
+                          onUploadCustomSticker={handleUploadCustomSticker}
+                          onDeleteCustomSticker={handleDeleteCustomSticker}
+                          onClose={() => setShowStickerPicker(false)}
+                        />
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowStickerPicker((prev) => !prev)}
+                      aria-label="Chat Stickers"
+                      title="Chat Stickers"
+                      className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+                        showStickerPicker
+                          ? 'text-cyan-300 bg-white/10'
+                          : 'text-zinc-400 hover:text-cyan-300'
+                      }`}
+                    >
+                      <StickerIcon className="w-5 h-5" />
+                    </button>
+                  </div>
 
                   <button
                     type="button"
@@ -7928,6 +8451,22 @@ export default function App() {
             </div>
           );
         })()}
+
+        {/* CREATE POLL MODAL */}
+        <CreatePollModal
+          isOpen={createPollModalOpen}
+          onClose={() => setCreatePollModalOpen(false)}
+          onCreatePoll={handleCreatePoll}
+        />
+
+        {/* PINNED MESSAGES MODAL */}
+        <PinnedMessagesModal
+          isOpen={pinnedModalOpen}
+          onClose={() => setPinnedModalOpen(false)}
+          pinnedMessages={pinnedMessagesList}
+          canUnpin={isDevOrAbove}
+          onUnpin={(msgId) => handleTogglePinMessage(msgId, true)}
+        />
 
         {/* RED FLAG DATABASE MONITOR & ADMIN CONSOLE MODAL (ONLY FOR NULL / MAIN DEV) */}
         {isMainDeveloper && (
