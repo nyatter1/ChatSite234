@@ -12,9 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const BAZAARLINK_API_URL = 'https://api.bazaarlink.ai/v1/chat/completions';
-const BAZAARLINK_API_KEY =
-  process.env.BAZAARLINK_API_KEY ||
-  'sk-bl-Lj2VRPx5ynD0-9AoM4uARPUBo4BDRvSAFPXJoaoxA7BOAQc9';
+const BAZAARLINK_API_KEY = process.env.BAZAARLINK_API_KEY || '';
 
 async function startServer() {
   const app = express();
@@ -30,49 +28,7 @@ async function startServer() {
 
       const systemPrompt = `You are ${botName}, an official, intelligent automated AI assistant. Answer any question, math problem, or topic accurately, directly, and formally in 1 to 2 concise sentences. Never use roleplay, actions in asterisks (*...*), slang, or emotes. Do not prefix your message with "${senderName}" or "@${senderName}" because the system automatically prepends their username tag.`;
 
-      const messages = [
-        {
-          role: 'system',
-          content: systemPrompt
-        },
-        {
-          role: 'user',
-          content: userPrompt
-        }
-      ];
-
-      const modelsToTry = [
-        'deepseek/deepseek-v4-flash-0731free:free',
-        'deepseek-v4-flash-0731free',
-        'qwen/qwen3.7-flash:free',
-        'auto:free'
-      ];
-
-      for (const model of modelsToTry) {
-        try {
-          const response = await fetch(BAZAARLINK_API_URL, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${BAZAARLINK_API_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              model,
-              messages
-            })
-          });
-
-          const data = (await response.json()) as any;
-          const reply = data?.choices?.[0]?.message?.content?.trim();
-          if (response.ok && reply) {
-            return res.json({ success: true, reply, model });
-          }
-        } catch (err) {
-          console.warn(`BazaarLink model ${model} attempt notice:`, err);
-        }
-      }
-
-      // Fallback to server-side Gemini if BazaarLink free capacity is temporarily full
+      // Primary AI response: server-side Gemini API (Google AI Studio)
       if (process.env.GEMINI_API_KEY) {
         try {
           const ai = new GoogleGenAI({
@@ -84,18 +40,63 @@ async function startServer() {
             }
           });
           const geminiRes = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
+            model: 'gemini-2.5-flash',
             contents: userPrompt,
             config: {
               systemInstruction: systemPrompt
             }
           });
-          const fallbackReply = geminiRes.text?.trim();
-          if (fallbackReply) {
-            return res.json({ success: true, reply: fallbackReply, model: 'gemini-3.8-flash' });
+          const geminiReply = geminiRes.text?.trim();
+          if (geminiReply) {
+            return res.json({ success: true, reply: geminiReply, model: 'gemini-2.5-flash' });
           }
         } catch (geminiErr) {
-          console.warn('Gemini fallback notice:', geminiErr);
+          console.warn('Gemini generateContent error notice:', geminiErr);
+        }
+      }
+
+      // Secondary fallback: BazaarLink if API key configured
+      if (BAZAARLINK_API_KEY) {
+        const messages = [
+          {
+            role: 'system',
+            content: systemPrompt
+          },
+          {
+            role: 'user',
+            content: userPrompt
+          }
+        ];
+
+        const modelsToTry = [
+          'deepseek/deepseek-v4-flash-0731free:free',
+          'deepseek-v4-flash-0731free',
+          'qwen/qwen3.7-flash:free',
+          'auto:free'
+        ];
+
+        for (const model of modelsToTry) {
+          try {
+            const response = await fetch(BAZAARLINK_API_URL, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${BAZAARLINK_API_KEY}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                model,
+                messages
+              })
+            });
+
+            const data = (await response.json()) as any;
+            const reply = data?.choices?.[0]?.message?.content?.trim();
+            if (response.ok && reply) {
+              return res.json({ success: true, reply, model });
+            }
+          } catch (err) {
+            console.warn(`BazaarLink model ${model} attempt notice:`, err);
+          }
         }
       }
 

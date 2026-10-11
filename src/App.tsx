@@ -50,6 +50,7 @@ import {
   BarChart3,
   Sticker as StickerIcon,
   SmilePlus,
+  Smile,
   Pin,
   Dices
 } from 'lucide-react';
@@ -162,6 +163,33 @@ interface ChatMessage {
   stickerName?: string | null;
   reactions?: Record<string, Record<string, boolean>> | null;
   pinned?: boolean;
+  isSystem?: boolean;
+  systemType?: 'join' | 'mute' | 'clear' | null;
+  targetUsername?: string | null;
+}
+
+async function sendSystemBotMessage(
+  systemType: 'join' | 'mute' | 'clear',
+  targetUsername: string,
+  text: string
+) {
+  try {
+    const messagesRef = ref(rtdb, 'messages');
+    const newMsgData = {
+      sender: SYSTEM_BOT_USERNAME,
+      senderKey: 'system_bot',
+      avatarUrl: SYSTEM_BOT_AVATAR,
+      text,
+      isSystem: true,
+      systemType,
+      targetUsername,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      createdAt: serverTimestamp()
+    };
+    await push(messagesRef, newMsgData);
+  } catch (err) {
+    console.warn('Error posting system bot message:', err);
+  }
 }
 
 interface AppNotification {
@@ -976,7 +1004,10 @@ export default function App() {
                 stickerUrl: sanitizeMediaUrl(data.stickerUrl) || (typeof data.stickerUrl === 'string' && data.stickerUrl.startsWith('data:image/') ? data.stickerUrl : null),
                 stickerName: data.stickerName || null,
                 reactions: data.reactions && typeof data.reactions === 'object' ? data.reactions : null,
-                pinned: data.pinned === true
+                pinned: data.pinned === true,
+                isSystem: Boolean(data.isSystem),
+                systemType: data.systemType || null,
+                targetUsername: data.targetUsername || null
               });
             });
 
@@ -1809,6 +1840,39 @@ export default function App() {
         if (snap.val() === true) {
           onDisconnect(userOnlineRef).set(false);
           onDisconnect(userLastSeenRef).set(serverTimestamp());
+
+          // Check whether to broadcast "[Username] has joined the room"
+          // Triggered on first-time join or coming back online after >= 10 minutes
+          (async () => {
+            try {
+              const currentSnap = await get(userRef);
+              if (currentSnap.exists()) {
+                const userData = currentSnap.val();
+                const now = Date.now();
+                const TEN_MINUTES_MS = 10 * 60 * 1000;
+                const prevLastSeen = typeof userData.lastSeen === 'number' ? userData.lastSeen : 0;
+                const lastAnnounced = typeof userData.lastJoinAnnouncedAt === 'number' ? userData.lastJoinAnnouncedAt : 0;
+
+                const isNeverAnnounced = !lastAnnounced;
+                const isBackAfter10Min =
+                  prevLastSeen > 0 &&
+                  (now - prevLastSeen >= TEN_MINUTES_MS) &&
+                  (now - lastAnnounced >= TEN_MINUTES_MS);
+
+                if (isNeverAnnounced || isBackAfter10Min) {
+                  await update(userRef, { lastJoinAnnouncedAt: now });
+                  await sendSystemBotMessage(
+                    'join',
+                    currentUser.username,
+                    `${currentUser.username} has joined the room`
+                  );
+                }
+              }
+            } catch (joinErr) {
+              console.warn('Error checking join announcement:', joinErr);
+            }
+          })();
+
           update(userRef, {
             isOnline: true,
             lastSeen: serverTimestamp()
@@ -2805,18 +2869,30 @@ export default function App() {
     const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
     const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
 
-    // Handle /clear command: Owners and above (priority >= 90) can clear all chat messages
+    // Handle /clear command: Staff (priority >= 70 or isStaffRank) can clear all chat messages
     if (textToSend.toLowerCase() === '/clear' && !mediaUrlToSend) {
-      if ((activeSenderRank?.priority ?? 0) >= 90) {
+      if ((activeSenderRank?.priority ?? 0) >= 70 || isStaffRank(activeSenderRank)) {
         try {
           const messagesRef = ref(rtdb, 'messages');
           await remove(messagesRef);
           localStorage.removeItem('chat_community_messages');
           setMessages([]);
+          playAppSound(clearSoundUrl || '/clear.mp3');
+          await sendSystemBotMessage(
+            'clear',
+            currentUser.username,
+            `${currentUser.username} has cleared the room`
+          );
         } catch (err) {
           console.warn('Error clearing messages in RTDB:', err);
           localStorage.removeItem('chat_community_messages');
           setMessages([]);
+          playAppSound(clearSoundUrl || '/clear.mp3');
+          await sendSystemBotMessage(
+            'clear',
+            currentUser.username,
+            `${currentUser.username} has cleared the room`
+          );
         }
       }
       return;
@@ -3752,6 +3828,13 @@ export default function App() {
         lastActionAt: Date.now(),
         updatedAt: serverTimestamp()
       });
+
+      // 3. Post system bot message in chat
+      await sendSystemBotMessage(
+        'mute',
+        targetUsername,
+        `${targetUsername} has been muted!`
+      );
     } catch (err) {
       console.warn('Error muting user in RTDB:', err);
     }
@@ -5149,6 +5232,101 @@ export default function App() {
                 </div>
               ) : (
                 messages.map((msg) => {
+                  const isSystemMsg = Boolean(
+                    msg.isSystem ||
+                    (msg.sender && msg.sender.toLowerCase() === SYSTEM_BOT_USERNAME.toLowerCase() && (
+                      msg.systemType ||
+                      msg.text?.includes('has joined the room') ||
+                      msg.text?.includes('has cleared the room') ||
+                      msg.text?.includes('been muted')
+                    ))
+                  );
+
+                  if (isSystemMsg) {
+                    const rawText = msg.text || '';
+                    let targetName = msg.targetUsername || '';
+                    let actionText = '';
+
+                    if (msg.systemType === 'join' || rawText.includes('has joined the room')) {
+                      if (!targetName) {
+                        targetName = rawText.replace(/\s*has joined the room\s*/i, '').trim();
+                      }
+                      actionText = 'has joined the room';
+                    } else if (msg.systemType === 'clear' || rawText.includes('has cleared the room')) {
+                      if (!targetName) {
+                        targetName = rawText.replace(/\s*has cleared the room\s*/i, '').trim();
+                      }
+                      actionText = 'has cleared the room';
+                    } else if (msg.systemType === 'mute' || rawText.includes('been muted')) {
+                      if (!targetName) {
+                        targetName = rawText.replace(/\s*(has\s+)?been muted!?\s*/i, '').trim();
+                      }
+                      actionText = 'has been muted!';
+                    } else {
+                      actionText = rawText;
+                    }
+
+                    const handleOpenTargetProfile = () => {
+                      if (!targetName) return;
+                      const found = allUsersList.find(
+                        (u) => u.username.toLowerCase() === targetName.toLowerCase()
+                      );
+                      if (found) {
+                        setSelectedUser(found);
+                        recordProfileVisitNotification(found.username);
+                      } else {
+                        setSelectedUser({
+                          username: targetName,
+                          avatarUrl: null,
+                          pfpBorderId: null,
+                          pfpBorderThickness: 2,
+                          rank: null,
+                          isOnline: false
+                        });
+                        recordProfileVisitNotification(targetName);
+                      }
+                      setPublicProfileTab('info');
+                      setProfileViewMode('view');
+                      setProfileModalOpen(true);
+                    };
+
+                    return (
+                      <div
+                        key={msg.id}
+                        className="flex items-center gap-2.5 py-1 px-1 my-0.5 select-text group rounded-lg hover:bg-white/[0.02] transition-colors"
+                      >
+                        <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-full bg-zinc-800/90 border border-white/10 overflow-hidden shrink-0 flex items-center justify-center select-none shadow-sm">
+                          <img
+                            src={SYSTEM_BOT_AVATAR}
+                            alt={SYSTEM_BOT_USERNAME}
+                            className="w-full h-full object-contain p-0.5"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).src = '/bot.png';
+                            }}
+                          />
+                        </div>
+                        <div className="flex-1 min-w-0 text-xs sm:text-sm leading-tight flex items-center gap-1.5 flex-wrap">
+                          {targetName ? (
+                            <button
+                              type="button"
+                              onClick={handleOpenTargetProfile}
+                              className="font-bold text-white hover:text-cyan-300 transition-colors cursor-pointer text-left focus:outline-none"
+                              title={`View ${targetName}'s profile`}
+                            >
+                              {targetName}
+                            </button>
+                          ) : null}
+                          <span className="text-zinc-400 font-normal select-text">
+                            {actionText}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-zinc-600 shrink-0 select-none hidden sm:inline-block">
+                          {msg.timestamp}
+                        </span>
+                      </div>
+                    );
+                  }
+
                   const isSenderMe = Boolean(
                     currentUser &&
                     (msg.sender.toLowerCase() === currentUser.username.toLowerCase() ||
@@ -5577,21 +5755,21 @@ export default function App() {
             <TypingIndicatorBanner typingUsernames={typingUsernames} />
 
             {/* CHAT INPUT BAR */}
-            <div className="px-3 sm:px-4 py-2 bg-[#111114]">
+            <div className="w-full bg-[#0d1017] border-t border-[#1b2230] px-3 sm:px-4 py-2 sm:py-2.5 mt-auto">
               {userProfile.mutedUntil && userProfile.mutedUntil > nowMs ? (
-                <div className="bg-[#18181e] border border-[#24242d] rounded-2xl px-4 py-3.5 flex items-center justify-center shadow-lg select-none">
-                  <span className="text-white font-extrabold italic text-sm sm:text-base tracking-wide">
+                <div className="bg-[#151922] border border-[#232936] rounded-xl px-4 py-2.5 flex items-center justify-center select-none shadow-sm">
+                  <span className="text-white font-extrabold italic text-sm tracking-wide">
                     You have been muted.
                   </span>
                 </div>
               ) : (
                 <form
                   onSubmit={handleSendMessage}
-                  className="bg-[#18181e] border border-[#24242d] rounded-2xl px-3.5 py-2 flex items-center gap-2 focus-within:border-cyan-500/60 transition-colors shadow-lg"
+                  className="flex items-center gap-2 w-full"
                 >
                   <div className="relative shrink-0" ref={plusMenuRef}>
                     {showPlusMenu && (
-                      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2.5 bg-[#1b1b24] border border-[#2c2c3a] rounded-2xl p-1.5 flex flex-col items-center gap-1.5 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-100">
+                      <div className="absolute bottom-full left-0 mb-2.5 bg-[#141822] border border-[#232b3b] rounded-2xl p-1.5 flex flex-col items-center gap-1.5 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-100">
                         <button
                           type="button"
                           onClick={() => {
@@ -5600,7 +5778,7 @@ export default function App() {
                           }}
                           aria-label="Upload image"
                           title="Upload media"
-                          className="w-10 h-10 rounded-xl bg-[#23232f] hover:bg-cyan-500/20 text-zinc-200 hover:text-cyan-300 flex items-center justify-center transition-colors cursor-pointer"
+                          className="w-10 h-10 rounded-xl bg-[#1d2433] hover:bg-cyan-500/20 text-zinc-200 hover:text-cyan-300 flex items-center justify-center transition-colors cursor-pointer"
                         >
                           <ImageIcon className="w-5 h-5" />
                         </button>
@@ -5612,7 +5790,7 @@ export default function App() {
                           }}
                           aria-label="Create poll"
                           title="Create Poll"
-                          className="w-10 h-10 rounded-xl bg-[#23232f] hover:bg-emerald-500/20 text-zinc-200 hover:text-emerald-300 flex items-center justify-center transition-colors cursor-pointer"
+                          className="w-10 h-10 rounded-xl bg-[#1d2433] hover:bg-emerald-500/20 text-zinc-200 hover:text-emerald-300 flex items-center justify-center transition-colors cursor-pointer"
                         >
                           <BarChart3 className="w-5 h-5" />
                         </button>
@@ -5624,7 +5802,7 @@ export default function App() {
                           }}
                           aria-label="Roll dice & flip coin"
                           title="Roll 1-100 Dice & Coin Flip"
-                          className="w-10 h-10 rounded-xl bg-[#23232f] hover:bg-purple-500/20 text-zinc-200 hover:text-purple-300 flex items-center justify-center transition-colors cursor-pointer"
+                          className="w-10 h-10 rounded-xl bg-[#1d2433] hover:bg-purple-500/20 text-zinc-200 hover:text-purple-300 flex items-center justify-center transition-colors cursor-pointer"
                         >
                           <Dices className="w-5 h-5" />
                         </button>
@@ -5640,7 +5818,7 @@ export default function App() {
                           }}
                           aria-label="Custom rank"
                           title="Custom rank"
-                          className="w-10 h-10 rounded-xl bg-[#23232f] hover:bg-amber-500/20 text-zinc-200 hover:text-amber-300 flex items-center justify-center transition-colors cursor-pointer"
+                          className="w-10 h-10 rounded-xl bg-[#1d2433] hover:bg-amber-500/20 text-zinc-200 hover:text-amber-300 flex items-center justify-center transition-colors cursor-pointer"
                         >
                           <Award className="w-5 h-5" />
                         </button>
@@ -5652,36 +5830,24 @@ export default function App() {
                       onClick={() => setShowPlusMenu((prev) => !prev)}
                       aria-label="Plus options"
                       title="Options"
-                      className={`p-1.5 rounded-lg transition-colors cursor-pointer disabled:opacity-50 shrink-0 ${
+                      className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-colors cursor-pointer disabled:opacity-50 shrink-0 ${
                         showPlusMenu
-                          ? 'text-cyan-300 bg-white/10'
-                          : 'text-zinc-400 hover:text-cyan-300 hover:bg-white/5'
+                          ? 'text-white bg-white/10'
+                          : 'text-zinc-400 hover:text-white hover:bg-white/5'
                       }`}
                     >
                       {isUploadingChatMedia ? (
-                        <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
+                        <Loader2 className="w-5 h-5 animate-spin text-zinc-400" />
                       ) : (
                         <Plus className="w-5 h-5" />
                       )}
                     </button>
                   </div>
 
-                  <input
-                    ref={chatInputRef}
-                    type="text"
-                    value={inputText}
-                    onChange={(e) => {
-                      setInputText(e.target.value);
-                      broadcastTypingInChat(e.target.value);
-                    }}
-                    placeholder={replyingTo ? `Reply to @${replyingTo.sender}...` : 'Type here...'}
-                    className="flex-1 bg-[#141419] border border-[#262630] rounded-xl px-3.5 py-2 text-white text-sm sm:text-base placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
-                  />
-
-                  {/* Chat Stickers Picker Button */}
+                  {/* Chat Stickers & Emojis Smile Button */}
                   <div className="relative shrink-0" ref={stickerPickerRef}>
                     {showStickerPicker && (
-                      <div className="absolute bottom-full right-0 mb-2.5 z-50">
+                      <div className="absolute bottom-full left-0 mb-2.5 z-50">
                         <StickerPickerPopover
                           customStickers={customStickers}
                           isDevOrAbove={isDevOrAbove}
@@ -5696,44 +5862,59 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setShowStickerPicker((prev) => !prev)}
-                      aria-label="Chat Stickers"
-                      title="Chat Stickers"
-                      className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+                      aria-label="Chat Stickers & Emojis"
+                      title="Stickers & Emojis"
+                      className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
                         showStickerPicker
-                          ? 'text-cyan-300 bg-white/10'
-                          : 'text-zinc-400 hover:text-cyan-300'
+                          ? 'text-white bg-white/10'
+                          : 'text-zinc-400 hover:text-white hover:bg-white/5'
                       }`}
                     >
-                      <StickerIcon className="w-5 h-5" />
+                      <Smile className="w-5 h-5" />
                     </button>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleToggleVoiceInput}
-                    aria-label="Voice input"
-                    title={isListeningVoice ? 'Listening... Click to stop' : 'Voice dictation'}
-                    className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-                      isListeningVoice
-                        ? 'text-rose-400 bg-rose-500/15 animate-pulse'
-                        : 'text-zinc-400 hover:text-white'
-                    }`}
-                  >
-                    <Mic className="w-5 h-5" />
-                  </button>
+                  {/* Input box matching site palette, NO green outline, Send button on right */}
+                  <div className="flex-1 min-w-0 flex items-center bg-[#151922] border border-[#232a38] rounded-xl px-3.5 py-1.5 focus-within:border-[#333d50] transition-colors">
+                    <input
+                      ref={chatInputRef}
+                      type="text"
+                      value={inputText}
+                      onChange={(e) => {
+                        setInputText(e.target.value);
+                        broadcastTypingInChat(e.target.value);
+                      }}
+                      placeholder={replyingTo ? `Reply to @${replyingTo.sender}...` : 'Type here...'}
+                      className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:outline-none focus:ring-0 focus:border-0 p-0 text-white text-sm sm:text-base placeholder-zinc-500 ring-0"
+                    />
 
-                  <button
-                    type="submit"
-                    disabled={(!inputText.trim() && !chatMediaUrl) || isUploadingChatMedia}
-                    aria-label="Send message"
-                    className={`p-1.5 rounded-full transition-all cursor-pointer ${
-                      (inputText.trim() || chatMediaUrl) && !isUploadingChatMedia
-                        ? 'text-white hover:text-cyan-300 hover:bg-cyan-500/10'
-                        : 'text-zinc-500'
-                    }`}
-                  >
-                    <SendHorizontal className="w-5 h-5" />
-                  </button>
+                    <button
+                      type="button"
+                      onClick={handleToggleVoiceInput}
+                      aria-label="Voice input"
+                      title={isListeningVoice ? 'Listening... Click to stop' : 'Voice dictation'}
+                      className={`p-1 rounded-md transition-colors cursor-pointer mr-1.5 shrink-0 ${
+                        isListeningVoice
+                          ? 'text-rose-400 bg-rose-500/15 animate-pulse'
+                          : 'text-zinc-500 hover:text-zinc-300'
+                      }`}
+                    >
+                      <Mic className="w-4 h-4" />
+                    </button>
+
+                    <button
+                      type="submit"
+                      disabled={(!inputText.trim() && !chatMediaUrl) || isUploadingChatMedia}
+                      aria-label="Send message"
+                      className={`p-1 rounded-md transition-all cursor-pointer shrink-0 ${
+                        (inputText.trim() || chatMediaUrl) && !isUploadingChatMedia
+                          ? 'text-white hover:text-zinc-200'
+                          : 'text-zinc-600'
+                      }`}
+                    >
+                      <SendHorizontal className="w-4 h-4" />
+                    </button>
+                  </div>
                 </form>
               )}
             </div>
@@ -8239,7 +8420,7 @@ export default function App() {
                   value={pmInputText}
                   onChange={(e) => setPmInputText(e.target.value)}
                   placeholder="Type here..."
-                  className="flex-1 bg-[#121216] border border-[#24242d] rounded-full px-4 py-2 text-white text-sm placeholder-zinc-500 focus:outline-none focus:border-cyan-500/50"
+                  className="flex-1 bg-[#151922] border border-[#232a38] rounded-full px-4 py-2 text-white text-sm placeholder-zinc-500 outline-none focus:outline-none focus:ring-0 focus:border-[#333d50]"
                 />
 
                 <button
