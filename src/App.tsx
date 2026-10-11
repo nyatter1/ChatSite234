@@ -166,7 +166,7 @@ interface ChatMessage {
   reactions?: Record<string, Record<string, boolean>> | null;
   pinned?: boolean;
   isSystem?: boolean;
-  systemType?: 'join' | 'mute' | 'clear' | 'rename' | null;
+  systemType?: 'join' | 'mute' | 'clear' | 'rename' | 'ban' | 'unban' | 'unmute' | 'warn' | null;
   targetUsername?: string | null;
   oldUsername?: string | null;
 }
@@ -174,7 +174,7 @@ interface ChatMessage {
 const lastSystemMsgTimeMap = new Map<string, number>();
 
 async function sendSystemBotMessage(
-  systemType: 'join' | 'mute' | 'clear' | 'rename',
+  systemType: 'join' | 'mute' | 'clear' | 'rename' | 'ban' | 'unban' | 'unmute' | 'warn',
   targetUsername: string,
   text: string,
   oldUsername?: string
@@ -212,7 +212,7 @@ async function sendSystemBotMessage(
 
 interface AppNotification {
   id: string;
-  type: 'profile_visit' | 'rank_change' | 'mute' | 'profile_like';
+  type: 'profile_visit' | 'rank_change' | 'mute' | 'profile_like' | 'ban' | 'warn';
   fromUsername: string;
   fromAvatarUrl?: string | null;
   fromPfpBorderId?: string | null;
@@ -291,6 +291,15 @@ const MUTE_DURATIONS: { id: string; label: string; ms: number }[] = [
   { id: '10yr', label: '10yr', ms: 10 * 365 * 24 * 60 * 60 * 1000 },
   { id: '100yrs', label: '100yrs', ms: 100 * 365 * 24 * 60 * 60 * 1000 },
   { id: '1000yrs', label: '1000yrs', ms: 1000 * 365 * 24 * 60 * 60 * 1000 }
+];
+
+const BAN_DURATIONS: { id: string; label: string; ms: number }[] = [
+  { id: '1h', label: '1 hour', ms: 60 * 60 * 1000 },
+  { id: '1d', label: '1 day', ms: 24 * 60 * 60 * 1000 },
+  { id: '3d', label: '3 days', ms: 3 * 24 * 60 * 60 * 1000 },
+  { id: '7d', label: '7 days', ms: 7 * 24 * 60 * 60 * 1000 },
+  { id: '30d', label: '30 days', ms: 30 * 24 * 60 * 60 * 1000 },
+  { id: 'perm', label: 'Permanent', ms: -1 }
 ];
 
 function formatNotificationDate(ts?: number): string {
@@ -555,6 +564,12 @@ interface UserProfileData {
   muteDuration?: string | null;
   muteReason?: string | null;
   muteNotificationId?: string | null;
+  isBanned?: boolean | null;
+  bannedUntil?: number | null;
+  bannedDuration?: string | null;
+  bannedReason?: string | null;
+  bannedAt?: number | null;
+  bannedBy?: string | null;
   likes?: Record<string, boolean>;
   msgProfile?: {
     displayName?: string;
@@ -598,6 +613,12 @@ interface UserProfileState {
   muteDuration?: string | null;
   muteReason?: string | null;
   muteNotificationId?: string | null;
+  isBanned?: boolean | null;
+  bannedUntil?: number | null;
+  bannedDuration?: string | null;
+  bannedReason?: string | null;
+  bannedAt?: number | null;
+  bannedBy?: string | null;
   likes?: Record<string, boolean>;
 }
 
@@ -686,15 +707,20 @@ export default function App() {
   const currentUsernameRef = useRef<string | null>(currentUser?.username || null);
   currentUsernameRef.current = currentUser?.username || null;
 
-  // Action, Change Rank, & Mute Modals (Main Developer moderation tools)
+  // Action, Change Rank, Mute & Ban Modals (Moderation tools)
   const [actionModalOpen, setActionModalOpen] = useState(false);
   const [changeRankModalOpen, setChangeRankModalOpen] = useState(false);
   const [muteModalOpen, setMuteModalOpen] = useState(false);
   const [muteDurationId, setMuteDurationId] = useState<string>('5m');
   const [muteDropdownOpen, setMuteDropdownOpen] = useState(false);
   const [muteReason, setMuteReason] = useState('');
+  const [banModalOpen, setBanModalOpen] = useState(false);
+  const [banDurationId, setBanDurationId] = useState<string>('1d');
+  const [banDropdownOpen, setBanDropdownOpen] = useState(false);
+  const [banReason, setBanReason] = useState('');
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const isUnmutingRef = useRef(false);
+  const isUnbanningRef = useRef(false);
 
   // Sub-modal state for Edit actions (info, username, bio, mood, glow, profileBorder, pfpBorder, music)
   const [activeEditSubModal, setActiveEditSubModal] = useState<
@@ -1224,6 +1250,12 @@ export default function App() {
                 muteDuration: val.muteDuration || null,
                 muteReason: val.muteReason || null,
                 muteNotificationId: val.muteNotificationId || null,
+                isBanned: val.isBanned === true,
+                bannedUntil: typeof val.bannedUntil === 'number' ? val.bannedUntil : null,
+                bannedDuration: val.bannedDuration || null,
+                bannedReason: val.bannedReason || null,
+                bannedAt: typeof val.bannedAt === 'number' ? val.bannedAt : null,
+                bannedBy: val.bannedBy || null,
                 likes: rawLikes,
                 msgProfile: val.msgProfile && typeof val.msgProfile === 'object' ? val.msgProfile : undefined,
                 msgFollowers: val.msgFollowers && typeof val.msgFollowers === 'object' ? val.msgFollowers : undefined,
@@ -1996,6 +2028,12 @@ export default function App() {
             muteDuration: val.muteDuration || null,
             muteReason: val.muteReason || null,
             muteNotificationId: val.muteNotificationId || null,
+            isBanned: val.isBanned === true,
+            bannedUntil: typeof val.bannedUntil === 'number' ? val.bannedUntil : null,
+            bannedDuration: val.bannedDuration || null,
+            bannedReason: val.bannedReason || null,
+            bannedAt: typeof val.bannedAt === 'number' ? val.bannedAt : null,
+            bannedBy: val.bannedBy || null,
             likes: val.likes && typeof val.likes === 'object' ? val.likes : {}
           };
 
@@ -2438,7 +2476,17 @@ export default function App() {
         profileBorderThickness: typeof matchedUser.profileBorderThickness === 'number' ? matchedUser.profileBorderThickness : 2,
         pfpBorderId: matchedUser.pfpBorderId || 'pfp-default',
         pfpBorderThickness: typeof matchedUser.pfpBorderThickness === 'number' ? matchedUser.pfpBorderThickness : 2,
-        musicTrack: matchedUser.musicTrack || null
+        musicTrack: matchedUser.musicTrack || null,
+        mutedUntil: typeof matchedUser.mutedUntil === 'number' ? matchedUser.mutedUntil : null,
+        muteDuration: matchedUser.muteDuration || null,
+        muteReason: matchedUser.muteReason || null,
+        muteNotificationId: matchedUser.muteNotificationId || null,
+        isBanned: matchedUser.isBanned === true,
+        bannedUntil: typeof matchedUser.bannedUntil === 'number' ? matchedUser.bannedUntil : null,
+        bannedDuration: matchedUser.bannedDuration || null,
+        bannedReason: matchedUser.bannedReason || null,
+        bannedAt: typeof matchedUser.bannedAt === 'number' ? matchedUser.bannedAt : null,
+        bannedBy: matchedUser.bannedBy || null
       };
 
       const userObj = {
@@ -2662,10 +2710,15 @@ export default function App() {
     [currentUser?.username]
   );
 
+  const isCurrentUserBanned = Boolean(
+    userProfile.isBanned ||
+    (userProfile.bannedUntil && (userProfile.bannedUntil === -1 || userProfile.bannedUntil > nowMs))
+  );
+
   // Create and post a live interactive Poll in chat
   const handleCreatePoll = async (question: string, options: string[], allowMultiple: boolean) => {
     if (!currentUser?.username) return;
-    if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
+    if ((userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) || isCurrentUserBanned) return;
 
     const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
     const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
@@ -2737,7 +2790,7 @@ export default function App() {
   // Send a Discord-style Sticker in chat
   const handleSendSticker = async (sticker: CustomStickerItem) => {
     if (!currentUser?.username) return;
-    if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
+    if ((userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) || isCurrentUserBanned) return;
 
     const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
     const activeSenderRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
@@ -2850,7 +2903,7 @@ export default function App() {
   // Bonus Feature: Quick Dice Roll / Coin Flip in chat
   const handleSendDiceRoll = async () => {
     if (!currentUser?.username) return;
-    if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
+    if ((userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) || isCurrentUserBanned) return;
     const roll = Math.floor(Math.random() * 100) + 1;
     const coin = Math.random() < 0.5 ? 'Heads 🪙' : 'Tails 🪙';
     const cleanAvatar = sanitizeMediaUrl(userProfile.avatarUrl);
@@ -2875,7 +2928,7 @@ export default function App() {
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if ((!inputText.trim() && !chatMediaUrl) || !currentUser || isUploadingChatMedia) return;
-    if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
+    if ((userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) || isCurrentUserBanned) return;
 
     const textToSend = inputText.trim();
     const currentReply = replyingTo;
@@ -3486,7 +3539,7 @@ export default function App() {
     if ((!pmInputText.trim() && !pmMediaUrl) || !currentUser?.username || !activePmPeer || isUploadingPmMedia) {
       return;
     }
-    if (userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) return;
+    if ((userProfile.mutedUntil && userProfile.mutedUntil > Date.now()) || isCurrentUserBanned) return;
 
     const textToSend = pmInputText.trim();
     const mediaUrlToSend = sanitizeMediaUrl(pmMediaUrl);
@@ -3803,6 +3856,14 @@ export default function App() {
           lastActionAt: Date.now(),
           updatedAt: serverTimestamp()
         });
+
+        // 3. Post system bot message in chat
+        await sendSystemBotMessage(
+          'unmute',
+          targetUsername,
+          `${targetUsername} has been unmuted!`
+        );
+        playAppSound(actionSoundUrl || '/action.mp3');
       } catch (err) {
         console.warn('Error unmuting user in RTDB:', err);
       }
@@ -3810,13 +3871,13 @@ export default function App() {
     []
   );
 
-  // Mute target user (Main Developer only) for the selected duration
+  // Mute target user (Staff / Main Developer) for the selected duration
   const handleMuteTargetUser = async () => {
     if (!currentUser || !liveSelectedUser) return;
     const targetUsername = liveSelectedUser.username;
     if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
     const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
-    if (!myRank || myRank.id !== 'main_developer') return;
+    if (!myRank || (myRank.id !== 'main_developer' && myRank.priority < 40)) return;
 
     const selectedDur = MUTE_DURATIONS.find((d) => d.id === muteDurationId) || MUTE_DURATIONS[3];
     const mutedUntil = Date.now() + selectedDur.ms;
@@ -3865,17 +3926,139 @@ export default function App() {
     }
   };
 
-  // Automatic real-time timer to unmute the current user as soon as their mute duration expires
+  // Ban target user (Staff / Main Developer) for the selected duration
+  const handleBanTargetUser = async () => {
+    if (!currentUser || !liveSelectedUser) return;
+    const targetUsername = liveSelectedUser.username;
+    if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
+    const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
+    if (!myRank || (myRank.id !== 'main_developer' && myRank.priority < 40)) return;
+
+    const selectedDur = BAN_DURATIONS.find((d) => d.id === banDurationId) || BAN_DURATIONS[1];
+    const bannedUntil = selectedDur.ms === -1 ? -1 : Date.now() + selectedDur.ms;
+    const cleanReason = banReason.trim();
+    const targetKey = sanitizeDbKey(targetUsername);
+
+    setBanModalOpen(false);
+    setBanDropdownOpen(false);
+    setActionModalOpen(false);
+    setBanReason('');
+
+    try {
+      const notifText = cleanReason
+        ? `You have been banned for ${selectedDur.label} (${cleanReason})`
+        : `You have been banned for ${selectedDur.label}`;
+
+      await push(ref(rtdb, `users/${targetKey}/notifications`), {
+        type: 'ban',
+        fromUsername: SYSTEM_BOT_USERNAME,
+        fromAvatarUrl: SYSTEM_BOT_AVATAR,
+        text: notifText,
+        createdAt: Date.now(),
+        read: false
+      });
+
+      await update(ref(rtdb, `users/${targetKey}`), {
+        isBanned: true,
+        bannedUntil,
+        bannedDuration: selectedDur.label,
+        bannedReason: cleanReason || 'Violation of rules',
+        bannedAt: Date.now(),
+        bannedBy: currentUser.username,
+        lastActionAt: Date.now(),
+        updatedAt: serverTimestamp()
+      });
+
+      await sendSystemBotMessage(
+        'ban',
+        targetUsername,
+        `${targetUsername} has been banned!`
+      );
+      playAppSound(actionSoundUrl || '/action.mp3');
+    } catch (err) {
+      console.warn('Error banning user in RTDB:', err);
+    }
+  };
+
+  // Unban target user
+  const handleUnbanTargetUser = useCallback(
+    async (targetUsername: string) => {
+      if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
+      const targetKey = sanitizeDbKey(targetUsername);
+      try {
+        await push(ref(rtdb, `users/${targetKey}/notifications`), {
+          type: 'ban',
+          fromUsername: SYSTEM_BOT_USERNAME,
+          fromAvatarUrl: SYSTEM_BOT_AVATAR,
+          text: 'You have been unbanned.',
+          createdAt: Date.now(),
+          read: false
+        });
+
+        await update(ref(rtdb, `users/${targetKey}`), {
+          isBanned: false,
+          bannedUntil: null,
+          bannedDuration: null,
+          bannedReason: null,
+          bannedAt: null,
+          bannedBy: null,
+          lastActionAt: Date.now(),
+          updatedAt: serverTimestamp()
+        });
+
+        await sendSystemBotMessage(
+          'unban',
+          targetUsername,
+          `${targetUsername} has been unbanned!`
+        );
+        playAppSound(actionSoundUrl || '/action.mp3');
+      } catch (err) {
+        console.warn('Error unbanning user in RTDB:', err);
+      }
+    },
+    []
+  );
+
+  // Warn target user
+  const handleWarnTargetUser = async (targetUsername: string) => {
+    if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
+    const targetKey = sanitizeDbKey(targetUsername);
+    try {
+      await push(ref(rtdb, `users/${targetKey}/notifications`), {
+        type: 'warn',
+        fromUsername: SYSTEM_BOT_USERNAME,
+        fromAvatarUrl: SYSTEM_BOT_AVATAR,
+        text: 'You have received an official warning from staff. Please adhere to the community rules.',
+        createdAt: Date.now(),
+        read: false
+      });
+
+      await update(ref(rtdb, `users/${targetKey}`), {
+        lastActionAt: Date.now(),
+        updatedAt: serverTimestamp()
+      });
+
+      await sendSystemBotMessage(
+        'warn',
+        targetUsername,
+        `${targetUsername} has been warned!`
+      );
+      playAppSound(actionSoundUrl || '/action.mp3');
+    } catch (err) {
+      console.warn('Error warning user in RTDB:', err);
+    }
+  };
+
+  // Automatic real-time timer to unmute & unban the current user as soon as their duration expires
   useEffect(() => {
     setNowMs(Date.now());
     const mutedUntil = userProfile.mutedUntil;
-    if (!currentUser?.username || !mutedUntil) {
-      isUnmutingRef.current = false;
-      return;
-    }
+    const bannedUntil = userProfile.bannedUntil;
 
-    // Stop voice recording & clear input while muted
-    if (mutedUntil > Date.now()) {
+    // Stop voice recording & clear input while muted or banned
+    const isMutedNow = Boolean(mutedUntil && mutedUntil > Date.now());
+    const isBannedNow = Boolean(userProfile.isBanned || (bannedUntil && (bannedUntil === -1 || bannedUntil > Date.now())));
+    if (isMutedNow || isBannedNow) {
       if (isListeningVoice && recognitionRef.current) {
         try {
           recognitionRef.current.stop();
@@ -3889,7 +4072,7 @@ export default function App() {
     const checkMuteExpiry = () => {
       const currentNow = Date.now();
       setNowMs(currentNow);
-      if (mutedUntil <= currentNow && !isUnmutingRef.current) {
+      if (mutedUntil && mutedUntil <= currentNow && !isUnmutingRef.current) {
         isUnmutingRef.current = true;
         setUserProfile((prev) => ({
           ...prev,
@@ -3898,8 +4081,22 @@ export default function App() {
           muteReason: null,
           muteNotificationId: null
         }));
-        handleUnmuteTargetUser(currentUser.username, userProfile.muteNotificationId).finally(() => {
+        handleUnmuteTargetUser(currentUser?.username || '', userProfile.muteNotificationId).finally(() => {
           isUnmutingRef.current = false;
+        });
+      }
+
+      if (bannedUntil && bannedUntil > 0 && bannedUntil <= currentNow && !isUnbanningRef.current) {
+        isUnbanningRef.current = true;
+        setUserProfile((prev) => ({
+          ...prev,
+          isBanned: false,
+          bannedUntil: null,
+          bannedDuration: null,
+          bannedReason: null
+        }));
+        handleUnbanTargetUser(currentUser?.username || '').finally(() => {
+          isUnbanningRef.current = false;
         });
       }
     };
@@ -3911,7 +4108,10 @@ export default function App() {
     currentUser?.username,
     userProfile.mutedUntil,
     userProfile.muteNotificationId,
+    userProfile.isBanned,
+    userProfile.bannedUntil,
     handleUnmuteTargetUser,
+    handleUnbanTargetUser,
     isListeningVoice,
     inputText,
     replyingTo
@@ -5257,13 +5457,17 @@ export default function App() {
                 </div>
               ) : (
                 messages.map((msg) => {
-                  const isSystemMsg = Boolean(
+                    const isSystemMsg = Boolean(
                     msg.isSystem ||
                     (msg.sender && msg.sender.toLowerCase() === SYSTEM_BOT_USERNAME.toLowerCase() && (
                       msg.systemType ||
                       msg.text?.includes('has joined the room') ||
                       msg.text?.includes('has cleared the room') ||
                       msg.text?.includes('been muted') ||
+                      msg.text?.includes('been unmuted') ||
+                      msg.text?.includes('been banned') ||
+                      msg.text?.includes('been unbanned') ||
+                      msg.text?.includes('been warned') ||
                       msg.text?.includes('is now known as')
                     ))
                   );
@@ -5300,6 +5504,26 @@ export default function App() {
                         targetName = rawText.replace(/\s*(has\s+)?been muted!?\s*/i, '').trim();
                       }
                       actionText = 'has been muted!';
+                    } else if (msg.systemType === 'unmute' || rawText.includes('been unmuted')) {
+                      if (!targetName) {
+                        targetName = rawText.replace(/\s*(has\s+)?been unmuted!?\s*/i, '').trim();
+                      }
+                      actionText = 'has been unmuted!';
+                    } else if (msg.systemType === 'ban' || rawText.includes('been banned')) {
+                      if (!targetName) {
+                        targetName = rawText.replace(/\s*(has\s+)?been banned!?\s*/i, '').trim();
+                      }
+                      actionText = 'has been banned!';
+                    } else if (msg.systemType === 'unban' || rawText.includes('been unbanned')) {
+                      if (!targetName) {
+                        targetName = rawText.replace(/\s*(has\s+)?been unbanned!?\s*/i, '').trim();
+                      }
+                      actionText = 'has been unbanned!';
+                    } else if (msg.systemType === 'warn' || rawText.includes('been warned')) {
+                      if (!targetName) {
+                        targetName = rawText.replace(/\s*(has\s+)?been warned!?\s*/i, '').trim();
+                      }
+                      actionText = 'has been warned!';
                     } else {
                       actionText = rawText;
                     }
@@ -5816,7 +6040,21 @@ export default function App() {
 
             {/* CHAT INPUT BAR */}
             <div className="w-full bg-[#141418] border-t border-[#202026] px-3 sm:px-4 py-2 sm:py-2.5 mt-auto">
-              {userProfile.mutedUntil && userProfile.mutedUntil > nowMs ? (
+              {isCurrentUserBanned ? (
+                <div className="bg-[#1f1214] border border-rose-900/60 rounded-xl px-4 py-2.5 flex items-center justify-between select-none shadow-sm">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <i className="fa fa-ban error text-rose-500 text-sm shrink-0" aria-hidden="true" />
+                    <span className="text-white font-extrabold italic text-sm tracking-wide truncate">
+                      You have been banned{userProfile.bannedDuration ? ` (${userProfile.bannedDuration})` : ''}.
+                    </span>
+                  </div>
+                  {userProfile.bannedReason && (
+                    <span className="text-xs text-rose-300 font-bold ml-2 truncate max-w-[180px]">
+                      Reason: {userProfile.bannedReason}
+                    </span>
+                  )}
+                </div>
+              ) : userProfile.mutedUntil && userProfile.mutedUntil > nowMs ? (
                 <div className="bg-[#181820] border border-[#262630] rounded-xl px-4 py-2.5 flex items-center justify-center select-none shadow-sm">
                   <span className="text-white font-extrabold italic text-sm tracking-wide">
                     You have been muted.
@@ -6079,10 +6317,11 @@ export default function App() {
               isSelectedUserMe ? userProfile.customRankIcon : activePopoverUser.customRankIcon,
               isSelectedUserMe ? userProfile.customRankName : activePopoverUser.customRankName
             );
-            const canMainDevActOnTarget = Boolean(
+            const canActionOnTarget = Boolean(
               !isSelectedUserMe &&
               activePopoverUser.username.toLowerCase() !== 'system' &&
-              currentUserRank?.id === 'main_developer' &&
+              currentUserRank &&
+              (currentUserRank.id === 'main_developer' || currentUserRank.priority >= 40) &&
               currentUserRank.priority > (popoverRank?.priority ?? 0)
             );
 
@@ -6175,7 +6414,7 @@ export default function App() {
                     <span>View profile</span>
                   </button>
 
-                  {/* Private message button (Screenshot 2) */}
+                  {/* Private message button */}
                   {!isSelectedUserMe && (
                     <button
                       type="button"
@@ -6190,8 +6429,8 @@ export default function App() {
                     </button>
                   )}
 
-                  {/* Action button (Main Developer only when clicking a lower rank) */}
-                  {canMainDevActOnTarget && (
+                  {/* Action button (Staff & Main Developer on lower ranks) */}
+                  {canActionOnTarget && (
                     <button
                       type="button"
                       onClick={() => {
@@ -6248,7 +6487,7 @@ export default function App() {
           })()}
 
         {/* ==================================================== */}
-        {/* ACTION MODAL (Main Developer Moderation Menu)        */}
+        {/* ACTION MODAL (Staff & Main Developer Moderation Menu) */}
         {/* ==================================================== */}
         {actionModalOpen && liveSelectedUser && (
           <div
@@ -6291,31 +6530,28 @@ export default function App() {
                 </span>
               </div>
 
-              {/* Action Buttons (Change rank, Warn, Mute) */}
+              {/* Action Buttons (Change rank, Warn, Mute/Unmute, Ban/Unban) */}
               <div className="mt-3.5 space-y-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActionModalOpen(false);
-                    setChangeRankModalOpen(true);
-                  }}
-                  className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
-                >
-                  <i className="fa fa-star text-white text-base w-5 text-center" aria-hidden="true" />
-                  <span className="text-sm font-extrabold text-white">Change rank</span>
-                </button>
+                {currentUserRank?.id === 'main_developer' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionModalOpen(false);
+                      setChangeRankModalOpen(true);
+                    }}
+                    className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                  >
+                    <i className="fa fa-star text-white text-base w-5 text-center" aria-hidden="true" />
+                    <span className="text-sm font-extrabold text-white">Change rank</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
                   onClick={() => {
                     const targetName = liveSelectedUser.username;
                     setActionModalOpen(false);
-                    if (targetName && targetName.toLowerCase() !== 'system') {
-                      const targetKey = sanitizeDbKey(targetName);
-                      update(ref(rtdb, `users/${targetKey}`), {
-                        lastActionAt: Date.now()
-                      }).catch(() => {});
-                    }
+                    handleWarnTargetUser(targetName);
                   }}
                   className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
                 >
@@ -6351,6 +6587,36 @@ export default function App() {
                   >
                     <i className="fa fa-microphone-slash error text-rose-500 text-base w-5 text-center" aria-hidden="true" />
                     <span className="text-sm font-extrabold text-white">Mute</span>
+                  </button>
+                )}
+
+                {liveSelectedUser.isBanned || (liveSelectedUser.bannedUntil && (liveSelectedUser.bannedUntil === -1 || liveSelectedUser.bannedUntil > nowMs)) ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const targetName = liveSelectedUser.username;
+                      setActionModalOpen(false);
+                      handleUnbanTargetUser(targetName);
+                    }}
+                    className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                  >
+                    <i className="fa fa-ban text-emerald-400 text-base w-5 text-center" aria-hidden="true" />
+                    <span className="text-sm font-extrabold text-white">Unban</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionModalOpen(false);
+                      setBanDurationId('1d');
+                      setBanDropdownOpen(false);
+                      setBanReason('');
+                      setBanModalOpen(true);
+                    }}
+                    className="w-full bg-[#1e1e22] hover:bg-[#26262c] rounded-xl px-4 py-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer"
+                  >
+                    <i className="fa fa-ban error text-rose-600 text-base w-5 text-center" aria-hidden="true" />
+                    <span className="text-sm font-extrabold text-white">Ban</span>
                   </button>
                 )}
               </div>
@@ -6395,6 +6661,23 @@ export default function App() {
                 >
                   <X className="w-5 h-5 stroke-[2.5]" />
                 </button>
+
+                {/* Top User Header */}
+                <div className="flex items-center gap-3 pr-8 mb-5">
+                  <UserAvatar
+                    avatarUrl={liveSelectedUser.avatarUrl}
+                    className="w-10 h-10"
+                    showOnline={false}
+                    pfpBorderClass={getPfpBorder(liveSelectedUser.pfpBorderId).pfpBorderClass}
+                    pfpBorderThickness={liveSelectedUser.pfpBorderThickness}
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-rose-500 uppercase tracking-wider block">Mute User</span>
+                    <h3 className="text-lg font-black text-white tracking-wide truncate">
+                      {liveSelectedUser.username}
+                    </h3>
+                  </div>
+                </div>
 
                 {/* Duration Section */}
                 <div className="mb-4">
@@ -6450,7 +6733,8 @@ export default function App() {
                   <textarea
                     value={muteReason}
                     onChange={(e) => setMuteReason(e.target.value)}
-                    className="w-full h-24 bg-[#141414] border border-[#242424] rounded-2xl p-3.5 text-white text-sm sm:text-base focus:outline-none focus:border-zinc-600 resize-none"
+                    placeholder="Violation of chat rules..."
+                    className="w-full h-24 bg-[#141414] border border-[#242424] rounded-2xl p-3.5 text-white text-sm sm:text-base focus:outline-none focus:border-zinc-600 resize-none placeholder:text-zinc-600"
                   />
                 </div>
 
@@ -6468,6 +6752,145 @@ export default function App() {
                     onClick={() => {
                       setMuteDropdownOpen(false);
                       setMuteModalOpen(false);
+                    }}
+                    className="bg-[#2c2c2c] hover:bg-[#383838] text-white font-extrabold text-sm sm:text-base py-3 px-7 rounded-2xl transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ==================================================== */}
+        {/* BAN MODAL (Duration Dropdown + Optional Reason)      */}
+        {/* ==================================================== */}
+        {banModalOpen && liveSelectedUser && (() => {
+          const selectedDurationObj =
+            BAN_DURATIONS.find((d) => d.id === banDurationId) || BAN_DURATIONS[1];
+
+          return (
+            <div
+              role="dialog"
+              aria-modal="true"
+              className="fixed inset-0 z-[75] bg-black/75 backdrop-blur-[2px] flex items-center justify-center p-4 animate-in fade-in duration-150"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) {
+                  setBanDropdownOpen(false);
+                  setBanModalOpen(false);
+                }
+              }}
+            >
+              <div
+                className="w-full max-w-[440px] bg-[#141414] border border-[#262626] rounded-[28px] p-6 shadow-2xl relative text-white animate-in zoom-in-95 duration-150"
+                onClick={() => {
+                  if (banDropdownOpen) setBanDropdownOpen(false);
+                }}
+              >
+                {/* Close button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBanDropdownOpen(false);
+                    setBanModalOpen(false);
+                  }}
+                  aria-label="Close"
+                  className="absolute top-5 right-5 text-white hover:text-zinc-300 p-1 rounded-lg transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5 stroke-[2.5]" />
+                </button>
+
+                {/* Top User Header */}
+                <div className="flex items-center gap-3 pr-8 mb-5">
+                  <UserAvatar
+                    avatarUrl={liveSelectedUser.avatarUrl}
+                    className="w-10 h-10"
+                    showOnline={false}
+                    pfpBorderClass={getPfpBorder(liveSelectedUser.pfpBorderId).pfpBorderClass}
+                    pfpBorderThickness={liveSelectedUser.pfpBorderThickness}
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-rose-500 uppercase tracking-wider block">Ban User</span>
+                    <h3 className="text-lg font-black text-white tracking-wide truncate">
+                      {liveSelectedUser.username}
+                    </h3>
+                  </div>
+                </div>
+
+                {/* Duration Section */}
+                <div className="mb-4">
+                  <label className="block text-base font-black text-white mb-2 text-left">
+                    Duration
+                  </label>
+
+                  <div
+                    className="relative"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setBanDropdownOpen((prev) => !prev)}
+                      className="w-full bg-[#141414] border border-[#242424] rounded-2xl px-4 py-3.5 text-white text-sm sm:text-base font-medium flex items-center justify-between cursor-pointer focus:outline-none"
+                    >
+                      <span>{selectedDurationObj.label}</span>
+                      <ChevronDown className="w-4 h-4 text-zinc-400 shrink-0" />
+                    </button>
+
+                    {banDropdownOpen && (
+                      <div className="absolute left-0 right-0 top-full mt-1 max-h-52 overflow-y-auto bg-[#1b1b1b] border border-[#2a2a2a] rounded-xl shadow-2xl z-30 py-1">
+                        {BAN_DURATIONS.map((dur) => {
+                          const isSelected = dur.id === banDurationId;
+                          return (
+                            <button
+                              key={dur.id}
+                              type="button"
+                              onClick={() => {
+                                setBanDurationId(dur.id);
+                                setBanDropdownOpen(false);
+                              }}
+                              className={`w-full px-4 py-2.5 text-left text-sm sm:text-base transition-colors cursor-pointer ${
+                                isSelected
+                                  ? 'bg-[#2b2b2b] text-white font-semibold'
+                                  : 'text-zinc-400 hover:bg-[#252525] hover:text-white'
+                              }`}
+                            >
+                              {dur.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Reason (optional) Section */}
+                <div className="mb-5">
+                  <label className="block text-base font-black text-white mb-2 text-left">
+                    Reason <span className="text-zinc-400 font-bold text-sm">(optional)</span>
+                  </label>
+                  <textarea
+                    value={banReason}
+                    onChange={(e) => setBanReason(e.target.value)}
+                    placeholder="Violation of rules..."
+                    className="w-full h-24 bg-[#141414] border border-[#242424] rounded-2xl p-3.5 text-white text-sm sm:text-base focus:outline-none focus:border-zinc-600 resize-none placeholder:text-zinc-600"
+                  />
+                </div>
+
+                {/* Ban & Cancel Buttons */}
+                <div className="flex items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleBanTargetUser}
+                    className="bg-[#d90000] hover:bg-[#b80000] text-white font-extrabold text-sm sm:text-base py-3 px-9 rounded-2xl transition-colors cursor-pointer"
+                  >
+                    Ban
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBanDropdownOpen(false);
+                      setBanModalOpen(false);
                     }}
                     className="bg-[#2c2c2c] hover:bg-[#383838] text-white font-extrabold text-sm sm:text-base py-3 px-7 rounded-2xl transition-colors cursor-pointer"
                   >
@@ -6723,6 +7146,38 @@ export default function App() {
                         </button>
                       )
                     )}
+
+                    {/* Action button for staff on other users */}
+                    {!isViewingSelf && (() => {
+                      const modalUserRank = getUserRank(
+                        activeModalUser.username,
+                        activeModalUser.email,
+                        activeModalUser.rank,
+                        activeModalUser.customRankIcon,
+                        activeModalUser.customRankName
+                      );
+                      const canActionOnModalUser = Boolean(
+                        activeModalUser.username.toLowerCase() !== 'system' &&
+                        currentUserRank &&
+                        (currentUserRank.id === 'main_developer' || currentUserRank.priority >= 40) &&
+                        currentUserRank.priority > (modalUserRank?.priority ?? 0)
+                      );
+                      return canActionOnModalUser ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedUser(activeModalUser);
+                            setProfileModalOpen(false);
+                            setActionModalOpen(true);
+                          }}
+                          title="Moderation Actions"
+                          className="bg-black/60 hover:bg-black/80 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10 text-rose-400 hover:text-rose-300 font-extrabold text-xs transition-colors cursor-pointer shadow-lg flex items-center gap-1.5"
+                        >
+                          <i className="fa fa-check error text-rose-500 text-xs" />
+                          <span>Action</span>
+                        </button>
+                      ) : null;
+                    })()}
 
                     {/* Close modal button */}
                     <button
