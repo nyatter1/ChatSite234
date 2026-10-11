@@ -42,6 +42,29 @@ export default defineConfig(() => {
           syncRootAssetsToPublic();
         },
       },
+      {
+        name: 'spa-fallback-generator',
+        closeBundle() {
+          try {
+            const distDir = path.resolve(__dirname, 'dist');
+            const indexHtmlPath = path.join(distDir, 'index.html');
+            if (fs.existsSync(indexHtmlPath)) {
+              // 1. Write _redirects for Render & Netlify SPA routing
+              fs.writeFileSync(path.join(distDir, '_redirects'), '/*    /index.html   200\n');
+
+              // 2. Physical /admin/index.html directory
+              const adminDir = path.join(distDir, 'admin');
+              fs.mkdirSync(adminDir, { recursive: true });
+              fs.copyFileSync(indexHtmlPath, path.join(adminDir, 'index.html'));
+
+              // 3. Physical /admin.html file for clean URL hosts
+              fs.copyFileSync(indexHtmlPath, path.join(distDir, 'admin.html'));
+            }
+          } catch (err) {
+            console.warn('spa-fallback-generator notice:', err);
+          }
+        },
+      },
       react(),
       tailwindcss(),
     ],
