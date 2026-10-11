@@ -168,12 +168,23 @@ interface ChatMessage {
   targetUsername?: string | null;
 }
 
+const lastSystemMsgTimeMap = new Map<string, number>();
+
 async function sendSystemBotMessage(
   systemType: 'join' | 'mute' | 'clear',
   targetUsername: string,
   text: string
 ) {
   try {
+    const key = `${systemType}:${targetUsername.toLowerCase()}`;
+    const now = Date.now();
+    const lastTime = lastSystemMsgTimeMap.get(key) || 0;
+    // Prevent duplicate system message within 30 seconds
+    if (now - lastTime < 30000 && systemType !== 'clear') {
+      return;
+    }
+    lastSystemMsgTimeMap.set(key, now);
+
     const messagesRef = ref(rtdb, 'messages');
     const newMsgData = {
       sender: SYSTEM_BOT_USERNAME,
@@ -985,7 +996,7 @@ export default function App() {
                   : cleanMediaUrl
                   ? 'image'
                   : null;
-              liveMsgs.push({
+              const newMsgItem: ChatMessage = {
                 id: childSnap.key || Date.now().toString(),
                 sender: data.sender || 'Anonymous',
                 senderKey: data.senderKey || sanitizeDbKey(data.sender || 'Anonymous'),
@@ -1008,7 +1019,25 @@ export default function App() {
                 isSystem: Boolean(data.isSystem),
                 systemType: data.systemType || null,
                 targetUsername: data.targetUsername || null
-              });
+              };
+
+              // Deduplicate consecutive identical system join messages & auto-purge spam from RTDB
+              if (newMsgItem.isSystem && newMsgItem.systemType === 'join') {
+                const prevMsg = liveMsgs[liveMsgs.length - 1];
+                if (
+                  prevMsg &&
+                  prevMsg.isSystem &&
+                  prevMsg.systemType === 'join' &&
+                  (prevMsg.targetUsername === newMsgItem.targetUsername || prevMsg.text === newMsgItem.text)
+                ) {
+                  if (childSnap.key) {
+                    remove(ref(rtdb, `messages/${childSnap.key}`)).catch(() => {});
+                  }
+                  return;
+                }
+              }
+
+              liveMsgs.push(newMsgItem);
             });
 
             // Detect newly arrived chat messages and play appropriate sound effects
@@ -1840,38 +1869,6 @@ export default function App() {
         if (snap.val() === true) {
           onDisconnect(userOnlineRef).set(false);
           onDisconnect(userLastSeenRef).set(serverTimestamp());
-
-          // Check whether to broadcast "[Username] has joined the room"
-          // Triggered on first-time join or coming back online after >= 10 minutes
-          (async () => {
-            try {
-              const currentSnap = await get(userRef);
-              if (currentSnap.exists()) {
-                const userData = currentSnap.val();
-                const now = Date.now();
-                const TEN_MINUTES_MS = 10 * 60 * 1000;
-                const prevLastSeen = typeof userData.lastSeen === 'number' ? userData.lastSeen : 0;
-                const lastAnnounced = typeof userData.lastJoinAnnouncedAt === 'number' ? userData.lastJoinAnnouncedAt : 0;
-
-                const isNeverAnnounced = !lastAnnounced;
-                const isBackAfter10Min =
-                  prevLastSeen > 0 &&
-                  (now - prevLastSeen >= TEN_MINUTES_MS) &&
-                  (now - lastAnnounced >= TEN_MINUTES_MS);
-
-                if (isNeverAnnounced || isBackAfter10Min) {
-                  await update(userRef, { lastJoinAnnouncedAt: now });
-                  await sendSystemBotMessage(
-                    'join',
-                    currentUser.username,
-                    `${currentUser.username} has joined the room`
-                  );
-                }
-              }
-            } catch (joinErr) {
-              console.warn('Error checking join announcement:', joinErr);
-            }
-          })();
 
           update(userRef, {
             isOnline: true,
