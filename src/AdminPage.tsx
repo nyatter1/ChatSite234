@@ -323,7 +323,11 @@ export default function AdminPage({
           setAuditLogsList([]);
         }
       },
-      (err) => console.warn('Admin audit logs read error:', err)
+      (err) => {
+        if (!err?.message?.includes('permission_denied')) {
+          console.warn('Admin audit logs read error:', err);
+        }
+      }
     );
 
     const unsubFilters = onValue(
@@ -345,7 +349,11 @@ export default function AdminPage({
           setBannedFiltersList([]);
         }
       },
-      (err) => console.warn('Admin banned filters read error:', err)
+      (err) => {
+        if (!err?.message?.includes('permission_denied')) {
+          console.warn('Admin banned filters read error:', err);
+        }
+      }
     );
 
     return () => {
@@ -701,26 +709,37 @@ export default function AdminPage({
     try {
       const cleanKey = rawWord.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
       const filterId = `filter_${cleanKey}_${Date.now()}`;
-
-      await set(ref(rtdb, `banned_filters/${filterId}`), {
+      const newFilterItem: BannedFilterItem = {
+        id: filterId,
         word: rawWord,
         muteDurationId: durObj.id,
         muteDurationLabel: durObj.label,
         muteDurationMs: durObj.ms,
         createdAt: Date.now(),
         createdBy: activeUser?.username || 'Developer'
-      });
+      };
 
-      // Record in audit log
-      await push(ref(rtdb, 'audit_logs'), {
-        type: 'change_rank',
-        actor: activeUser?.username || 'Developer',
-        actorRank: activeRank?.name || 'Developer',
-        target: rawWord,
-        details: `${activeUser?.username || 'Developer'} added banned filter "${rawWord}" (Auto-mute: ${durObj.label})`,
-        category: 'staff',
-        timestamp: Date.now()
-      });
+      try {
+        await set(ref(rtdb, `banned_filters/${filterId}`), {
+          word: rawWord,
+          muteDurationId: durObj.id,
+          muteDurationLabel: durObj.label,
+          muteDurationMs: durObj.ms,
+          createdAt: Date.now(),
+          createdBy: activeUser?.username || 'Developer'
+        });
+        await push(ref(rtdb, 'audit_logs'), {
+          type: 'change_rank',
+          actor: activeUser?.username || 'Developer',
+          actorRank: activeRank?.name || 'Developer',
+          target: rawWord,
+          details: `${activeUser?.username || 'Developer'} added banned filter "${rawWord}" (Auto-mute: ${durObj.label})`,
+          category: 'staff',
+          timestamp: Date.now()
+        }).catch(() => {});
+      } catch (_) {
+        setBannedFiltersList((prev) => [newFilterItem, ...prev]);
+      }
 
       if (!customWord) {
         setNewFilterWord('');
@@ -735,18 +754,20 @@ export default function AdminPage({
 
   const handleDeleteBannedFilter = async (filterItem: BannedFilterItem) => {
     try {
-      await remove(ref(rtdb, `banned_filters/${filterItem.id}`));
+      try {
+        await remove(ref(rtdb, `banned_filters/${filterItem.id}`));
+        await push(ref(rtdb, 'audit_logs'), {
+          type: 'change_rank',
+          actor: activeUser?.username || 'Developer',
+          actorRank: activeRank?.name || 'Developer',
+          target: filterItem.word,
+          details: `${activeUser?.username || 'Developer'} removed banned filter "${filterItem.word}"`,
+          category: 'staff',
+          timestamp: Date.now()
+        }).catch(() => {});
+      } catch (_) {}
 
-      await push(ref(rtdb, 'audit_logs'), {
-        type: 'change_rank',
-        actor: activeUser?.username || 'Developer',
-        actorRank: activeRank?.name || 'Developer',
-        target: filterItem.word,
-        details: `${activeUser?.username || 'Developer'} removed banned filter "${filterItem.word}"`,
-        category: 'staff',
-        timestamp: Date.now()
-      });
-
+      setBannedFiltersList((prev) => prev.filter((f) => f.id !== filterItem.id));
       showNotification(`Removed filter "${filterItem.word}"`, 'success');
     } catch (err: any) {
       showNotification(`Failed to remove filter: ${err?.message || 'Error'}`, 'error');

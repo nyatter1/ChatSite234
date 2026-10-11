@@ -52,7 +52,8 @@ import {
   SmilePlus,
   Smile,
   Pin,
-  Dices
+  Dices,
+  Edit3
 } from 'lucide-react';
 import {
   CreatePollModal,
@@ -762,6 +763,8 @@ export default function App() {
   const [banDurationId, setBanDurationId] = useState<string>('1d');
   const [banDropdownOpen, setBanDropdownOpen] = useState(false);
   const [banReason, setBanReason] = useState('');
+  const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
+  const [editingMsgText, setEditingMsgText] = useState('');
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const isUnmutingRef = useRef(false);
   const isUnbanningRef = useRef(false);
@@ -3504,6 +3507,25 @@ export default function App() {
       }
     } catch (err) {
       console.warn('Error deleting message:', err);
+    }
+  };
+
+  const handleEditMessage = async (msgId: string, newText: string) => {
+    if (!newText.trim()) return;
+    const cleanText = newText.trim();
+    setMessages((prev) =>
+      prev.map((m) => (m.id === msgId ? { ...m, text: cleanText, edited: true } : m))
+    );
+    try {
+      await update(ref(rtdb, `messages/${msgId}`), {
+        text: cleanText,
+        edited: true,
+        editedAt: serverTimestamp()
+      });
+      setEditingMsgId(null);
+      setEditingMsgText('');
+    } catch (err) {
+      console.warn('Error editing message:', err);
     }
   };
 
