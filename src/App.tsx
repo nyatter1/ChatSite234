@@ -779,25 +779,32 @@ export default function App() {
   useEffect(() => {
     const fp = getDeviceFingerprint();
     const devBanRef = ref(rtdb, `banned_devices/${fp}`);
-    const unsub = onValue(devBanRef, (snap) => {
-      if (snap.exists()) {
-        const val = snap.val();
-        if (
-          val &&
-          val.isBanned === true &&
-          (!val.bannedUntil || val.bannedUntil === -1 || val.bannedUntil > Date.now())
-        ) {
-          setDeviceBannedInfo({
-            isBanned: true,
-            reason: val.reason || val.bannedReason || 'Violation of community guidelines',
-            duration: val.duration || val.bannedDuration || 'Permanent',
-            bannedBy: val.bannedBy || null
-          });
-          return;
+    const unsub = onValue(
+      devBanRef,
+      (snap) => {
+        if (snap.exists()) {
+          const val = snap.val();
+          if (
+            val &&
+            val.isBanned === true &&
+            (!val.bannedUntil || val.bannedUntil === -1 || val.bannedUntil > Date.now())
+          ) {
+            setDeviceBannedInfo({
+              isBanned: true,
+              reason: val.reason || val.bannedReason || 'Violation of community guidelines',
+              duration: val.duration || val.bannedDuration || 'Permanent',
+              bannedBy: val.bannedBy || null
+            });
+            return;
+          }
         }
+        setDeviceBannedInfo(null);
+      },
+      (error) => {
+        // Silently handle if banned_devices has restricted permissions
+        console.warn('banned_devices listener notice:', error?.message);
       }
-      setDeviceBannedInfo(null);
-    });
+    );
     return () => unsub();
   }, []);
 
@@ -1354,6 +1361,31 @@ export default function App() {
               });
             });
             setRegisteredUsers(list);
+
+            // Synchronize device ban status from users table across cleared cookies/sessions
+            const myFp = getDeviceFingerprint();
+            let foundDeviceBan: any = null;
+            snapshot.forEach((childSnap) => {
+              const val = childSnap.val();
+              if (
+                val &&
+                val.deviceFingerprint === myFp &&
+                val.isBanned === true &&
+                (!val.bannedUntil || val.bannedUntil === -1 || val.bannedUntil > Date.now())
+              ) {
+                foundDeviceBan = {
+                  isBanned: true,
+                  reason: val.bannedReason || 'Violation of community guidelines',
+                  duration: val.bannedDuration || 'Permanent',
+                  bannedBy: val.bannedBy || null
+                };
+              }
+            });
+            if (foundDeviceBan) {
+              setDeviceBannedInfo(foundDeviceBan);
+            } else {
+              setDeviceBannedInfo((prev) => (prev ? null : prev));
+            }
           } else {
             setRegisteredUsers([]);
           }
@@ -2419,24 +2451,29 @@ export default function App() {
     try {
       // Check if this device is banned in RTDB (prevents banned user from creating an account even after clearing cookies)
       const currentFp = getDeviceFingerprint();
-      const bannedDevSnap = await get(ref(rtdb, `banned_devices/${currentFp}`));
-      if (bannedDevSnap.exists()) {
-        const bVal = bannedDevSnap.val();
-        if (
-          bVal &&
-          bVal.isBanned === true &&
-          (!bVal.bannedUntil || bVal.bannedUntil === -1 || bVal.bannedUntil > Date.now())
-        ) {
-          setDeviceBannedInfo({
-            isBanned: true,
-            reason: bVal.reason || bVal.bannedReason || 'Violation of community guidelines',
-            duration: bVal.duration || bVal.bannedDuration || 'Permanent',
-            bannedBy: bVal.bannedBy || null
-          });
-          setRegError('You have been banned from this community and cannot create a new account.');
-          setRegLoading(false);
-          return;
+      try {
+        const bannedDevSnap = await get(ref(rtdb, `banned_devices/${currentFp}`));
+        if (bannedDevSnap.exists()) {
+          const bVal = bannedDevSnap.val();
+          if (
+            bVal &&
+            bVal.isBanned === true &&
+            (!bVal.bannedUntil || bVal.bannedUntil === -1 || bVal.bannedUntil > Date.now())
+          ) {
+            setDeviceBannedInfo({
+              isBanned: true,
+              reason: bVal.reason || bVal.bannedReason || 'Violation of community guidelines',
+              duration: bVal.duration || bVal.bannedDuration || 'Permanent',
+              bannedBy: bVal.bannedBy || null
+            });
+            setRegError('You have been banned from this community and cannot create a new account.');
+            setRegLoading(false);
+            return;
+          }
         }
+      } catch (devErr) {
+        // Fallback: If banned_devices path has restricted permissions, fallback to users table scan below
+        console.warn('banned_devices check bypassed or restricted:', devErr);
       }
 
       const sanitizedKey = sanitizeDbKey(trimmedUser);
@@ -2448,6 +2485,23 @@ export default function App() {
         for (const k of Object.keys(usersData)) {
           const u = usersData[k];
           if (!u || !u.username) continue;
+
+          // Check if device fingerprint matches an active banned user account
+          if (
+            u.deviceFingerprint === currentFp &&
+            u.isBanned === true &&
+            (!u.bannedUntil || u.bannedUntil === -1 || u.bannedUntil > Date.now())
+          ) {
+            setDeviceBannedInfo({
+              isBanned: true,
+              reason: u.bannedReason || 'Violation of community guidelines',
+              duration: u.bannedDuration || 'Permanent',
+              bannedBy: u.bannedBy || null
+            });
+            setRegError('You have been banned from this community and cannot create a new account.');
+            setRegLoading(false);
+            return;
+          }
 
           if (k === sanitizedKey || u.username.toLowerCase() === trimmedUser.toLowerCase()) {
             setRegError('This username is already taken by someone else. Please choose another username.');
