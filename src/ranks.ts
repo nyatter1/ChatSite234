@@ -78,45 +78,45 @@ export const RANKS: Record<string, RankDefinition> = {
     icon: SYSTEM_BOT_RANK_ICON,
     priority: 35
   },
-  rank737: {
-    id: 'rank737',
-    name: 'Super VIP',
-    icon: `${GITHUB_RANKS_BASE}/rank_737cb.gif`,
+  ghost: {
+    id: 'ghost',
+    name: 'Ghost',
+    icon: '/ghost.gif',
     priority: 30
-  },
-  vip: {
-    id: 'vip',
-    name: 'VIP',
-    icon: `${GITHUB_RANKS_BASE}/vip.gif`,
-    priority: 25
   },
   superprem: {
     id: 'superprem',
     name: 'Super Premium',
     icon: '/superprem.gif',
-    priority: 18
+    priority: 25
   },
   prem: {
     id: 'prem',
     name: 'Premium',
     icon: '/prem.gif',
+    priority: 20
+  },
+  rank737: {
+    id: 'rank737',
+    name: 'Super VIP',
+    icon: `${GITHUB_RANKS_BASE}/rank_737cb.gif`,
     priority: 15
   },
-  ghost: {
-    id: 'ghost',
-    name: 'Ghost',
-    icon: '/ghost.gif',
+  vip: {
+    id: 'vip',
+    name: 'VIP',
+    icon: `${GITHUB_RANKS_BASE}/vip.gif`,
     priority: 10
   }
 };
 
 export const ASSIGNABLE_RANKS: { id: string; name: string; priority: number }[] = [
   { id: 'none', name: 'User', priority: 0 },
-  { id: 'ghost', name: 'Ghost', priority: 10 },
-  { id: 'prem', name: 'Premium', priority: 15 },
-  { id: 'superprem', name: 'Super Premium', priority: 18 },
-  { id: 'vip', name: 'VIP', priority: 25 },
-  { id: 'rank737', name: 'Super VIP', priority: 30 },
+  { id: 'vip', name: 'VIP', priority: 10 },
+  { id: 'rank737', name: 'Super VIP', priority: 15 },
+  { id: 'prem', name: 'Premium', priority: 20 },
+  { id: 'superprem', name: 'Super Premium', priority: 25 },
+  { id: 'ghost', name: 'Ghost', priority: 30 },
   { id: 'mod', name: 'Moderator', priority: 40 },
   { id: 'admin', name: 'Admin', priority: 50 },
   { id: 'superadmin', name: 'Super Admin', priority: 60 },

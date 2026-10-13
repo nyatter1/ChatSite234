@@ -362,9 +362,6 @@ function sanitizeMediaUrl(url: string | null | undefined): string | null {
   return url;
 }
 
-const BAZAARLINK_API_URL = 'https://api.bazaarlink.ai/v1/chat/completions';
-const BAZAARLINK_API_KEY = 'sk-bl-Lj2VRPx5ynD0-9AoM4uARPUBo4BDRvSAFPXJoaoxA7BOAQc9';
-
 async function generateAiBotReply(
   prompt: string,
   botName: string,
@@ -372,7 +369,6 @@ async function generateAiBotReply(
 ): Promise<string> {
   const userPrompt = prompt.trim() || 'Say hello in one sentence';
 
-  // 1. Try server-side proxy endpoint (/api/bot-chat) first
   try {
     const res = await fetch('/api/bot-chat', {
       method: 'POST',
@@ -385,56 +381,8 @@ async function generateAiBotReply(
         return data.reply.trim();
       }
     }
-  } catch (_) {
-    // Fall through to direct BazaarLink call if server route is unavailable
-  }
-
-  // 2. Direct BazaarLink API call fallback (DeepSeek V4 Flash 0731 Free primary)
-  const messages = [
-    {
-      role: 'system',
-      content: `You are ${botName}, an official, intelligent automated AI assistant. Answer any question, math problem, or topic accurately, directly, and formally in 1 to 2 concise sentences. Never use roleplay, actions in asterisks (*...*), slang, or emotes. Do not prefix your message with "${senderName}" or "@${senderName}" because the system automatically prepends their username tag.`
-    },
-    {
-      role: 'user',
-      content: userPrompt
-    }
-  ];
-
-  const modelsToTry = [
-    'deepseek/deepseek-v4-flash-0731free:free',
-    'qwen/qwen3.7-flash:free',
-    'auto:free'
-  ];
-
-  for (const model of modelsToTry) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const response = await fetch(BAZAARLINK_API_URL, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${BAZAARLINK_API_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model,
-            messages
-          })
-        });
-        const data = await response.json();
-        const content = data?.choices?.[0]?.message?.content?.trim();
-        if (response.ok && content) {
-          return content;
-        }
-        if (response.status === 429 && attempt === 0) {
-          await new Promise((r) => setTimeout(r, 900));
-          continue;
-        }
-        break;
-      } catch (_) {
-        break;
-      }
-    }
+  } catch (err) {
+    console.warn('Bot chat server call error:', err);
   }
 
   return 'Hello. How may I assist you today?';
@@ -5215,7 +5163,7 @@ export default function App() {
             <img
               src="/logo.png?v=transparent"
               alt="Logo"
-              className="h-9 sm:h-11 w-auto object-contain bg-transparent select-none pointer-events-none shrink-0"
+              className="hidden sm:block h-9 sm:h-11 w-auto object-contain bg-transparent select-none pointer-events-none shrink-0"
             />
           </div>
 
@@ -9863,7 +9811,7 @@ export default function App() {
         <img
           src="/logo.png?v=transparent"
           alt="Logo"
-          className="h-24 sm:h-28 md:h-32 w-auto object-contain bg-transparent mx-auto mb-5 drop-shadow-[0_8px_24px_rgba(0,0,0,0.45)] select-none pointer-events-none"
+          className="hidden sm:block h-24 sm:h-28 md:h-32 w-auto object-contain bg-transparent mx-auto mb-5 drop-shadow-[0_8px_24px_rgba(0,0,0,0.45)] select-none pointer-events-none"
         />
 
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight text-white mb-4">
