@@ -5143,6 +5143,29 @@ export default function App() {
                   <span>Messages</span>
                 </button>
 
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowHamburgerMenu(false);
+                    setShowProfileMenu(false);
+                    setShowNotificationsMenu(false);
+                    setShowPrivateMenu(true);
+                  }}
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm font-extrabold rounded-xl transition-colors cursor-pointer text-left ${
+                    showPrivateMenu
+                      ? 'bg-purple-500/15 text-purple-400'
+                      : 'text-white hover:bg-white/5'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Mail className="w-4 h-4 text-purple-400" />
+                    <span>Private Messages</span>
+                  </div>
+                  {hasUnreadPms && (
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#ff1e1e]" />
+                  )}
+                </button>
+
                 {messagesViewActive && (
                   <button
                     type="button"
@@ -5191,7 +5214,7 @@ export default function App() {
 
             {/* Private Dropdown Menu (Screenshot 1) */}
             {showPrivateMenu && (
-              <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-[#18181c] border border-[#282832] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100">
+              <div className="fixed inset-x-2 top-14 mt-2 sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 w-auto sm:w-96 max-w-[calc(100vw-16px)] sm:max-w-none bg-[#18181c] border border-[#282832] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100">
                 {/* Private Dropdown Header */}
                 <div className="px-4 py-3 border-b border-[#25252e] flex items-center justify-between bg-[#1b1b20]">
                   <div className="flex items-center gap-2">
@@ -5200,7 +5223,7 @@ export default function App() {
                       Private
                     </span>
                   </div>
-                  <div className="flex items-center gap-3.5">
+                  <div className="flex items-center gap-3">
                     <button
                       type="button"
                       onClick={handleMarkAllPmsRead}
@@ -5216,6 +5239,15 @@ export default function App() {
                       className="text-white hover:text-rose-400 transition-colors cursor-pointer"
                     >
                       <i className="fa fa-trash text-base" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowPrivateMenu(false)}
+                      title="Close"
+                      aria-label="Close"
+                      className="text-zinc-400 hover:text-white transition-colors cursor-pointer p-0.5 ml-0.5"
+                    >
+                      <X className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -5362,7 +5394,7 @@ export default function App() {
 
             {/* Notifications Dropdown Menu right underneath */}
             {showNotificationsMenu && (
-              <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-[#141418] border border-[#262630] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100">
+              <div className="fixed inset-x-2 top-14 mt-2 sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 w-auto sm:w-96 max-w-[calc(100vw-16px)] sm:max-w-none bg-[#141418] border border-[#262630] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100">
                 {notifications.length > 0 && (
                   <div className="px-4 py-2.5 border-b border-[#22222c] flex items-center justify-between bg-[#18181f]">
                     <span className="text-xs font-extrabold text-zinc-300 uppercase tracking-wider">
@@ -9268,8 +9300,8 @@ export default function App() {
             <div
               className={`fixed z-50 bg-[#121215] border border-[#25252e] rounded-2xl shadow-2xl flex flex-col overflow-hidden transition-all duration-150 ${
                 pmWindowExpanded
-                  ? 'inset-3 sm:inset-auto sm:bottom-12 sm:right-4 sm:w-[580px] sm:h-[620px]'
-                  : 'bottom-11 right-2 sm:right-4 w-[calc(100vw-16px)] sm:w-[430px] h-[440px] sm:h-[470px]'
+                  ? 'inset-2 sm:inset-auto sm:bottom-12 sm:right-4 sm:w-[580px] sm:h-[620px]'
+                  : 'bottom-11 sm:bottom-12 inset-x-2 sm:inset-x-auto sm:right-4 sm:w-[430px] h-[450px] max-h-[calc(100dvh-64px)] sm:h-[470px]'
               }`}
             >
               {/* PM Window Top Header Bar */}
