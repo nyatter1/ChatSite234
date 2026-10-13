@@ -54,7 +54,8 @@ import {
   Smile,
   Pin,
   Dices,
-  Edit3
+  Edit3,
+  ShoppingBag
 } from 'lucide-react';
 import {
   CreatePollModal,
@@ -103,6 +104,7 @@ const clearSoundUrl = '/clear.mp3';
 const joinSoundUrl = '/join.mp3';
 const actionSoundUrl = '/action.mp3';
 import BorderModal from './components/BorderModal';
+import StoreModal, { extractYoutubeVideoId } from './components/StoreModal';
 import DatabaseMonitorModal from './components/DatabaseMonitorModal';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
 import RewardsModal, { getTodayDateString } from './components/RewardsModal';
@@ -610,6 +612,8 @@ interface UserProfileData {
   profileBorderThickness?: number;
   pfpBorderId?: string | null;
   pfpBorderThickness?: number;
+  infoBannerUrl?: string | null;
+  profileBackgroundVideo?: string | null;
   musicTrack?: MusicTrack | null;
   mutedUntil?: number | null;
   muteDuration?: string | null;
@@ -638,7 +642,7 @@ interface UserProfileData {
   updatedAt?: any;
 }
 
-interface UserProfileState {
+export interface UserProfileState {
   rank?: string | null;
   customRankIcon?: string | null;
   customRankName?: string | null;
@@ -661,6 +665,8 @@ interface UserProfileState {
   profileBorderThickness: number;
   pfpBorderId: string | null;
   pfpBorderThickness: number;
+  infoBannerUrl?: string | null;
+  profileBackgroundVideo?: string | null;
   musicTrack: MusicTrack | null;
   mutedUntil?: number | null;
   muteDuration?: string | null;
@@ -722,6 +728,8 @@ export default function App() {
     profileBorderThickness: 2,
     pfpBorderId: 'pfp-default',
     pfpBorderThickness: 2,
+    infoBannerUrl: null,
+    profileBackgroundVideo: null,
     musicTrack: null,
     customRankIcon: null,
     customRankName: null,
@@ -741,7 +749,9 @@ export default function App() {
           ruby: typeof parsed.ruby === 'number' ? parsed.ruby : 10,
           ...parsed,
           avatarUrl: sanitizeMediaUrl(parsed.avatarUrl),
-          bannerUrl: sanitizeMediaUrl(parsed.bannerUrl)
+          bannerUrl: sanitizeMediaUrl(parsed.bannerUrl),
+          infoBannerUrl: sanitizeMediaUrl(parsed.infoBannerUrl) || null,
+          profileBackgroundVideo: parsed.profileBackgroundVideo || null
         };
       }
     } catch (_) {}
@@ -986,8 +996,19 @@ export default function App() {
 
   const [rulesModalOpen, setRulesModalOpen] = useState(false);
   const [activeRulesTab, setActiveRulesTab] = useState<'user' | 'staff'>('user');
+  const [storeModalOpen, setStoreModalOpen] = useState(false);
+  const [storePendingPurchase, setStorePendingPurchase] = useState<'profileBorder' | 'pfpBorder' | 'music' | null>(null);
   const [dbMonitorModalOpen, setDbMonitorModalOpen] = useState(false);
   const [chatHistoryLimit, setChatHistoryLimit] = useState<number>(60);
+
+  // In-App Toast notification system (replaces blocking window.alert)
+  const [appToast, setAppToast] = useState<{ message: string; type?: 'info' | 'error' | 'success' } | null>(null);
+  const showAppToast = useCallback((message: string, type: 'info' | 'error' | 'success' = 'error') => {
+    setAppToast({ message, type });
+    setTimeout(() => {
+      setAppToast((prev) => (prev?.message === message ? null : prev));
+    }, 4500);
+  }, []);
 
   // Private Messages (PMs) State
   const [showPrivateMenu, setShowPrivateMenu] = useState(false);
@@ -1336,6 +1357,8 @@ export default function App() {
                 profileBorderThickness: typeof val.profileBorderThickness === 'number' ? val.profileBorderThickness : 2,
                 pfpBorderId: val.pfpBorderId || 'pfp-default',
                 pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : 2,
+                infoBannerUrl: sanitizeMediaUrl(val.infoBannerUrl),
+                profileBackgroundVideo: val.profileBackgroundVideo || null,
                 musicTrack: val.musicTrack || null,
                 mutedUntil: typeof val.mutedUntil === 'number' ? val.mutedUntil : null,
                 muteDuration: val.muteDuration || null,
@@ -2026,6 +2049,8 @@ export default function App() {
             profileBorderThickness: typeof val.profileBorderThickness === 'number' ? val.profileBorderThickness : prev.profileBorderThickness,
             pfpBorderId: val.pfpBorderId || prev.pfpBorderId,
             pfpBorderThickness: typeof val.pfpBorderThickness === 'number' ? val.pfpBorderThickness : prev.pfpBorderThickness,
+            infoBannerUrl: val.infoBannerUrl !== undefined ? sanitizeMediaUrl(val.infoBannerUrl) : prev.infoBannerUrl,
+            profileBackgroundVideo: val.profileBackgroundVideo !== undefined ? (val.profileBackgroundVideo || null) : (prev.profileBackgroundVideo || null),
             musicTrack: val.musicTrack || null,
             rank: val.rank !== undefined ? val.rank : prev.rank,
             customRankIcon: val.customRankIcon || null,
@@ -4108,14 +4133,14 @@ export default function App() {
     const targetRank = getUserRank(targetUsername, targetVal?.email, targetVal?.rank);
 
     if (!canActionTarget(myRank, targetRank)) {
-      alert('You cannot change the rank of someone with an equal or higher rank.');
+      showAppToast('You cannot change the rank of someone with an equal or higher rank.');
       return;
     }
 
     const dbRankVal = !newRankId || newRankId === 'none' ? 'none' : newRankId;
     const newRankDef = ASSIGNABLE_RANKS.find((r) => r.id === dbRankVal);
     if (newRankDef && !canAssignRank(myRank, newRankDef.priority)) {
-      alert('You can only assign ranks that are lower than your own rank.');
+      showAppToast('You can only assign ranks that are lower than your own rank.');
       return;
     }
 
@@ -4262,7 +4287,7 @@ export default function App() {
     if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
     const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
     if (!myRank || !canMuteRank(myRank)) {
-      alert('Only staff members can mute users.');
+      showAppToast('Only staff members can mute users.');
       return;
     }
 
@@ -4274,7 +4299,7 @@ export default function App() {
       liveSelectedUser.customRankName
     );
     if (myRank.id !== 'main_developer' && (targetRank?.priority ?? 0) >= myRank.priority) {
-      alert('You cannot mute someone with an equal or higher rank.');
+      showAppToast('You cannot mute someone with an equal or higher rank.');
       return;
     }
 
@@ -4340,7 +4365,7 @@ export default function App() {
     if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
     const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
     if (!myRank || !canBanRank(myRank)) {
-      alert('Only Super Admin and above can ban users. Moderators can only mute.');
+      showAppToast('Only Super Admin and above can ban users. Moderators can only mute.');
       return;
     }
 
@@ -4352,7 +4377,7 @@ export default function App() {
       liveSelectedUser.customRankName
     );
     if (myRank.id !== 'main_developer' && (targetRank?.priority ?? 0) >= myRank.priority) {
-      alert('You cannot ban someone with an equal or higher rank.');
+      showAppToast('You cannot ban someone with an equal or higher rank.');
       return;
     }
 
@@ -4436,7 +4461,7 @@ export default function App() {
       if (!currentUser) return;
       const myRank = getUserRank(currentUser.username, currentUser.email, userProfile.rank);
       if (!myRank || !canBanRank(myRank)) {
-        alert('Only Super Admin and above can unban users.');
+        showAppToast('Only Super Admin and above can unban users.');
         return;
       }
       const targetKey = sanitizeDbKey(targetUsername);
@@ -4489,7 +4514,7 @@ export default function App() {
         console.warn('Error unbanning user in RTDB:', err);
       }
     },
-    [currentUser, userProfile.rank]
+    [currentUser, userProfile.rank, showAppToast]
   );
 
   // Warn target user (Super Admin and above)
@@ -4497,7 +4522,7 @@ export default function App() {
     if (!targetUsername || targetUsername.toLowerCase() === 'system') return;
     const myRank = getUserRank(currentUser?.username, currentUser?.email, userProfile.rank);
     if (!myRank || !canWarnRank(myRank)) {
-      alert('Only Super Admin and above can issue warnings.');
+      showAppToast('Only Super Admin and above can issue warnings.');
       return;
     }
     const targetKey = sanitizeDbKey(targetUsername);
@@ -4505,7 +4530,7 @@ export default function App() {
     const targetVal = targetSnap.exists() ? targetSnap.val() : null;
     const targetRank = getUserRank(targetUsername, targetVal?.email, targetVal?.rank);
     if (!canActionTarget(myRank, targetRank)) {
-      alert('You cannot warn someone with an equal or higher rank.');
+      showAppToast('You cannot warn someone with an equal or higher rank.');
       return;
     }
     try {
@@ -4843,6 +4868,73 @@ export default function App() {
     }
   }, [isProfileMusicPlaying, activeAudioTrack]);
 
+  // Autoplay profile music when viewing profile modal, and stop playback when exiting profile
+  useEffect(() => {
+    if (!profileModalOpen) {
+      setIsProfileMusicPlaying(false);
+      setActiveAudioTrack(null);
+      if (profileAudioRef.current) {
+        profileAudioRef.current.pause();
+        profileAudioRef.current.currentTime = 0;
+      }
+      return;
+    }
+
+    // Modal is open - determine target user's profile
+    const activeModalUser: UserProfileData = (liveSelectedUser && (!currentUser || liveSelectedUser.username.toLowerCase() !== currentUser.username.toLowerCase()))
+      ? liveSelectedUser
+      : (currentUser ? {
+          username: currentUser.username,
+          ...userProfile,
+          isOnline: true
+        } : {
+          username: 'Guest',
+          isOnline: true
+        });
+
+    const isSelf = Boolean(
+      currentUser &&
+      activeModalUser &&
+      activeModalUser.username.toLowerCase() === currentUser.username.toLowerCase()
+    );
+
+    const bgVideoUrl = isSelf
+      ? userProfile.profileBackgroundVideo
+      : activeModalUser?.profileBackgroundVideo;
+    const bgVideoId = bgVideoUrl ? extractYoutubeVideoId(bgVideoUrl) : null;
+
+    // If background video is active, video plays behind and profile music should not play
+    if (bgVideoId) {
+      setIsProfileMusicPlaying(false);
+      setActiveAudioTrack(null);
+      if (profileAudioRef.current) {
+        profileAudioRef.current.pause();
+      }
+      return;
+    }
+
+    const targetMusic = isSelf
+      ? userProfile.musicTrack
+      : activeModalUser?.musicTrack;
+
+    if (targetMusic?.url) {
+      setActiveAudioTrack(targetMusic);
+      setIsProfileMusicPlaying(true);
+    } else {
+      setIsProfileMusicPlaying(false);
+      setActiveAudioTrack(null);
+      if (profileAudioRef.current) {
+        profileAudioRef.current.pause();
+      }
+    }
+  }, [
+    profileModalOpen,
+    liveSelectedUser,
+    currentUser,
+    userProfile.musicTrack,
+    userProfile.profileBackgroundVideo
+  ]);
+
   // Open Edit Sub-Modal with prefilled values
   const openEditSubModal = (
     type: 'info' | 'username' | 'bio' | 'mood' | 'glow' | 'profileBorder' | 'pfpBorder' | 'music'
@@ -5051,6 +5143,18 @@ export default function App() {
                 >
                   <Newspaper className="w-4 h-4 text-[#00b4d8]" />
                   <span>News</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowHamburgerMenu(false);
+                    setStoreModalOpen(true);
+                  }}
+                  className="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm font-extrabold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                >
+                  <ShoppingBag className="w-4 h-4 text-amber-400" />
+                  <span>Store</span>
                 </button>
 
                 <button
@@ -6904,12 +7008,6 @@ export default function App() {
               currentUser &&
               activePopoverUser.username.toLowerCase() === currentUser.username.toLowerCase()
             );
-            const popoverMusicTrack = isSelectedUserMe ? userProfile.musicTrack : activePopoverUser.musicTrack;
-            const isThisTrackPlaying = Boolean(
-              isProfileMusicPlaying &&
-              popoverMusicTrack &&
-              activeAudioTrack?.url === popoverMusicTrack.url
-            );
             const popoverPfpBorderClass = getPfpBorder(
               isSelectedUserMe ? userProfile.pfpBorderId : activePopoverUser.pfpBorderId
             ).pfpBorderClass;
@@ -7061,27 +7159,6 @@ export default function App() {
                     >
                       <SquarePen className="w-4 h-4 text-cyan-400" />
                       <span>Edit</span>
-                    </button>
-                  )}
-
-                  {/* 3. Profile Music play/pause button if track exists */}
-                  {popoverMusicTrack && (
-                    <button
-                      type="button"
-                      onClick={() => handleToggleProfileMusic(popoverMusicTrack)}
-                      className="w-full bg-[#181822] hover:bg-[#20202e] text-cyan-300 font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 text-xs transition-colors cursor-pointer border border-cyan-500/20"
-                    >
-                      {isThisTrackPlaying ? (
-                        <>
-                          <Pause className="w-3.5 h-3.5 fill-cyan-400 shrink-0" />
-                          <span className="truncate">Pause Music</span>
-                        </>
-                      ) : (
-                        <>
-                          <Play className="w-3.5 h-3.5 fill-cyan-400 shrink-0" />
-                          <span className="truncate">Play Profile Music</span>
-                        </>
-                      )}
                     </button>
                   )}
                 </div>
@@ -7573,6 +7650,8 @@ export default function App() {
           <audio
             ref={profileAudioRef}
             src={activeAudioTrack.url}
+            autoPlay
+            loop
             onEnded={() => setIsProfileMusicPlaying(false)}
           />
         )}
@@ -7600,9 +7679,14 @@ export default function App() {
           const bannerToShow = isViewingSelf
             ? userProfile.bannerUrl
             : activeModalUser.bannerUrl;
-          const avatarToShow = isViewingSelf
-            ? userProfile.avatarUrl
-            : activeModalUser.avatarUrl;
+          const infoBannerToShow = isViewingSelf
+            ? userProfile.infoBannerUrl
+            : activeModalUser.infoBannerUrl;
+          const bgVideoUrlToShow = isViewingSelf
+            ? userProfile.profileBackgroundVideo
+            : activeModalUser.profileBackgroundVideo;
+          const bgVideoIdToShow = bgVideoUrlToShow ? extractYoutubeVideoId(bgVideoUrlToShow) : null;
+          const avatarToShow = isViewingSelf ? userProfile.avatarUrl : activeModalUser.avatarUrl;
           const pfpBorderIdToShow = isViewingSelf
             ? userProfile.pfpBorderId
             : activeModalUser.pfpBorderId;
@@ -7619,21 +7703,34 @@ export default function App() {
           const moodToShow = isViewingSelf
             ? userProfile.mood
             : activeModalUser.mood;
-          const musicToShow = isViewingSelf
-            ? userProfile.musicTrack
-            : activeModalUser.musicTrack;
-          const isModalTrackPlaying = Boolean(
-            isProfileMusicPlaying &&
-            musicToShow &&
-            activeAudioTrack?.url === musicToShow.url
-          );
 
           return (
             <div
               role="dialog"
               aria-modal="true"
-              className="fixed inset-0 z-50 bg-black/80 backdrop-blur-[2px] flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200"
+              className={`fixed inset-0 z-50 ${
+                bgVideoIdToShow ? 'bg-black/40' : 'bg-black/80 backdrop-blur-[2px]'
+              } flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200 overflow-hidden`}
             >
+              {/* FULL-SCREEN AUTOPLAY YOUTUBE BACKGROUND VIDEO BEHIND PROFILE */}
+              {bgVideoIdToShow && (
+                <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none select-none">
+                  <iframe
+                    src={`https://www.youtube-nocookie.com/embed/${bgVideoIdToShow}?autoplay=1&mute=0&loop=1&playlist=${bgVideoIdToShow}&controls=0&showinfo=0&rel=0&modestbranding=1&playsinline=1`}
+                    title="Profile Background Video"
+                    allow="autoplay; encrypted-media; fullscreen"
+                    className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[130vw] h-[130vh] min-w-full min-h-full object-cover scale-125 pointer-events-none"
+                  />
+                  <div className="absolute inset-0 bg-black/40" />
+                </div>
+              )}
+
+              {/* Click outside backdrop to exit profile & stop background video */}
+              <div
+                className="fixed inset-0 z-[5] cursor-pointer"
+                onClick={() => setProfileModalOpen(false)}
+              />
+
               {/* Hidden file inputs */}
               <input
                 type="file"
@@ -7651,7 +7748,7 @@ export default function App() {
               />
 
               <div
-                className={`w-full max-w-[480px] max-h-[92vh] bg-[#141418] rounded-3xl overflow-hidden shadow-2xl flex flex-col text-white animate-in zoom-in-95 duration-150 relative transition-all ${
+                className={`w-full max-w-[480px] max-h-[92vh] bg-[#141418] rounded-3xl overflow-hidden shadow-2xl flex flex-col text-white animate-in zoom-in-95 duration-150 relative z-10 transition-all ${
                   effectiveProfileViewMode === 'view'
                     ? (getProfileBorder(profileBorderIdToShow).cardBorderClass || 'border border-[#252530]')
                     : 'border border-[#252530]'
@@ -7908,7 +8005,20 @@ export default function App() {
                 {/* MODE 1: EDIT PROFILE (Screenshot 5: Account & Customisation tabs) */}
                 {/* ========================================================= */}
                 {isViewingSelf && effectiveProfileViewMode === 'edit' && (
-                  <div className="p-4 sm:p-5 pt-3 overflow-y-auto flex-1 flex flex-col">
+                  <div className="p-4 sm:p-5 pt-3 overflow-y-auto flex-1 flex flex-col relative overflow-hidden">
+                    {/* 2ND BANNER: PROFILE INFO BANNER (IMAGE OR GIF) */}
+                    {infoBannerToShow && (
+                      <div className="absolute inset-0 pointer-events-none z-0">
+                        <img
+                          src={infoBannerToShow}
+                          alt="Profile Info Banner"
+                          className="w-full h-full object-cover"
+                        />
+                        <div className="absolute inset-0 bg-black/75 backdrop-blur-[0.5px]" />
+                      </div>
+                    )}
+
+                    <div className="relative z-10 flex flex-col flex-1">
                     {/* Top Tabs (Screenshot 5: Account, Customisation) */}
                     <div className="flex items-center gap-2 border-b border-[#23232c] pb-3 mb-3 shrink-0">
                       <button
@@ -7988,90 +8098,32 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* TAB 2: CUSTOMISATION (Screenshot 5) */}
+                    {/* TAB 2: CUSTOMISATION (Moved to Store per user request) */}
                     {editOptionsTab === 'customisation' && (
-                      <div className="space-y-1">
-                        {/* 1. Profile Music (Screenshot 4) */}
+                      <div className="p-4 bg-[#181822]/90 backdrop-blur-xs border border-[#272738] rounded-2xl text-center space-y-3 my-auto">
+                        <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mx-auto">
+                          <ShoppingBag className="w-6 h-6 text-amber-400" />
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-black text-white">Moved to Store</h4>
+                          <p className="text-xs text-zinc-400 mt-1 max-w-xs mx-auto leading-relaxed">
+                            Profile Borders, PFP Borders, Profile Music, Info Banners, Background Videos, and Effects have moved to the Store!
+                          </p>
+                        </div>
                         <button
                           type="button"
-                          onClick={() => openEditSubModal('music')}
-                          className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
+                          onClick={() => {
+                            setProfileModalOpen(false);
+                            setStoreModalOpen(true);
+                          }}
+                          className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-black text-xs rounded-xl shadow-lg transition-all cursor-pointer inline-flex items-center gap-2"
                         >
-                          <div className="flex items-center gap-3.5 min-w-0">
-                            <Music className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                            <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
-                              Profile Music
-                            </span>
-                          </div>
-                          {userProfile.musicTrack ? (
-                            <span className="text-xs text-cyan-400 font-bold max-w-[130px] truncate ml-2">
-                              {userProfile.musicTrack.name}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-zinc-500 font-medium ml-2">None</span>
-                          )}
-                        </button>
-
-                        {/* 2. Profile Border (Screenshot 3) */}
-                        <button
-                          type="button"
-                          onClick={() => openEditSubModal('profileBorder')}
-                          className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                        >
-                          <div className="flex items-center gap-3.5 min-w-0">
-                            <Layers className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                            <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
-                              Profile Border
-                            </span>
-                          </div>
-                          <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px] ml-2">
-                            {getProfileBorder(userProfile.profileBorderId).name.replace(/^\d+\.\s*/, '')}
-                          </span>
-                        </button>
-
-                        {/* 3. Profile Picture Border (Screenshot 3 layout) */}
-                        <button
-                          type="button"
-                          onClick={() => openEditSubModal('pfpBorder')}
-                          className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                        >
-                          <div className="flex items-center gap-3.5 min-w-0">
-                            <CircleDot className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                            <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
-                              Profile Picture Border
-                            </span>
-                          </div>
-                          <span className="text-xs text-zinc-400 font-medium truncate max-w-[130px] ml-2">
-                            {getPfpBorder(userProfile.pfpBorderId).name.replace(/^\d+\.\s*/, '')}
-                          </span>
-                        </button>
-
-                        {/* 4. Userlist background glow (Screenshot 1 & 2) */}
-                        <button
-                          type="button"
-                          onClick={() => openEditSubModal('glow')}
-                          className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.04] active:bg-white/[0.08] transition-colors cursor-pointer text-left border-b border-[#1f1f28] group rounded-xl"
-                        >
-                          <div className="flex items-center gap-3.5 min-w-0">
-                            <Sparkles className="w-5 h-5 text-zinc-300 group-hover:text-cyan-400 transition-colors shrink-0" />
-                            <span className="text-sm sm:text-base font-extrabold text-white group-hover:text-cyan-200 transition-colors truncate">
-                              Userlist background glow
-                            </span>
-                          </div>
-                          {userProfile.glowColor ? (
-                            <span
-                              className="w-4 h-4 rounded-full border border-white/60 shadow-sm shrink-0 ml-2"
-                              style={{
-                                backgroundColor: userProfile.glowColor,
-                                boxShadow: `0 0 8px ${userProfile.glowColor}`
-                              }}
-                            />
-                          ) : (
-                            <span className="text-xs text-zinc-500 font-medium ml-2">None</span>
-                          )}
+                          <ShoppingBag className="w-4 h-4" />
+                          <span>Open Store</span>
                         </button>
                       </div>
                     )}
+                    </div>
                   </div>
                 )}
 
@@ -8092,7 +8144,20 @@ export default function App() {
                   );
 
                   return (
-                    <div className="p-5 pt-2 overflow-y-auto flex-1 flex flex-col">
+                    <div className="p-5 pt-2 overflow-y-auto flex-1 flex flex-col relative overflow-hidden">
+                      {/* 2ND BANNER: PROFILE INFO BANNER (IMAGE OR GIF) */}
+                      {infoBannerToShow && (
+                        <div className="absolute inset-0 pointer-events-none z-0">
+                          <img
+                            src={infoBannerToShow}
+                            alt="Profile Info Banner"
+                            className="w-full h-full object-cover"
+                          />
+                          <div className="absolute inset-0 bg-black/65 backdrop-blur-[0.5px]" />
+                        </div>
+                      )}
+
+                      <div className="relative z-10 flex flex-col flex-1">
                       {/* BANNED BANNER ABOVE INFO AND ABOUT ME */}
                       {isTargetUserBanned && (
                         <div className="mb-4 bg-red-600 border border-red-500 text-white px-4 py-3 rounded-2xl flex items-center justify-center gap-2.5 shadow-lg shadow-red-950/40 text-center animate-in fade-in shrink-0">
@@ -8203,32 +8268,6 @@ export default function App() {
                                 {(isViewingSelf ? userProfile.relationship : activeModalUser.relationship) || 'Rather not say'}
                               </span>
                             </div>
-
-                            {/* Profile Music widget in Info tab if track exists */}
-                            {musicToShow && (
-                              <div className="bg-[#181820] border border-[#282838] rounded-xl px-4 py-3 flex items-center justify-between shadow-md">
-                                <div className="flex items-center gap-2.5 min-w-0">
-                                  <Music className="w-4 h-4 text-cyan-400 shrink-0" />
-                                  <div className="min-w-0">
-                                    <span className="text-xs font-bold text-white truncate block">
-                                      {musicToShow.name}
-                                    </span>
-                                    <span className="text-[10px] text-zinc-400">Profile Music</span>
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleProfileMusic(musicToShow)}
-                                  className="w-8 h-8 rounded-lg bg-[#00c2ff] hover:bg-[#00aee6] text-white flex items-center justify-center shrink-0 cursor-pointer shadow-sm ml-2"
-                                >
-                                  {isModalTrackPlaying ? (
-                                    <Pause className="w-4 h-4 fill-white" />
-                                  ) : (
-                                    <Play className="w-4 h-4 fill-white translate-x-0.5" />
-                                  )}
-                                </button>
-                              </div>
-                            )}
                           </div>
                         )
                       )}
@@ -8247,6 +8286,7 @@ export default function App() {
                           )}
                         </div>
                       )}
+                      </div>
                     </div>
                   );
                 })()}
@@ -8256,9 +8296,9 @@ export default function App() {
         })()}
 
         {/* ========================================================= */}
-        {/* SUB-MODALS FOR EDIT ACTIONS (Overlapping IN FRONT of Edit Profile) */}
+        {/* SUB-MODALS FOR EDIT ACTIONS (Overlapping IN FRONT of Edit Profile or Store) */}
         {/* ========================================================= */}
-        {profileModalOpen && activeEditSubModal && (
+        {(profileModalOpen || storePendingPurchase !== null) && activeEditSubModal && (
           <div
             role="dialog"
             aria-modal="true"
@@ -8712,16 +8752,27 @@ export default function App() {
                 country={userProfile.country}
                 language={userProfile.language}
                 bio={userProfile.bio}
-                onSave={(idx, thick) => {
+                onSave={async (idx, thick) => {
+                  if (storePendingPurchase === 'profileBorder' && idx !== 0) {
+                    if ((userProfile.gold ?? 1000) < 1000) {
+                      showAppToast('You need at least 1,000 Gold to purchase Profile Borders.');
+                      return;
+                    }
+                    await handleUpdateCurrency(-1000, 0);
+                  }
                   const updates: Partial<UserProfileState> = {
                     profileBorderId: PROFILE_BORDERS[idx].id,
                     profileBorderThickness: thick
                   };
                   setUserProfile((p) => ({ ...p, ...updates }));
                   saveProfileToRtdb(updates);
+                  setStorePendingPurchase(null);
                   setActiveEditSubModal(null);
                 }}
-                onClose={() => setActiveEditSubModal(null)}
+                onClose={() => {
+                  setStorePendingPurchase(null);
+                  setActiveEditSubModal(null);
+                }}
               />
             )}
 
@@ -8738,16 +8789,27 @@ export default function App() {
                 country={userProfile.country}
                 language={userProfile.language}
                 bio={userProfile.bio}
-                onSave={(idx, thick) => {
+                onSave={async (idx, thick) => {
+                  if (storePendingPurchase === 'pfpBorder' && idx !== 0) {
+                    if ((userProfile.gold ?? 1000) < 1000) {
+                      showAppToast('You need at least 1,000 Gold to purchase Profile Picture Borders.');
+                      return;
+                    }
+                    await handleUpdateCurrency(-1000, 0);
+                  }
                   const updates: Partial<UserProfileState> = {
                     pfpBorderId: PFP_BORDERS[idx].id,
                     pfpBorderThickness: thick
                   };
                   setUserProfile((p) => ({ ...p, ...updates }));
                   saveProfileToRtdb(updates);
+                  setStorePendingPurchase(null);
                   setActiveEditSubModal(null);
                 }}
-                onClose={() => setActiveEditSubModal(null)}
+                onClose={() => {
+                  setStorePendingPurchase(null);
+                  setActiveEditSubModal(null);
+                }}
               />
             )}
 
@@ -8755,19 +8817,94 @@ export default function App() {
             {activeEditSubModal === 'music' && (
               <MusicPlayerModal
                 currentTrack={userProfile.musicTrack}
-                onSaveTrack={(track) => {
-                  setUserProfile((p) => ({ ...p, musicTrack: track }));
-                  saveProfileToRtdb({ musicTrack: track });
-                  if (!track) {
+                onSaveTrack={async (track) => {
+                  if (storePendingPurchase === 'music' && track) {
+                    if ((userProfile.ruby ?? 10) < 50) {
+                      showAppToast('You need at least 50 Rubies to purchase Profile Music.');
+                      return;
+                    }
+                    await handleUpdateCurrency(0, -50);
+                  }
+                  if (track) {
+                    // Profile Music (PFM) removes the profile background video per rule!
+                    const updates: Partial<UserProfileState> = {
+                      musicTrack: track,
+                      profileBackgroundVideo: null
+                    };
+                    setUserProfile((p) => ({ ...p, ...updates }));
+                    saveProfileToRtdb(updates);
+                    setActiveAudioTrack(track);
+                  } else {
+                    setUserProfile((p) => ({ ...p, musicTrack: null }));
+                    saveProfileToRtdb({ musicTrack: null });
                     setActiveAudioTrack(null);
                     setIsProfileMusicPlaying(false);
-                  } else {
-                    setActiveAudioTrack(track);
                   }
+                  setStorePendingPurchase(null);
+                  setActiveEditSubModal(null);
                 }}
-                onClose={() => setActiveEditSubModal(null)}
+                onClose={() => {
+                  setStorePendingPurchase(null);
+                  setActiveEditSubModal(null);
+                }}
               />
             )}
+          </div>
+        )}
+
+        {/* ==================================================== */}
+        {/* STORE MODAL                                          */}
+        {/* ==================================================== */}
+        {storeModalOpen && (
+          <StoreModal
+            userGold={typeof userProfile.gold === 'number' ? userProfile.gold : 1000}
+            userRuby={typeof userProfile.ruby === 'number' ? userProfile.ruby : 10}
+            userProfile={userProfile}
+            onUpdateCurrency={handleUpdateCurrency}
+            onSaveProfile={async (updates) => {
+              setUserProfile((prev) => ({ ...prev, ...updates }));
+              if (updates.musicTrack === null || updates.profileBackgroundVideo) {
+                setActiveAudioTrack(null);
+                setIsProfileMusicPlaying(false);
+              }
+              await saveProfileToRtdb(updates);
+            }}
+            onOpenBorderModal={(type) => {
+              setStorePendingPurchase(type);
+              setActiveEditSubModal(type);
+            }}
+            onOpenMusicModal={() => {
+              setStorePendingPurchase('music');
+              setActiveEditSubModal('music');
+            }}
+            onClose={() => setStoreModalOpen(false)}
+          />
+        )}
+
+        {/* ==================================================== */}
+        {/* IN-APP TOAST NOTIFICATION                             */}
+        {/* ==================================================== */}
+        {appToast && (
+          <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[100] max-w-md w-[92vw] px-4 py-3 bg-[#161620] border border-[#2c2c3e] shadow-2xl rounded-2xl flex items-center justify-between gap-3 text-white text-xs sm:text-sm font-extrabold animate-in fade-in slide-in-from-top-4 duration-150">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <AlertCircle
+                className={`w-4 h-4 shrink-0 ${
+                  appToast.type === 'success'
+                    ? 'text-emerald-400'
+                    : appToast.type === 'info'
+                    ? 'text-cyan-400'
+                    : 'text-rose-400'
+                }`}
+              />
+              <span className="truncate">{appToast.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAppToast(null)}
+              className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors cursor-pointer shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         )}
 
