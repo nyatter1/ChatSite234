@@ -19,6 +19,7 @@ import {
   Eye,
   Save,
   CreditCard,
+  Wallet,
   HelpCircle,
   Heart,
   Calendar,
@@ -105,6 +106,7 @@ import BorderModal from './components/BorderModal';
 import { MessagesView } from './MessagesView';
 import DatabaseMonitorModal from './components/DatabaseMonitorModal';
 import MusicPlayerModal, { MusicTrack } from './components/MusicPlayerModal';
+import RewardsModal, { getTodayDateString } from './components/RewardsModal';
 import AdminPage from './AdminPage';
 import { detectUserCountry, getInstantUserCountry } from './utils/countryDetect';
 import { uploadToCloudinary, deleteFromCloudinary } from './lib/cloudinary';
@@ -241,6 +243,84 @@ async function recordAuditLog(
     });
   } catch (err) {
     console.warn('Failed to record audit log:', err);
+  }
+}
+
+async function recordDailyMessageSent(username: string, avatarUrl: string | null) {
+  try {
+    const todayStr = getTodayDateString();
+    const userKey = sanitizeDbKey(username);
+
+    // 1. Increment user's personal daily count
+    const userDailyRef = ref(rtdb, `users/${userKey}/rewards/daily_messages/${todayStr}/count`);
+    const snap = await get(userDailyRef);
+    const currentCount = snap.exists() ? Number(snap.val() || 0) : 0;
+    const newCount = currentCount + 1;
+    await set(userDailyRef, newCount).catch(() => {});
+
+    // Also update all-time message count for user
+    const totalRef = ref(rtdb, `users/${userKey}/totalMessages`);
+    const totalSnap = await get(totalRef);
+    const totalCount = (totalSnap.exists() ? Number(totalSnap.val() || 0) : 0) + 1;
+    await set(totalRef, totalCount).catch(() => {});
+
+    // 2. Update shared daily messages record under users/__system_rewards__/
+    await update(ref(rtdb, `users/__system_rewards__/daily_messages/${todayStr}/${userKey}`), {
+      username,
+      avatarUrl: avatarUrl || null,
+      count: newCount,
+      updatedAt: serverTimestamp()
+    }).catch(() => {});
+
+    // 3. Update all-time messages record under users/__system_rewards__/
+    await update(ref(rtdb, `users/__system_rewards__/all_time_messages/${userKey}`), {
+      username,
+      avatarUrl: avatarUrl || null,
+      count: totalCount,
+      updatedAt: serverTimestamp()
+    }).catch(() => {});
+
+    // 4. Update today's leaderboard record at root (fallback if root allowed)
+    await update(ref(rtdb, `daily_message_counts/${todayStr}/${userKey}`), {
+      username,
+      avatarUrl: avatarUrl || null,
+      count: newCount,
+      updatedAt: serverTimestamp()
+    }).catch(() => {});
+
+    // 5. Update localStorage caches
+    try {
+      localStorage.setItem(`user_daily_messages_${userKey}_${todayStr}`, String(newCount));
+      const localLeaderboardStr = localStorage.getItem(`daily_leaderboard_${todayStr}`);
+      const localLeaderboard: Record<string, any> = localLeaderboardStr ? JSON.parse(localLeaderboardStr) : {};
+      localLeaderboard[userKey] = {
+        username,
+        avatarUrl: avatarUrl || null,
+        count: newCount,
+        updatedAt: Date.now()
+      };
+      localStorage.setItem(`daily_leaderboard_${todayStr}`, JSON.stringify(localLeaderboard));
+
+      // All-time local leaderboard
+      const allTimeStr = localStorage.getItem('all_time_leaderboard');
+      const allTimeBoard: Record<string, any> = allTimeStr ? JSON.parse(allTimeStr) : {};
+      allTimeBoard[userKey] = {
+        username,
+        avatarUrl: avatarUrl || null,
+        count: totalCount,
+        updatedAt: Date.now()
+      };
+      localStorage.setItem('all_time_leaderboard', JSON.stringify(allTimeBoard));
+    } catch (_) {}
+  } catch (err) {
+    console.warn('Error recording daily message count:', err);
+    try {
+      const todayStr = getTodayDateString();
+      const userKey = sanitizeDbKey(username);
+      const prev = Number(localStorage.getItem(`user_daily_messages_${userKey}_${todayStr}`) || 0);
+      const newCount = prev + 1;
+      localStorage.setItem(`user_daily_messages_${userKey}_${todayStr}`, String(newCount));
+    } catch (_) {}
   }
 }
 
@@ -553,6 +633,8 @@ interface UserProfileData {
   bannedAt?: number | null;
   bannedBy?: string | null;
   likes?: Record<string, boolean>;
+  gold?: number;
+  ruby?: number;
   msgProfile?: {
     displayName?: string;
     avatarUrl?: string | null;
@@ -602,6 +684,8 @@ interface UserProfileState {
   bannedAt?: number | null;
   bannedBy?: string | null;
   likes?: Record<string, boolean>;
+  gold?: number;
+  ruby?: number;
 }
 
 export default function App() {
@@ -651,7 +735,9 @@ export default function App() {
     pfpBorderThickness: 2,
     musicTrack: null,
     customRankIcon: null,
-    customRankName: null
+    customRankName: null,
+    gold: 1000,
+    ruby: 10
   }), [initialGeo]);
 
   // Profile Details State (Loaded from localStorage)
@@ -662,6 +748,8 @@ export default function App() {
         const parsed = JSON.parse(saved);
         return {
           ...initialProfile,
+          gold: typeof parsed.gold === 'number' ? parsed.gold : 1000,
+          ruby: typeof parsed.ruby === 'number' ? parsed.ruby : 10,
           ...parsed,
           avatarUrl: sanitizeMediaUrl(parsed.avatarUrl),
           bannerUrl: sanitizeMediaUrl(parsed.bannerUrl)
@@ -872,6 +960,8 @@ export default function App() {
   const [activeMsgMenuId, setActiveMsgMenuId] = useState<string | null>(null);
   const [showTopic, setShowTopic] = useState(true);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [profileMenuTab, setProfileMenuTab] = useState<'main' | 'wallet'>('main');
+  const [activeRewardModal, setActiveRewardModal] = useState<'messages' | 'login' | 'wheel' | null>(null);
   const [showNotificationsMenu, setShowNotificationsMenu] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [playerPopoverOpen, setPlayerPopoverOpen] = useState(false);
@@ -2134,7 +2224,9 @@ export default function App() {
             bannedReason: val.bannedReason || null,
             bannedAt: typeof val.bannedAt === 'number' ? val.bannedAt : null,
             bannedBy: val.bannedBy || null,
-            likes: val.likes && typeof val.likes === 'object' ? val.likes : {}
+            likes: val.likes && typeof val.likes === 'object' ? val.likes : {},
+            gold: typeof val.gold === 'number' ? val.gold : (typeof prev.gold === 'number' ? prev.gold : 1000),
+            ruby: typeof val.ruby === 'number' ? val.ruby : (typeof prev.ruby === 'number' ? prev.ruby : 10)
           };
 
           if (val.isBanned === true && (!val.bannedUntil || val.bannedUntil === -1 || val.bannedUntil > Date.now())) {
@@ -2293,6 +2385,7 @@ export default function App() {
       }
       if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
         setShowProfileMenu(false);
+        setProfileMenuTab('main');
       }
       if (notificationsMenuRef.current && !notificationsMenuRef.current.contains(e.target as Node)) {
         setShowNotificationsMenu(false);
@@ -2500,7 +2593,9 @@ export default function App() {
         profileBorderThickness: 2,
         pfpBorderId: 'pfp-default',
         pfpBorderThickness: 2,
-        musicTrack: null
+        musicTrack: null,
+        gold: 1000,
+        ruby: 10
       };
 
       // 7. Create persistent user account and profile record in Realtime Database
@@ -2689,7 +2784,9 @@ export default function App() {
         bannedDuration: matchedUser.bannedDuration || null,
         bannedReason: matchedUser.bannedReason || null,
         bannedAt: typeof matchedUser.bannedAt === 'number' ? matchedUser.bannedAt : null,
-        bannedBy: matchedUser.bannedBy || null
+        bannedBy: matchedUser.bannedBy || null,
+        gold: typeof matchedUser.gold === 'number' ? matchedUser.gold : 1000,
+        ruby: typeof matchedUser.ruby === 'number' ? matchedUser.ruby : 10
       };
 
       const userObj = {
@@ -3372,6 +3469,7 @@ export default function App() {
       } else {
         await push(messagesRef, newMsgData);
       }
+      recordDailyMessageSent(currentUser.username, cleanAvatar);
     } catch (err) {
       console.warn('Realtime Database push fallback:', err);
       const fallbackMsg: ChatMessage = {
@@ -3391,6 +3489,7 @@ export default function App() {
         mediaName: mediaNameToSend || null
       };
       setMessages((prev) => [...prev, fallbackMsg]);
+      recordDailyMessageSent(currentUser.username, cleanAvatar);
     }
 
     // Check if the message tags a bot (e.g. "System Hello!" or "whats 1+1 System" - no @ required, just the bot's username)
@@ -3747,6 +3846,37 @@ export default function App() {
     }
   };
 
+  // Currency Update Handler (Gold & Ruby)
+  const handleUpdateCurrency = async (goldDelta: number, rubyDelta: number) => {
+    if (!currentUser?.username) return;
+    const currentGold = typeof userProfile.gold === 'number' ? userProfile.gold : 1000;
+    const currentRuby = typeof userProfile.ruby === 'number' ? userProfile.ruby : 10;
+    const nextGold = Math.max(0, currentGold + goldDelta);
+    const nextRuby = Math.max(0, currentRuby + rubyDelta);
+
+    const updatedProfile = {
+      ...userProfile,
+      gold: nextGold,
+      ruby: nextRuby
+    };
+
+    setUserProfile(updatedProfile);
+    try {
+      localStorage.setItem('chat_community_profile', JSON.stringify(updatedProfile));
+    } catch (_) {}
+
+    try {
+      const userKey = sanitizeDbKey(currentUser.username);
+      await update(ref(rtdb, `users/${userKey}`), {
+        gold: nextGold,
+        ruby: nextRuby,
+        updatedAt: serverTimestamp()
+      });
+    } catch (e) {
+      console.warn('Error updating currency in RTDB:', e);
+    }
+  };
+
   // ====================================================
   // PRIVATE MESSAGES (PMs) HANDLERS
   // ====================================================
@@ -3985,6 +4115,8 @@ export default function App() {
         updatedAt: now,
         [`messages/${msgId}`]: msgPayload
       });
+
+      recordDailyMessageSent(currentUser.username, sanitizeMediaUrl(userProfile.avatarUrl));
 
       // 2. If recipient is a real user (not System), deliver into recipient's PM thread and trigger action alert
       if (targetPeerName.toLowerCase() !== 'system') {
@@ -5057,6 +5189,8 @@ export default function App() {
     const isOwnerOrAbove = (currentUserRank?.priority ?? 0) >= 90;
     const hasUnreadNotifications = notifications.some((n) => !n.read);
     const hasUnreadPms = pmThreads.some((t) => t.unread);
+    const userGold = typeof userProfile.gold === 'number' ? userProfile.gold : 1000;
+    const userRuby = typeof userProfile.ruby === 'number' ? userProfile.ruby : 10;
     const pinnedMessagesList = messages.filter((m) => m.pinned);
     const typingUsernames = onlineUsersList
       .filter(
@@ -5507,7 +5641,10 @@ export default function App() {
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                setShowProfileMenu((prev) => !prev);
+                setShowProfileMenu((prev) => {
+                  if (!prev) setProfileMenuTab('main');
+                  return !prev;
+                });
               }}
               aria-label="User profile"
               className="flex items-center gap-2 p-0.5 rounded-full hover:ring-2 hover:ring-cyan-500/40 transition-all cursor-pointer"
@@ -5524,85 +5661,195 @@ export default function App() {
             {/* Profile Dropdown Menu */}
             {showProfileMenu && (
               <div className="absolute right-0 top-full mt-2 w-60 bg-[#15151b] border border-[#262630] rounded-2xl shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-100">
-                {/* Header with Avatar, Username, and Green Checkmark */}
-                <div className="p-3.5 flex items-center justify-between">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-11 h-11 rounded-xl overflow-hidden bg-[#24252e] shrink-0">
-                      {userProfile.avatarUrl ? (
-                        <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
-                      ) : (
-                        <svg viewBox="0 0 40 40" className="w-full h-full text-zinc-400 fill-current translate-y-0.5">
-                          <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
-                        </svg>
-                      )}
+                {profileMenuTab === 'wallet' ? (
+                  <div>
+                    {/* Header: < Wallet */}
+                    <div className="px-3 py-2.5 border-b border-[#252530] flex items-center justify-between bg-[#191922]">
+                      <button
+                        type="button"
+                        onClick={() => setProfileMenuTab('main')}
+                        aria-label="Back to options"
+                        title="Back to options"
+                        className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer group"
+                      >
+                        <ChevronLeft className="w-4 h-4 text-zinc-400 group-hover:text-white transition-colors" />
+                        <span className="text-sm font-extrabold text-white">Wallet</span>
+                      </button>
                     </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-black text-white truncate leading-tight">
-                        {currentUser.username}
-                      </p>
+
+                    {/* Wallet Balances */}
+                    <div className="p-3 space-y-2.5">
+                      {/* Gold Row */}
+                      <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-[#1e1e27] border border-amber-500/20 shadow-sm">
+                        <div className="flex items-center gap-2.5">
+                          <img
+                            src="/icons/gold.svg"
+                            alt="Gold"
+                            onError={(e) => {
+                              e.currentTarget.src = 'https://teenchatcity.com/default_images/icons/gold.svg';
+                            }}
+                            className="w-5 h-5 object-contain shrink-0 select-none pointer-events-none drop-shadow-[0_0_6px_rgba(250,190,44,0.4)]"
+                          />
+                          <span className="text-sm font-extrabold text-zinc-200">Gold:</span>
+                        </div>
+                        <span className="text-sm font-black text-amber-300 font-mono tracking-wide">
+                          {userGold.toLocaleString()}
+                        </span>
+                      </div>
+
+                      {/* Ruby Row */}
+                      <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-[#1e1e27] border border-rose-500/20 shadow-sm">
+                        <div className="flex items-center gap-2.5">
+                          <img
+                            src="/icons/ruby.svg"
+                            alt="Ruby"
+                            onError={(e) => {
+                              e.currentTarget.src = 'https://teenchatcity.com/default_images/icons/ruby.svg';
+                            }}
+                            className="w-5 h-5 object-contain shrink-0 select-none pointer-events-none drop-shadow-[0_0_6px_rgba(234,141,187,0.4)]"
+                          />
+                          <span className="text-sm font-extrabold text-zinc-200">Ruby:</span>
+                        </div>
+                        <span className="text-sm font-black text-rose-400 font-mono tracking-wide">
+                          {userRuby.toLocaleString()}
+                        </span>
+                      </div>
                     </div>
                   </div>
+                ) : (
+                  <div>
+                    {/* Header with Avatar, Username, and Green Checkmark */}
+                    <div className="p-3.5 flex items-center justify-between">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-11 h-11 rounded-xl overflow-hidden bg-[#24252e] shrink-0">
+                          {userProfile.avatarUrl ? (
+                            <img src={userProfile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                          ) : (
+                            <svg viewBox="0 0 40 40" className="w-full h-full text-zinc-400 fill-current translate-y-0.5">
+                              <path d="M20 21c4.418 0 8-3.582 8-8s-3.582-8-8-8-8 3.582-8 8 3.582 8 8 8zm0 4c-5.333 0-16 2.667-16 8v3h32v-3c0-5.333-10.667-8-16-8z" />
+                            </svg>
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-black text-white truncate leading-tight">
+                            {currentUser.username}
+                          </p>
+                        </div>
+                      </div>
 
-                  {/* Green Checkmark online indicator */}
-                  <div className="w-5 h-5 rounded-full bg-[#52c41a] text-white flex items-center justify-center shrink-0 shadow-sm ml-2">
-                    <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      {/* Green Checkmark online indicator */}
+                      <div className="w-5 h-5 rounded-full bg-[#52c41a] text-white flex items-center justify-center shrink-0 shadow-sm ml-2">
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      </div>
+                    </div>
+
+                    <div className="border-t border-[#252530]" />
+
+                    {/* Menu Options */}
+                    <div className="p-2 space-y-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowProfileMenu(false);
+                          setProfileMenuTab('main');
+                          setSelectedUser(null);
+                          setProfileViewMode('edit');
+                          setProfileModalOpen(true);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                      >
+                        <SquarePen className="w-4 h-4 text-[#00b4d8]" />
+                        <span>Edit profile</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowProfileMenu(false);
+                          setProfileMenuTab('main');
+                          setSelectedUser(null);
+                          setProfileViewMode('view');
+                          setProfileModalOpen(true);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                      >
+                        <Eye className="w-4 h-4 text-[#00b4d8]" />
+                        <span>View profile</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setProfileMenuTab('wallet')}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                      >
+                        <Wallet className="w-4 h-4 text-[#00b4d8]" />
+                        <span>Wallet</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowProfileMenu(false);
+                          setActiveRewardModal('wheel');
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                      >
+                        <Dices className="w-4 h-4 text-[#00b4d8]" />
+                        <span>Daily wheel spin</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowProfileMenu(false);
+                          setActiveRewardModal('login');
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                      >
+                        <Calendar className="w-4 h-4 text-[#00b4d8]" />
+                        <span>Daily login</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowProfileMenu(false);
+                          setActiveRewardModal('messages');
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                      >
+                        <Award className="w-4 h-4 text-[#00b4d8]" />
+                        <span>Messages reward</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowProfileMenu(false);
+                          setProfileMenuTab('main');
+                          setGuideStep(1);
+                          setShowGuide(true);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
+                      >
+                        <Compass className="w-4 h-4 text-[#00b4d8]" />
+                        <span>Site guide</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProfileMenuTab('main');
+                          handleSignOut();
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer text-left"
+                      >
+                        <LogOut className="w-4 h-4 text-rose-500" />
+                        <span>Sign Out</span>
+                      </button>
+                    </div>
                   </div>
-                </div>
-
-                <div className="border-t border-[#252530]" />
-
-                {/* Menu Options */}
-                <div className="p-2 space-y-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowProfileMenu(false);
-                      setSelectedUser(null);
-                      setProfileViewMode('edit');
-                      setProfileModalOpen(true);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
-                  >
-                    <SquarePen className="w-4 h-4 text-[#00b4d8]" />
-                    <span>Edit profile</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowProfileMenu(false);
-                      setSelectedUser(null);
-                      setProfileViewMode('view');
-                      setProfileModalOpen(true);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
-                  >
-                    <Eye className="w-4 h-4 text-[#00b4d8]" />
-                    <span>View profile</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowProfileMenu(false);
-                      setGuideStep(1);
-                      setShowGuide(true);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-white hover:bg-white/5 rounded-xl transition-colors cursor-pointer text-left"
-                  >
-                    <Compass className="w-4 h-4 text-[#00b4d8]" />
-                    <span>Site guide</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleSignOut}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-bold text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer text-left"
-                  >
-                    <LogOut className="w-4 h-4 text-rose-500" />
-                    <span>Sign Out</span>
-                  </button>
-                </div>
+                )}
               </div>
             )}
           </div>
@@ -9807,6 +10054,21 @@ export default function App() {
             isOpen={dbMonitorModalOpen}
             onClose={() => setDbMonitorModalOpen(false)}
             currentUsername={currentUser.username}
+          />
+        )}
+
+        {/* REWARDS MODAL (MESSAGES REWARD, LOGIN REWARD, WHEEL SPIN) */}
+        {activeRewardModal && (
+          <RewardsModal
+            type={activeRewardModal}
+            onClose={() => setActiveRewardModal(null)}
+            currentUser={currentUser}
+            userProfile={userProfile}
+            onUpdateCurrency={handleUpdateCurrency}
+            userGold={userGold}
+            userRuby={userRuby}
+            allUsersList={allUsersList}
+            messages={messages}
           />
         )}
 
